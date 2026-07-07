@@ -1,0 +1,32 @@
+{
+  "version": "2.0",
+  "envId": "scoring-prod-请替换成你的环境ID",
+  "description": "立项评估打分系统",
+  "srcRoot": "./.next/standalone",
+  "framework": {
+    "name": "scoring-system",
+    "plugins": {
+      "container": {
+        "use": "@cloudbase/framework-plugin-container",
+        "inputs": {
+          "serviceName": "scoring",
+          "servicePath": "./",
+          "dockerfilePath": "./Dockerfile",
+          "containerPort": 3000,
+          "minNum": 0,
+          "maxNum": 2,
+          "cpu": 0.5,
+          "mem": 1,
+          "policyType": "cpu",
+          "policyThreshold": 60,
+          "envVariables": {
+            "HOSTNAME": "0.0.0.0",
+            "PORT": "3000"
+          },
+          "customLogs": "stdout",
+          "publicAccess": true
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,28 @@
+﻿# Dependencies
+node_modules/
+
+# Next.js
+.next/
+out/
+
+# Production build artifacts
+*.zip
+server.js
+start.sh
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
