@@ -1,7 +1,8 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { DIMENSION_BY_NAME, SCORING_DIMENSIONS, scoreKey } from '@/lib/scoringRules';
 
 interface Reviewer {
   code: string;
@@ -29,9 +30,7 @@ interface Meeting {
 }
 
 interface Score {
-  meeting_id: string;
   project_id: string;
-  reviewer_code: string;
   dim_name: string;
   score: number;
   comment?: string;
@@ -43,18 +42,22 @@ export default function ScoringPage() {
   const [meetings, setMeetings] = useState<Meeting[]>([]);
   const [activeMeeting, setActiveMeeting] = useState<Meeting | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
+  const [activeProject, setActiveProject] = useState<Project | null>(null);
   const [scores, setScores] = useState<Record<string, Record<string, number>>>({});
-  const [comments, setComments] = useState<Record<string, string>>({});
   const [projectProblems, setProjectProblems] = useState<Record<string, string>>({});
   const [projectActions, setProjectActions] = useState<Record<string, string>>({});
   const [bonusReason, setBonusReason] = useState<Record<string, string>>({});
   const [bonusValue, setBonusValue] = useState<Record<string, number>>({});
-  const [activeProject, setActiveProject] = useState<Project | null>(null);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState('');
 
   const isWalker = reviewer?.code?.toUpperCase() === 'W';
+  const reviewerRules = useMemo(() => {
+    if (!reviewer) return [];
+    const names = new Set(reviewer.dimensions.map((dim) => dim.dim_name));
+    return SCORING_DIMENSIONS.filter((rule: any) => names.has(rule.name));
+  }, [reviewer]);
 
   useEffect(() => {
     const stored = localStorage.getItem('reviewer');
@@ -72,19 +75,14 @@ export default function ScoringPage() {
   }, []);
 
   const loadMeetings = async () => {
-    try {
-      const res = await fetch('/api/meetings', { cache: 'no-store' });
-      const data = await res.json();
-      const all = data.meetings || [];
-      setMeetings(all);
-      if (all.length > 0) {
-        // 优先：is_current=true 的评审会；否则取最近一个
-        const current = all.find((m: Meeting) => m.is_current) || all[0];
-        setActiveMeeting(current);
-        loadProjects(current.id);
-      }
-    } catch (err) {
-      console.error('loadMeetings error:', err);
+    const res = await fetch('/api/meetings', { cache: 'no-store' });
+    const data = await res.json();
+    const all = data.meetings || [];
+    setMeetings(all);
+    if (all.length > 0) {
+      const current = all.find((m: Meeting) => m.is_current) || all[0];
+      setActiveMeeting(current);
+      await loadProjects(current.id);
     }
   };
 
@@ -93,66 +91,57 @@ export default function ScoringPage() {
     try {
       const res = await fetch(`/api/projects?meetingId=${meetingId}&role=reviewer`, { cache: 'no-store' });
       const data = await res.json();
-      setProjects(data.projects || []);
-
-      if (data.projects && data.projects.length > 0) {
-        setActiveProject(data.projects[0]);
-      }
+      const nextProjects = data.projects || [];
+      setProjects(nextProjects);
+      setActiveProject(nextProjects[0] || null);
       await loadScores(meetingId);
-    } catch (err) {
-      console.error('loadProjects error:', err);
     } finally {
       setLoading(false);
     }
   };
 
   const loadScores = async (meetingId: string) => {
-    try {
-      const r = JSON.parse(localStorage.getItem('reviewer')!);
-      const res = await fetch(`/api/scores?meetingId=${meetingId}&reviewerCode=${r.code}`, { cache: 'no-store' });
-      const data = await res.json();
-      const map: Record<string, Record<string, number>> = {};
-      const cmtMap: Record<string, string> = {};
-      const bonusReasonMap: Record<string, string> = {};
-      const bonusValueMap: Record<string, number> = {};
-      const probMap: Record<string, string> = {};
-      const actMap: Record<string, string> = {};
+    const stored = localStorage.getItem('reviewer');
+    if (!stored) return;
+    const r = JSON.parse(stored);
+    const res = await fetch(`/api/scores?meetingId=${meetingId}&reviewerCode=${r.code}`, { cache: 'no-store' });
+    const data = await res.json();
+    const scoreMap: Record<string, Record<string, number>> = {};
+    const probMap: Record<string, string> = {};
+    const actMap: Record<string, string> = {};
+    const bonusReasonMap: Record<string, string> = {};
+    const bonusValueMap: Record<string, number> = {};
 
-      (data.scores || []).forEach((s: Score) => {
-        if (s.dim_name === '__bonus__') {
-          // 加分项
-          bonusValueMap[s.project_id] = s.score;
-          if (s.comment) bonusReasonMap[s.project_id] = s.comment;
-        } else if (s.dim_name === '__problems__') {
-          // 评审问题（每个评委独立）
-          probMap[s.project_id] = s.comment || '';
-        } else if (s.dim_name === '__actions__') {
-          // 整改意见（每个评委独立）
-          actMap[s.project_id] = s.comment || '';
-        } else {
-          if (!map[s.project_id]) map[s.project_id] = {};
-          map[s.project_id][s.dim_name] = s.score;
-          if (s.comment) cmtMap[`${s.project_id}|${s.dim_name}`] = s.comment;
-        }
-      });
-      setScores(map);
-      setComments(cmtMap);
-      setBonusReason(bonusReasonMap);
-      setBonusValue(bonusValueMap);
-      setProjectProblems(probMap);
-      setProjectActions(actMap);
-    } catch (err) {
-      console.error('loadScores error:', err);
-    }
+    (data.scores || []).forEach((s: Score) => {
+      if (s.dim_name === '__bonus__') {
+        bonusValueMap[s.project_id] = Number(s.score);
+        bonusReasonMap[s.project_id] = s.comment || '';
+      } else if (s.dim_name === '__problems__') {
+        probMap[s.project_id] = s.comment || '';
+      } else if (s.dim_name === '__actions__') {
+        actMap[s.project_id] = s.comment || '';
+      } else {
+        if (!scoreMap[s.project_id]) scoreMap[s.project_id] = {};
+        scoreMap[s.project_id][s.dim_name] = Number(s.score);
+      }
+    });
+
+    setScores(scoreMap);
+    setProjectProblems(probMap);
+    setProjectActions(actMap);
+    setBonusReason(bonusReasonMap);
+    setBonusValue(bonusValueMap);
   };
 
-  const handleScoreChange = async (dimName: string, value: number, comment?: string) => {
-    if (!activeMeeting || !activeProject || !reviewer) return;
-    if (isNaN(value)) return;
+  const showMessage = (text: string) => {
+    setMessage(text);
+    setTimeout(() => setMessage(''), 1800);
+  };
 
+  const handleScoreChange = async (dimName: string, value: number, comment?: string | null) => {
+    if (!activeMeeting || !activeProject || !reviewer || Number.isNaN(value)) return;
     setSaving(true);
     setMessage('');
-
     try {
       const res = await fetch('/api/scores', {
         method: 'POST',
@@ -166,643 +155,219 @@ export default function ScoringPage() {
           comment: comment || null
         })
       });
-
       const data = await res.json();
       if (!res.ok) {
-        setMessage('❌ ' + data.error);
+        showMessage(data.error || '保存失败');
       } else {
-        setScores(prev => ({
+        setScores((prev) => ({
           ...prev,
           [activeProject.id]: { ...prev[activeProject.id], [dimName]: value }
         }));
-        if (comment !== undefined) {
-          setComments(prev => ({ ...prev, [`${activeProject.id}|${dimName}`]: comment }));
-        }
-        setMessage('✓ 已保存');
-        setTimeout(() => setMessage(''), 1500);
+        showMessage('已保存');
       }
     } catch (err: any) {
-      setMessage('❌ ' + err.message);
+      showMessage(err.message);
+    } finally {
+      setSaving(false);
     }
-    setSaving(false);
   };
 
   const handleBonusSave = async () => {
-    if (!activeMeeting || !activeProject || !reviewer) return;
-    const reason = bonusReason[activeProject.id] || '';
-    const val = bonusValue[activeProject.id];
-
-    if (!val || val < 1 || val > 5) {
-      setMessage('❌ 加分值必须在 1-5 之间');
+    if (!activeProject) return;
+    const reason = (bonusReason[activeProject.id] || '').trim();
+    const value = bonusValue[activeProject.id];
+    if (!value || value < 1 || value > 5) {
+      showMessage('加分值必须在 1-5 之间');
       return;
     }
-    if (!reason.trim()) {
-      setMessage('❌ 请填写加分原因');
+    if (!reason) {
+      showMessage('请填写加分原因');
       return;
     }
-
-    await handleScoreChange('__bonus__', val, reason);
-    setMessage('✓ 加分已保存');
+    await handleScoreChange('__bonus__', value, reason);
   };
 
   const handleProblemsActionsSave = async () => {
-    if (!activeProject || !activeMeeting || !reviewer) return;
+    if (!activeMeeting || !activeProject || !reviewer) return;
     const problemsText = (projectProblems[activeProject.id] || '').trim();
     const actionsText = (projectActions[activeProject.id] || '').trim();
+    const payloadBase = {
+      meeting_id: activeMeeting.id,
+      project_id: activeProject.id,
+      reviewer_code: reviewer.code,
+      score: 0
+    };
 
-    try {
-      const [res1, res2] = await Promise.all([
-        fetch('/api/scores', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            meeting_id: activeMeeting.id,
-            project_id: activeProject.id,
-            reviewer_code: reviewer.code,
-            dim_name: '__problems__',
-            score: 0,
-            comment: problemsText || null
-          })
-        }),
-        fetch('/api/scores', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            meeting_id: activeMeeting.id,
-            project_id: activeProject.id,
-            reviewer_code: reviewer.code,
-            dim_name: '__actions__',
-            score: 0,
-            comment: actionsText || null
-          })
-        })
-      ]);
+    const [problemsRes, actionsRes] = await Promise.all([
+      fetch('/api/scores', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...payloadBase, dim_name: '__problems__', comment: problemsText || null })
+      }),
+      fetch('/api/scores', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...payloadBase, dim_name: '__actions__', comment: actionsText || null })
+      })
+    ]);
 
-      const d1 = await res1.json();
-      const d2 = await res2.json();
-
-      if (!res1.ok) {
-        setMessage('❌ ' + d1.error);
-      } else if (!res2.ok) {
-        setMessage('❌ ' + d2.error);
-      } else {
-        setMessage('✓ 评审意见已保存');
-        setTimeout(() => setMessage(''), 1500);
-      }
-    } catch (err: any) {
-      setMessage('❌ ' + err.message);
-    }
+    if (problemsRes.ok && actionsRes.ok) showMessage('评审意见已保存');
+    else showMessage('评审意见保存失败');
   };
 
-  const getProjectTotal = (projectId: string) => {
-    const dims = scores[projectId] || {};
-    const baseTotal = Object.values(dims).reduce((a, b) => a + b, 0);
-    const bonus = bonusValue[projectId] || 0;
-    return baseTotal + bonus;
-  };
-
-  const getProjectBaseScore = (projectId: string) => {
-    const dims = scores[projectId] || {};
-    return Object.values(dims).reduce((a, b) => a + b, 0);
-  };
+  const getExpectedCount = () => reviewerRules.reduce((sum: number, rule: any) => {
+    return sum + (rule.type === 'level' ? 1 : rule.items.length);
+  }, 0);
 
   const getProjectCompletion = (projectId: string) => {
-    if (!reviewer) return 0;
-    const dims = scores[projectId] || {};
-    const filled = reviewer.dimensions.filter(d => dims[d.dim_name] !== undefined).length;
-    return Math.round((filled / reviewer.dimensions.length) * 100);
+    const current = scores[projectId] || {};
+    const expected = getExpectedCount();
+    if (!expected) return 0;
+    const filled = reviewerRules.reduce((sum: number, rule: any) => {
+      if (rule.type === 'level') return sum + (current[scoreKey(rule.name, 'level')] !== undefined ? 1 : 0);
+      return sum + rule.items.filter((item: any) => current[scoreKey(rule.name, item.key)] !== undefined).length;
+    }, 0);
+    return Math.round((filled / expected) * 100);
   };
+
+  const getLocalRawTotal = (projectId: string) => Object.values(scores[projectId] || {}).reduce((sum, value) => sum + value, 0);
 
   if (!reviewer) return <div style={{ padding: 40 }}>加载中...</div>;
 
   return (
-    <div style={{
-      minHeight: '100vh',
-      background: '#f8fafc',
-      fontFamily: '-apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif'
-    }}>
-      {/* 顶部栏 */}
-      <div style={{
-        background: 'white',
-        borderBottom: '1px solid #e2e8f0',
-        padding: '14px 32px',
-        display: 'flex',
-        justifyContent: 'space-between',
-        alignItems: 'center',
-        boxShadow: '0 1px 3px rgba(0,0,0,0.03)'
-      }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <div style={{
-            width: '36px', height: '36px',
-            background: 'linear-gradient(135deg, #3b82f6, #06b6d4)',
-            borderRadius: '8px',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            color: 'white', fontSize: '18px'
-          }}>★</div>
-          <div>
-            <div style={{ fontSize: '16px', fontWeight: '700', color: '#0f172a' }}>
-              {reviewer.name} <span style={{ color: '#64748b', fontWeight: '500', fontSize: '13px' }}>· {reviewer.role}</span>
-            </div>
-            <div style={{ fontSize: '12px', color: '#64748b', display: 'flex', alignItems: 'center', gap: 6 }}>
-              <select
-                value={activeMeeting?.id || ''}
-                onChange={(e) => {
-                  const m = meetings.find(x => x.id === e.target.value);
-                  if (m) {
-                    setActiveMeeting(m);
-                    setActiveProject(null);
-                    setScores({});
-                    setComments({});
-                    setProjectProblems({});
-                    setProjectActions({});
-                    setBonusReason({});
-                    setBonusValue({});
-                    loadProjects(m.id);
-                  }
-                }}
-                style={{
-                  padding: '3px 8px',
-                  fontSize: '12px',
-                  border: '1px solid #e2e8f0',
-                  borderRadius: '6px',
-                  background: 'white',
-                  cursor: 'pointer',
-                  outline: 'none'
-                }}
-              >
-                {meetings.map(m => (
-                  <option key={m.id} value={m.id}>
-                    {m.is_current ? '📍 ' : ''}{m.name}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
+    <div style={{ minHeight: '100vh', background: '#f8fafc', fontFamily: '-apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif' }}>
+      <div style={{ background: 'white', borderBottom: '1px solid #e2e8f0', padding: '14px 32px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div>
+          <div style={{ fontSize: 16, fontWeight: 700, color: '#0f172a' }}>{reviewer.name} <span style={{ color: '#64748b', fontWeight: 500, fontSize: 13 }}>· {reviewer.role}</span></div>
+          <select
+            value={activeMeeting?.id || ''}
+            onChange={(event) => {
+              const meeting = meetings.find((m) => m.id === event.target.value);
+              if (!meeting) return;
+              setActiveMeeting(meeting);
+              setScores({});
+              setProjectProblems({});
+              setProjectActions({});
+              setBonusReason({});
+              setBonusValue({});
+              loadProjects(meeting.id);
+            }}
+            style={{ marginTop: 6, padding: '4px 8px', border: '1px solid #e2e8f0', borderRadius: 6, background: 'white' }}
+          >
+            {meetings.map((meeting) => <option key={meeting.id} value={meeting.id}>{meeting.is_current ? '当前 · ' : ''}{meeting.name}</option>)}
+          </select>
         </div>
-        <button
-          onClick={() => {
-            localStorage.removeItem('reviewer');
-            router.push('/');
-          }}
-          style={{
-            padding: '8px 16px',
-            background: '#f1f5f9',
-            color: '#475569',
-            border: 'none',
-            borderRadius: '8px',
-            fontSize: '13px',
-            cursor: 'pointer'
-          }}
-        >退出登录</button>
+        <button onClick={() => { localStorage.removeItem('reviewer'); router.push('/'); }} style={{ padding: '8px 16px', border: 'none', borderRadius: 8, background: '#f1f5f9', color: '#475569', cursor: 'pointer' }}>退出登录</button>
       </div>
 
-      <div style={{ display: 'flex', maxWidth: '1400px', margin: '0 auto' }}>
-        {/* 左侧项目列表 */}
-        <div style={{
-          width: '300px',
-          background: 'white',
-          borderRight: '1px solid #e2e8f0',
-          minHeight: 'calc(100vh - 65px)'
-        }}>
-          <div style={{
-            padding: '16px 20px',
-            borderBottom: '1px solid #e2e8f0',
-            fontSize: '13px',
-            fontWeight: '600',
-            color: '#64748b'
-          }}>
-            项目列表 ({projects.length})
-          </div>
-          {loading ? (
-            <div style={{ padding: 20, color: '#94a3b8' }}>加载中...</div>
-          ) : projects.map(p => {
-            const total = getProjectTotal(p.id);
-            const baseTotal = getProjectBaseScore(p.id);
-            const bonus = bonusValue[p.id] || 0;
-            const completion = getProjectCompletion(p.id);
-            const isActive = activeProject?.id === p.id;
+      <div style={{ display: 'flex', maxWidth: 1420, margin: '0 auto' }}>
+        <aside style={{ width: 320, background: 'white', borderRight: '1px solid #e2e8f0', minHeight: 'calc(100vh - 65px)' }}>
+          <div style={{ padding: '16px 20px', borderBottom: '1px solid #e2e8f0', fontSize: 13, fontWeight: 700, color: '#64748b' }}>项目列表 ({projects.length})</div>
+          {loading ? <div style={{ padding: 20, color: '#94a3b8' }}>加载中...</div> : projects.map((project) => {
+            const completion = getProjectCompletion(project.id);
+            const active = activeProject?.id === project.id;
             return (
-              <div
-                key={p.id}
-                onClick={() => setActiveProject(p)}
-                style={{
-                  padding: '14px 20px',
-                  borderBottom: '1px solid #f1f5f9',
-                  cursor: 'pointer',
-                  background: isActive ? '#eff6ff' : 'white',
-                  borderLeft: isActive ? '3px solid #3b82f6' : '3px solid transparent',
-                  transition: 'all 0.15s'
-                }}
-              >
-                <div style={{
-                  fontSize: '14px',
-                  fontWeight: '600',
-                  color: isActive ? '#1e40af' : '#0f172a',
-                  marginBottom: '4px'
-                }}>
-                  {p.seq_no}. {p.name}
+              <button key={project.id} onClick={() => setActiveProject(project)} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '14px 20px', border: 'none', borderBottom: '1px solid #f1f5f9', cursor: 'pointer', background: active ? '#eff6ff' : 'white', borderLeft: active ? '3px solid #3b82f6' : '3px solid transparent' }}>
+                <div style={{ fontSize: 14, fontWeight: 700, color: active ? '#1e40af' : '#0f172a', marginBottom: 4 }}>{project.seq_no}. {project.name}</div>
+                <div style={{ fontSize: 12, color: '#64748b', marginBottom: 8 }}>提报人：{project.submitter}</div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <div style={{ flex: 1, height: 5, background: '#e2e8f0', borderRadius: 3, overflow: 'hidden' }}><div style={{ width: `${completion}%`, height: '100%', background: completion === 100 ? '#10b981' : '#3b82f6' }} /></div>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: completion === 100 ? '#10b981' : '#64748b' }}>{completion}%</span>
                 </div>
-                <div style={{ fontSize: '12px', color: '#64748b', marginBottom: '8px' }}>
-                  提报人: {p.submitter}
-                </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <div style={{
-                    flex: 1,
-                    height: '4px',
-                    background: '#e2e8f0',
-                    borderRadius: '2px',
-                    marginRight: '8px',
-                    overflow: 'hidden'
-                  }}>
-                    <div style={{
-                      width: `${completion}%`,
-                      height: '100%',
-                      background: completion === 100 ? '#10b981' : '#3b82f6',
-                      transition: 'width 0.3s'
-                    }}/>
-                  </div>
-                  <span style={{
-                    fontSize: '12px',
-                    fontWeight: '600',
-                    color: completion === 100 ? '#10b981' : '#64748b'
-                  }}>
-                    {completion}%
-                  </span>
-                </div>
-                {completion === 100 && (
-                  <div style={{
-                    marginTop: '6px',
-                    fontSize: '12px',
-                    color: '#10b981',
-                    fontWeight: '600'
-                  }}>
-                    合计: {baseTotal.toFixed(1)}
-                    {bonus > 0 && (
-                      <span style={{ color: '#f59e0b' }}> + ✨{bonus}</span>
-                    )}
-                    <span style={{ color: '#94a3b8', fontWeight: '400' }}> = {total.toFixed(1)}</span>
-                  </div>
-                )}
-              </div>
+                {completion === 100 && <div style={{ marginTop: 6, fontSize: 12, color: '#64748b' }}>已填原始项合计：{getLocalRawTotal(project.id).toFixed(1)}</div>}
+              </button>
             );
           })}
-        </div>
+        </aside>
 
-        {/* 右侧打分区 */}
-        <div style={{ flex: 1, padding: '32px 40px' }}>
-          {!activeProject ? (
-            <div style={{ textAlign: 'center', color: '#94a3b8', marginTop: 100 }}>请选择左侧项目开始打分</div>
-          ) : (
+        <main style={{ flex: 1, padding: '32px 40px' }}>
+          {!activeProject ? <div style={{ textAlign: 'center', color: '#94a3b8', marginTop: 100 }}>请选择左侧项目开始打分</div> : (
             <>
-              <div style={{ marginBottom: '24px' }}>
-                <h1 style={{
-                  fontSize: '28px',
-                  fontWeight: '700',
-                  color: '#0f172a',
-                  margin: '0 0 8px'
-                }}>
-                  {activeProject.seq_no}. {activeProject.name}
-                </h1>
-                <div style={{ fontSize: '14px', color: '#64748b' }}>
-                  提报人: {activeProject.submitter}
-                </div>
+              <div style={{ marginBottom: 22 }}>
+                <h1 style={{ margin: '0 0 8px', fontSize: 28, color: '#0f172a' }}>{activeProject.seq_no}. {activeProject.name}</h1>
+                <div style={{ fontSize: 14, color: '#64748b' }}>提报人：{activeProject.submitter}</div>
               </div>
 
-              {activeMeeting?.deadline && (
-                <div style={{
-                  background: '#fef3c7',
-                  border: '1px solid #fde68a',
-                  color: '#92400e',
-                  padding: '10px 16px',
-                  borderRadius: '8px',
-                  fontSize: '13px',
-                  marginBottom: '20px'
-                }}>
-                  ⏰ 打分截止日期: {activeMeeting.deadline}（截止后可读不可改）
-                </div>
-              )}
+              <div style={{ background: '#eef2ff', border: '1px solid #c7d2fe', color: '#3730a3', padding: '12px 16px', borderRadius: 10, fontSize: 13, lineHeight: 1.7, marginBottom: 20 }}>
+                评分方法：打分型子项均为 0-10 分，按维度权重换算；创新性直接选择 4/6/10/14/20 档。管理员汇总时按多评委平均或中位档计算项目总分。
+              </div>
 
-              {/* 维度打分 */}
-              <div style={{
-                display: 'grid',
-                gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
-                gap: '16px',
-                marginBottom: '24px'
-              }}>
-                {reviewer.dimensions.map(dim => {
-                  const currentScore = scores[activeProject.id]?.[dim.dim_name];
+              {activeMeeting?.deadline && <div style={{ background: '#fef3c7', border: '1px solid #fde68a', color: '#92400e', padding: '10px 16px', borderRadius: 8, fontSize: 13, marginBottom: 20 }}>打分截止日期：{activeMeeting.deadline}</div>}
+
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: 16, marginBottom: 24 }}>
+                {reviewerRules.map((rule: any) => {
+                  const ruleScores = scores[activeProject.id] || {};
                   return (
-                    <div key={dim.dim_name} style={{
-                      background: 'white',
-                      borderRadius: '14px',
-                      padding: '20px',
-                      border: '1.5px solid #e2e8f0',
-                      transition: 'all 0.2s'
-                    }}>
-                      <div style={{
-                        display: 'flex',
-                        justifyContent: 'space-between',
-                        alignItems: 'center',
-                        marginBottom: '14px'
-                      }}>
-                        <div style={{ fontSize: '15px', fontWeight: '600', color: '#0f172a' }}>
-                          {dim.dim_name}
+                    <section key={rule.name} style={{ background: 'white', borderRadius: 12, padding: 20, border: '1px solid #e2e8f0' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+                        <div>
+                          <div style={{ fontSize: 16, fontWeight: 800, color: '#0f172a' }}>{rule.name}</div>
+                          <div style={{ fontSize: 12, color: '#64748b', marginTop: 2 }}>{rule.type === 'level' ? '档位型，汇总取中位档' : `子项平均 × ${rule.multiplier}`}</div>
                         </div>
-                        <div style={{
-                          background: '#eff6ff',
-                          color: '#1e40af',
-                          padding: '4px 10px',
-                          borderRadius: '20px',
-                          fontSize: '12px',
-                          fontWeight: '600'
-                        }}>
-                          满分 {dim.max_score}
-                        </div>
+                        <div style={{ background: '#eff6ff', color: '#1e40af', padding: '4px 10px', borderRadius: 999, fontSize: 12, fontWeight: 700 }}>满分 {rule.maxScore}</div>
                       </div>
 
-                      {/* 数字输入框 + 滑块 */}
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '8px' }}>
-                        <input
-                          type="number"
-                          min="0"
-                          max={dim.max_score}
-                          step="1"
-                          value={currentScore ?? ''}
-                          placeholder="0"
-                          onChange={(e) => {
-                            const v = Math.max(0, Math.min(dim.max_score, Number(e.target.value) || 0));
-                            handleScoreChange(dim.dim_name, v);
-                          }}
-                          style={{
-                            width: '80px',
-                            padding: '10px 12px',
-                            fontSize: '20px',
-                            fontWeight: '700',
-                            color: '#1e40af',
-                            border: '2px solid #3b82f6',
-                            borderRadius: '8px',
-                            textAlign: 'center',
-                            outline: 'none'
-                          }}
-                        />
-                        <span style={{ fontSize: '14px', color: '#94a3b8' }}>/ {dim.max_score}</span>
-                      </div>
-
-                      {/* 滑块（辅助） */}
-                      <input
-                        type="range"
-                        min="0"
-                        max={dim.max_score}
-                        step="1"
-                        value={currentScore || 0}
-                        onChange={(e) => handleScoreChange(dim.dim_name, Number(e.target.value))}
-                        style={{
-                          width: '100%',
-                          accentColor: '#3b82f6',
-                          cursor: 'pointer'
-                        }}
-                      />
-                    </div>
+                      {rule.type === 'level' ? (
+                        <div style={{ display: 'grid', gap: 8 }}>
+                          {rule.levels.map((level: number) => {
+                            const key = scoreKey(rule.name, 'level');
+                            const selected = ruleScores[key] === level;
+                            return (
+                              <button key={level} onClick={() => handleScoreChange(key, level)} disabled={saving} style={{ padding: '10px 12px', textAlign: 'left', borderRadius: 9, border: selected ? '2px solid #8b5cf6' : '1px solid #e2e8f0', background: selected ? '#f5f3ff' : 'white', color: selected ? '#6d28d9' : '#334155', cursor: 'pointer', fontWeight: selected ? 800 : 600 }}>
+                                <span style={{ display: 'inline-block', minWidth: 42 }}>{level}分</span>{rule.levelLabels[level]}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      ) : (
+                        <div style={{ display: 'grid', gap: 14 }}>
+                          {rule.items.map((item: any) => {
+                            const key = scoreKey(rule.name, item.key);
+                            const current = ruleScores[key];
+                            return (
+                              <div key={item.key}>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
+                                  <label style={{ fontSize: 13, fontWeight: 700, color: '#334155' }}>{item.label}</label>
+                                  <span style={{ fontSize: 12, color: '#64748b' }}>{current ?? '-'} / 10</span>
+                                </div>
+                                <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+                                  <input type="range" min="0" max="10" step="1" value={current ?? 0} onChange={(event) => handleScoreChange(key, Number(event.target.value))} style={{ flex: 1, accentColor: '#3b82f6' }} />
+                                  <input type="number" min="0" max="10" step="1" value={current ?? ''} placeholder="0" onChange={(event) => handleScoreChange(key, Math.max(0, Math.min(10, Number(event.target.value) || 0)))} style={{ width: 70, padding: '8px 10px', fontSize: 16, fontWeight: 800, border: '1.5px solid #cbd5e1', borderRadius: 8, textAlign: 'center' }} />
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </section>
                   );
                 })}
               </div>
 
-              {/* Walker 加分项 */}
               {isWalker && (
-                <div style={{
-                  background: 'linear-gradient(135deg, #fef3c7, #fde68a)',
-                  borderRadius: '14px',
-                  padding: '20px 24px',
-                  border: '2px solid #f59e0b',
-                  marginBottom: '24px'
-                }}>
-                  <div style={{
-                    fontSize: '16px',
-                    fontWeight: '700',
-                    color: '#92400e',
-                    marginBottom: '14px',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '8px'
-                  }}>
-                    🎁 Walker 加分项
-                    <span style={{
-                      fontSize: '12px',
-                      fontWeight: '500',
-                      color: '#a16207',
-                      background: 'rgba(255,255,255,0.5)',
-                      padding: '2px 8px',
-                      borderRadius: '10px'
-                    }}>专属</span>
+                <section style={{ background: '#fffbeb', border: '1.5px solid #f59e0b', borderRadius: 12, padding: 20, marginBottom: 24 }}>
+                  <div style={{ fontSize: 16, fontWeight: 800, color: '#92400e', marginBottom: 12 }}>Walker 加分项</div>
+                  <textarea value={bonusReason[activeProject.id] || ''} onChange={(event) => setBonusReason((prev) => ({ ...prev, [activeProject.id]: event.target.value }))} placeholder="填写加分原因" rows={2} style={{ width: '100%', boxSizing: 'border-box', padding: 10, border: '1px solid #fbbf24', borderRadius: 8, marginBottom: 10 }} />
+                  <div style={{ display: 'flex', gap: 10 }}>
+                    <input type="number" min="1" max="5" step="1" value={bonusValue[activeProject.id] ?? ''} placeholder="1-5" onChange={(event) => setBonusValue((prev) => ({ ...prev, [activeProject.id]: Math.max(1, Math.min(5, Number(event.target.value) || 1)) }))} style={{ width: 100, padding: 10, border: '1px solid #f59e0b', borderRadius: 8, fontWeight: 800 }} />
+                    <button onClick={handleBonusSave} disabled={saving} style={{ padding: '10px 18px', border: 'none', borderRadius: 8, background: '#f59e0b', color: 'white', fontWeight: 800, cursor: 'pointer' }}>保存加分</button>
                   </div>
-
-                  <div style={{ marginBottom: '12px' }}>
-                    <label style={{ fontSize: '13px', color: '#78350f', fontWeight: '600', display: 'block', marginBottom: '6px' }}>
-                      加分原因
-                    </label>
-                    <textarea
-                      value={bonusReason[activeProject.id] || ''}
-                      onChange={(e) => setBonusReason(prev => ({ ...prev, [activeProject.id]: e.target.value }))}
-                      placeholder="例如：玩法有突破性创新 / 团队执行力强 / 战略价值高..."
-                      rows={2}
-                      style={{
-                        width: '100%',
-                        padding: '10px 12px',
-                        fontSize: '14px',
-                        border: '1.5px solid #fbbf24',
-                        borderRadius: '8px',
-                        resize: 'vertical',
-                        outline: 'none',
-                        background: 'white',
-                        boxSizing: 'border-box'
-                      }}
-                    />
-                  </div>
-
-                  <div style={{ display: 'flex', alignItems: 'flex-end', gap: '12px' }}>
-                    <div style={{ flex: 1 }}>
-                      <label style={{ fontSize: '13px', color: '#78350f', fontWeight: '600', display: 'block', marginBottom: '6px' }}>
-                        加分值（1-5 分）
-                      </label>
-                      <input
-                        type="number"
-                        min="1"
-                        max="5"
-                        step="1"
-                        value={bonusValue[activeProject.id] ?? ''}
-                        placeholder="1-5"
-                        onChange={(e) => {
-                          const v = Math.max(1, Math.min(5, Number(e.target.value) || 1));
-                          setBonusValue(prev => ({ ...prev, [activeProject.id]: v }));
-                        }}
-                        style={{
-                          width: '100%',
-                          padding: '10px 12px',
-                          fontSize: '16px',
-                          fontWeight: '600',
-                          color: '#92400e',
-                          border: '2px solid #f59e0b',
-                          borderRadius: '8px',
-                          textAlign: 'center',
-                          outline: 'none',
-                          boxSizing: 'border-box'
-                        }}
-                      />
-                    </div>
-                    <button
-                      onClick={handleBonusSave}
-                      disabled={saving}
-                      style={{
-                        padding: '10px 24px',
-                        background: '#f59e0b',
-                        color: 'white',
-                        border: 'none',
-                        borderRadius: '8px',
-                        fontSize: '14px',
-                        fontWeight: '700',
-                        cursor: saving ? 'not-allowed' : 'pointer',
-                        opacity: saving ? 0.6 : 1,
-                        whiteSpace: 'nowrap'
-                      }}
-                    >
-                      ✨ 保存加分
-                    </button>
-                  </div>
-
-                  {bonusValue[activeProject.id] && (
-                    <div style={{
-                      marginTop: '12px',
-                      padding: '10px 14px',
-                      background: 'rgba(255,255,255,0.7)',
-                      borderRadius: '8px',
-                      fontSize: '13px',
-                      color: '#78350f',
-                      fontWeight: '600'
-                    }}>
-                      ✨ 当前加分: +{bonusValue[activeProject.id]} 分
-                      {bonusReason[activeProject.id] && `（${bonusReason[activeProject.id].substring(0, 30)}${bonusReason[activeProject.id].length > 30 ? '...' : ''}）`}
-                    </div>
-                  )}
-                </div>
+                </section>
               )}
 
-              {/* 存在问题 / 整改意见 */}
-              <div style={{
-                background: 'white',
-                borderRadius: '14px',
-                padding: '20px 24px',
-                border: '1.5px solid #e2e8f0',
-                marginBottom: '24px'
-              }}>
-                <div style={{
-                  fontSize: '15px',
-                  fontWeight: '700',
-                  color: '#0f172a',
-                  marginBottom: '16px'
-                }}>
-                  📝 评审意见
-                </div>
+              <section style={{ background: 'white', borderRadius: 12, padding: 20, border: '1px solid #e2e8f0' }}>
+                <div style={{ fontSize: 16, fontWeight: 800, color: '#0f172a', marginBottom: 14 }}>评审意见</div>
+                <label style={{ display: 'block', fontSize: 13, color: '#dc2626', fontWeight: 700, marginBottom: 6 }}>存在问题（每行一条）</label>
+                <textarea value={projectProblems[activeProject.id] || ''} onChange={(event) => setProjectProblems((prev) => ({ ...prev, [activeProject.id]: event.target.value }))} rows={4} style={{ width: '100%', boxSizing: 'border-box', padding: 10, border: '1px solid #fecaca', borderRadius: 8, background: '#fef2f2', marginBottom: 14 }} />
+                <label style={{ display: 'block', fontSize: 13, color: '#16a34a', fontWeight: 700, marginBottom: 6 }}>整改意见（每行一条）</label>
+                <textarea value={projectActions[activeProject.id] || ''} onChange={(event) => setProjectActions((prev) => ({ ...prev, [activeProject.id]: event.target.value }))} rows={4} style={{ width: '100%', boxSizing: 'border-box', padding: 10, border: '1px solid #bbf7d0', borderRadius: 8, background: '#f0fdf4', marginBottom: 14 }} />
+                <button onClick={handleProblemsActionsSave} style={{ padding: '9px 18px', border: 'none', borderRadius: 8, background: '#0f172a', color: 'white', fontWeight: 700, cursor: 'pointer' }}>保存评审意见</button>
+              </section>
 
-                <div style={{ marginBottom: '14px' }}>
-                  <label style={{
-                    fontSize: '13px',
-                    color: '#dc2626',
-                    fontWeight: '600',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '6px',
-                    marginBottom: '6px'
-                  }}>
-                    ⚠️ 存在问题
-                    <span style={{ fontSize: '11px', color: '#94a3b8', fontWeight: '400' }}>每行一条</span>
-                  </label>
-                  <textarea
-                    value={projectProblems[activeProject.id] || ''}
-                    onChange={(e) => setProjectProblems(prev => ({ ...prev, [activeProject.id]: e.target.value }))}
-                    placeholder="例如：&#10;核心玩法深度不足&#10;美术风格未统一&#10;商业化路径不清晰"
-                    rows={4}
-                    style={{
-                      width: '100%',
-                      padding: '10px 12px',
-                      fontSize: '13px',
-                      border: '1.5px solid #fecaca',
-                      borderRadius: '8px',
-                      resize: 'vertical',
-                      outline: 'none',
-                      background: '#fef2f2',
-                      boxSizing: 'border-box',
-                      fontFamily: 'inherit'
-                    }}
-                  />
-                </div>
-
-                <div style={{ marginBottom: '14px' }}>
-                  <label style={{
-                    fontSize: '13px',
-                    color: '#16a34a',
-                    fontWeight: '600',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '6px',
-                    marginBottom: '6px'
-                  }}>
-                    ✅ 整改意见
-                    <span style={{ fontSize: '11px', color: '#94a3b8', fontWeight: '400' }}>每行一条</span>
-                  </label>
-                  <textarea
-                    value={projectActions[activeProject.id] || ''}
-                    onChange={(e) => setProjectActions(prev => ({ ...prev, [activeProject.id]: e.target.value }))}
-                    placeholder="例如：&#10;补充可玩性深度规划&#10;统一美术风格定位&#10;制定明确的商业化方案"
-                    rows={4}
-                    style={{
-                      width: '100%',
-                      padding: '10px 12px',
-                      fontSize: '13px',
-                      border: '1.5px solid #bbf7d0',
-                      borderRadius: '8px',
-                      resize: 'vertical',
-                      outline: 'none',
-                      background: '#f0fdf4',
-                      boxSizing: 'border-box',
-                      fontFamily: 'inherit'
-                    }}
-                  />
-                </div>
-
-                <button
-                  onClick={handleProblemsActionsSave}
-                  style={{
-                    padding: '8px 20px',
-                    background: '#0f172a',
-                    color: 'white',
-                    border: 'none',
-                    borderRadius: '8px',
-                    fontSize: '13px',
-                    fontWeight: '600',
-                    cursor: 'pointer'
-                  }}
-                >
-                  💾 保存评审意见
-                </button>
-              </div>
-
-              {message && (
-                <div style={{
-                  marginTop: '20px',
-                  textAlign: 'center',
-                  color: message.startsWith('✓') ? '#10b981' : '#dc2626',
-                  fontSize: '13px',
-                  fontWeight: '600',
-                  padding: '10px',
-                  background: message.startsWith('✓') ? '#f0fdf4' : '#fef2f2',
-                  borderRadius: '8px'
-                }}>
-                  {message}
-                </div>
-              )}
+              {message && <div style={{ marginTop: 18, padding: 10, textAlign: 'center', borderRadius: 8, fontSize: 13, fontWeight: 700, color: message.includes('失败') || message.includes('必须') || message.includes('请') ? '#dc2626' : '#059669', background: message.includes('失败') || message.includes('必须') || message.includes('请') ? '#fef2f2' : '#f0fdf4' }}>{message}</div>}
             </>
           )}
-        </div>
+        </main>
       </div>
     </div>
   );

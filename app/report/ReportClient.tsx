@@ -170,7 +170,7 @@ export default function ReportClient() {
                       fontSize: '12px',
                       fontWeight: '600'
                     }}>
-                      {d.name}（满分 {d.maxScore / d.reviewerCount}）
+                      {d.name}（满分 {d.maxScore}）
                     </span>
                   ))}
                 </div>
@@ -183,9 +183,9 @@ export default function ReportClient() {
                   color: '#0369a1'
                 }}>
                   <div><strong>计算公式：</strong></div>
-                  <div>维度得分 = AVG(所有评委该维度打分)</div>
-                  <div>基础总分 = Σ 各维度得分</div>
-                  <div>最终总分 = 基础总分 + Walker 加分</div>
+                  <div>打分型维度 = 子项 0-10 分均值 × 权重（3/2/1.5/1.5）</div>
+                  <div>创新性 = 评委选择 4/6/10/14/20 档，汇总取中位档</div>
+                  <div>项目总分 = 五个维度换算分相加，含加分时总分封顶 100</div>
                 </div>
               </div>
             )}
@@ -325,7 +325,7 @@ export default function ReportClient() {
             {allDimNames.map((dim: string) => {
               const color = getColor(dim);
               const dc = dimConfig?.find((d: any) => d.name === dim);
-              const maxForDim = dc ? dc.maxScore / dc.reviewerCount : 20;
+              const maxForDim = dc ? dc.maxScore : 20;
 
               return (
                 <div key={dim} style={{

@@ -229,7 +229,7 @@ export default function AdminPage() {
     if (!activeMeeting || summaryProjects.length === 0) return;
     const dims = ['可玩性', '创新性', '项目规划', '技术&美术', '风险性'];
     const lines: string[] = [];
-    lines.push(['编号', '项目名', '提报人', ...dims, '基础分(均值)', '加分', '总分', '完成度', '问题', '意见'].join(','));
+    lines.push(['编号', '项目名', '提报人', ...dims, '基础分(换算)', '加分', '总分', '完成度', '问题', '意见'].join(','));
     summaryProjects.forEach(p => {
       // 汇总所有评委的 problems 和 actions
       const allProblems = (p.reviewerProblems || []).flatMap(rp => rp.problems);
