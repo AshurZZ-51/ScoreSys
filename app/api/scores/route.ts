@@ -57,12 +57,22 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '已超过打分截止日期' }, { status: 403 });
     }
 
+    const { data: reviewerInfo } = await supabaseAdmin
+      .from('reviewers')
+      .select('is_admin')
+      .eq('code', reviewer_code)
+      .single();
+
     if (dim_name === '__bonus__') {
       if (reviewer_code.toUpperCase() !== 'W') {
         return NextResponse.json({ error: '只有 Walker 可以使用加分项' }, { status: 403 });
       }
-    } else if (dim_name === '__problems__' || dim_name === '__actions__' || dim_name === '__verdict__') {
-      // Text-only review fields and admin verdict reuse the score table.
+    } else if (dim_name === '__verdict__') {
+      if (reviewer_code.toUpperCase() !== 'W' && !reviewerInfo?.is_admin) {
+        return NextResponse.json({ error: '只有 Walker 或管理员可以设置评审结论' }, { status: 403 });
+      }
+    } else if (dim_name === '__problems__' || dim_name === '__actions__') {
+      // Text-only review fields reuse the score table.
     } else {
       const parsed = parseScoreKey(dim_name);
       const parentDimension = parsed?.dimensionName || dim_name;
@@ -70,8 +80,8 @@ export async function POST(request: NextRequest) {
         .from('reviewer_dims')
         .select('max_score')
         .eq('reviewer_code', reviewer_code)
-        .eq('dim_name', parentDimension)
-        .single();
+        .in('dim_name', parentDimension === '风险评估' ? [parentDimension, '风险性'] : [parentDimension])
+        .maybeSingle();
 
       if (!reviewerDim) {
         return NextResponse.json({ error: '您没有该维度的评分权限' }, { status: 403 });

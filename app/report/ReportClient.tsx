@@ -11,11 +11,16 @@ export default function ReportClient() {
   const [showMethod, setShowMethod] = useState(false);
 
   useEffect(() => {
-    if (meetingId) {
-      fetch(`/api/summary?meetingId=${meetingId}`, { cache: 'no-store' })
+    const loadReport = () => {
+      fetch(`/api/summary?meetingId=${meetingId}&_=${Date.now()}`, { cache: 'no-store' })
         .then(r => r.json())
         .then(d => { setData(d); setLoading(false); })
         .catch(() => setLoading(false));
+    };
+    if (meetingId) {
+      loadReport();
+      const id = setInterval(loadReport, 5000);
+      return () => clearInterval(id);
     }
   }, [meetingId]);
 

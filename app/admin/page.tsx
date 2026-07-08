@@ -57,6 +57,12 @@ interface SummaryProject {
   verdict: string | null;
 }
 
+interface DimConfig {
+  name: string;
+  maxScore: number;
+  type: string;
+}
+
 export default function AdminPage() {
   const router = useRouter();
   const [reviewer, setReviewer] = useState<any>(null);
@@ -66,6 +72,7 @@ export default function AdminPage() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [summaryProjects, setSummaryProjects] = useState<SummaryProject[]>([]);
   const [reviewers, setReviewers] = useState<ReviewerStat[]>([]);
+  const [dimConfig, setDimConfig] = useState<DimConfig[]>([]);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState('');
   const [showNewMeeting, setShowNewMeeting] = useState(false);
@@ -99,8 +106,8 @@ export default function AdminPage() {
     }
   };
 
-  const loadData = async (meetingId: string) => {
-    setLoading(true);
+  const loadData = async (meetingId: string, silent = false) => {
+    if (!silent) setLoading(true);
     try {
       // 加载项目（管理员看所有）
       const projRes = await fetch(`/api/projects?meetingId=${meetingId}&role=admin`, { cache: 'no-store' });
@@ -112,12 +119,19 @@ export default function AdminPage() {
       const sumData = await sumRes.json();
       setSummaryProjects(sumData.projects || []);
       setReviewers(sumData.reviewers || []);
+      setDimConfig(sumData.dimConfig || []);
     } catch (err) {
       console.error('loadData error:', err);
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   };
+
+  useEffect(() => {
+    if (!activeMeeting || showTrash || showNewMeeting || editingProject) return;
+    const id = setInterval(() => loadData(activeMeeting.id, true), 4000);
+    return () => clearInterval(id);
+  }, [activeMeeting?.id, showTrash, showNewMeeting, editingProject]);
 
   const switchMeeting = (m: Meeting) => {
     setActiveMeeting(m);
@@ -227,9 +241,9 @@ export default function AdminPage() {
 
   const exportCSV = () => {
     if (!activeMeeting || summaryProjects.length === 0) return;
-    const dims = ['可玩性', '创新性', '项目规划', '技术&美术', '风险性'];
+    const exportDims = dimConfig.map(d => d.name);
     const lines: string[] = [];
-    lines.push(['编号', '项目名', '提报人', ...dims, '基础分(换算)', '加分', '总分', '完成度', '问题', '意见'].join(','));
+    lines.push(['编号', '项目名', '提报人', ...exportDims, '基础分(换算)', '加分', '总分', '完成度', '问题', '意见'].join(','));
     summaryProjects.forEach(p => {
       // 汇总所有评委的 problems 和 actions
       const allProblems = (p.reviewerProblems || []).flatMap(rp => rp.problems);
@@ -238,7 +252,7 @@ export default function AdminPage() {
         p.seq_no,
         p.name,
         p.submitter,
-        ...dims.map(d => p.dimTotals[d]?.avg?.toFixed(1) ?? ''),
+        ...exportDims.map(d => p.dimTotals[d]?.avg?.toFixed(1) ?? ''),
         p.baseScore,
         p.bonusScore || 0,
         p.totalScore,
@@ -520,7 +534,7 @@ export default function AdminPage() {
                             <td style={{ padding: '12px 10px', fontSize: '14px', color: '#64748b' }}>{p.seq_no}</td>
                             <td style={{ padding: '12px 10px', fontSize: '14px', fontWeight: '600', color: '#0f172a' }}>{p.name}</td>
                             <td style={{ padding: '12px 10px', fontSize: '13px', color: '#64748b' }}>{p.submitter}</td>
-                            {['可玩性', '创新性', '项目规划', '技术&美术', '风险性'].map(d => (
+                            {dimConfig.map(d => d.name).map(d => (
                               <td key={d} style={{ padding: '12px 10px', textAlign: 'center', fontSize: '13px', color: '#475569' }}>
                                 {p.dimTotals[d] ? p.dimTotals[d].avg.toFixed(1) : '-'}
                               </td>
@@ -563,6 +577,7 @@ export default function AdminPage() {
                     key={p.id}
                     project={p}
                     meetingId={activeMeeting!.id}
+                    onSaved={() => loadData(activeMeeting!.id, true)}
                   />
                 ))}
               </div>
@@ -790,7 +805,7 @@ function NewMeetingModal({ meetings, onClose, onSuccess }: any) {
   );
 }
 
-function ProjectDetailCard({ project, meetingId }: { project: SummaryProject; meetingId: string }) {
+function ProjectDetailCard({ project, meetingId, onSaved }: { project: SummaryProject; meetingId: string; onSaved?: () => void }) {
   const [expanded, setExpanded] = useState(false);
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState('');
@@ -839,6 +854,37 @@ function ProjectDetailCard({ project, meetingId }: { project: SummaryProject; me
     setSaving(false);
   };
 
+  const confirmVerdict = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
+    setSaving(true);
+    setMsg('');
+    try {
+      const stored = localStorage.getItem('reviewer');
+      const admin = stored ? JSON.parse(stored) : null;
+      const code = admin?.code || 'admin';
+      const res = await fetch('/api/scores', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          meeting_id: meetingId, project_id: project.id, reviewer_code: code,
+          dim_name: '__verdict__', score: 0, comment: localVerdict
+        })
+      });
+      if (res.ok) {
+        setMsg('已确认');
+        onSaved?.();
+        setTimeout(() => setMsg(''), 1500);
+      } else {
+        const d = await res.json();
+        setMsg('保存失败：' + d.error);
+      }
+    } catch (e: any) {
+      setMsg('保存失败：' + e.message);
+    }
+    setSaving(false);
+  };
+
   const allProblems: { reviewer: string; text: string }[] = [];
   (project.reviewerProblems || []).forEach(rp => rp.problems.forEach(t => allProblems.push({ reviewer: rp.reviewer_name, text: t })));
   const allActions: { reviewer: string; text: string }[] = [];
@@ -880,7 +926,7 @@ function ProjectDetailCard({ project, meetingId }: { project: SummaryProject; me
               {verdictOptions.map(opt => {
                 const isActive = localVerdict === opt.value;
                 return (
-                  <button type="button" key={opt.value} onClick={(e) => saveVerdict(e, opt.value)} disabled={saving} style={{
+                  <button type="button" key={opt.value} onClick={(e) => { e.stopPropagation(); e.preventDefault(); setLocalVerdict(localVerdict === opt.value ? null : opt.value); }} disabled={saving} style={{
                     padding: '8px 16px', borderRadius: '8px', fontSize: '13px', fontWeight: '600',
                     cursor: saving ? 'not-allowed' : 'pointer',
                     border: isActive ? `2px solid ${opt.color}` : '2px solid #e2e8f0',
@@ -888,6 +934,7 @@ function ProjectDetailCard({ project, meetingId }: { project: SummaryProject; me
                   }}>{isActive ? '● ' : '○ '}{opt.label}</button>
                 );
               })}
+              <button type="button" onClick={confirmVerdict} disabled={saving} style={{ padding: '8px 16px', borderRadius: '8px', fontSize: '13px', fontWeight: '700', cursor: saving ? 'not-allowed' : 'pointer', border: 'none', background: '#0f172a', color: 'white' }}>确认修改结论</button>
               {msg && <span style={{ fontSize: '12px', color: msg.startsWith('✓') ? '#10b981' : '#ef4444', fontWeight: '600' }}>{msg}</span>}
             </div>
           </div>

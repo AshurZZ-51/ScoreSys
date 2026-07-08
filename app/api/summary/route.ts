@@ -5,6 +5,7 @@ import {
   computeProjectScore,
   expectedInputCountForDimension,
   isNormalScoringKey,
+  normalizeDimensionName,
   parseScoreKey
 } from '@/lib/scoringRules';
 
@@ -39,7 +40,10 @@ export async function GET(request: NextRequest) {
     const reviewerDimNames: Record<string, string[]> = {};
     reviewerDims.forEach((rd: any) => {
       if (!reviewerDimNames[rd.reviewer_code]) reviewerDimNames[rd.reviewer_code] = [];
-      reviewerDimNames[rd.reviewer_code].push(rd.dim_name);
+      const dimName = normalizeDimensionName(rd.dim_name);
+      if (!reviewerDimNames[rd.reviewer_code].includes(dimName)) {
+        reviewerDimNames[rd.reviewer_code].push(dimName);
+      }
     });
 
     const dimConfig = SCORING_DIMENSIONS.map((rule: any) => ({
@@ -50,15 +54,22 @@ export async function GET(request: NextRequest) {
       items: rule.items || [],
       levels: rule.levels || [],
       levelLabels: rule.levelLabels || {},
-      reviewerCount: reviewerDims.filter((rd: any) => rd.dim_name === rule.name).length
+      reviewerCount: reviewerDims.filter((rd: any) => normalizeDimensionName(rd.dim_name) === rule.name).length
     }));
 
-    const totalExpectedPerProject = reviewerDims.reduce((sum: number, rd: any) => {
+    const uniqueReviewerDims = Array.from(new Map(
+      reviewerDims.map((rd: any) => [`${rd.reviewer_code}:${normalizeDimensionName(rd.dim_name)}`, {
+        ...rd,
+        dim_name: normalizeDimensionName(rd.dim_name)
+      }])
+    ).values());
+
+    const totalExpectedPerProject = uniqueReviewerDims.reduce((sum: number, rd: any) => {
       return sum + expectedInputCountForDimension(rd.dim_name);
     }, 0);
 
     const expectedByReviewer: Record<string, number> = {};
-    reviewerDims.forEach((rd: any) => {
+    uniqueReviewerDims.forEach((rd: any) => {
       expectedByReviewer[rd.reviewer_code] = (expectedByReviewer[rd.reviewer_code] || 0) + expectedInputCountForDimension(rd.dim_name);
     });
 
@@ -73,11 +84,15 @@ export async function GET(request: NextRequest) {
       const reviewerActions: { reviewer_code: string; reviewer_name: string; actions: string[] }[] = [];
       let verdict: string | null = null;
 
+      const verdictScores = projectScores
+        .filter((s: any) => s.dim_name === '__verdict__')
+        .sort((a: any, b: any) => new Date(b.updated_at || 0).getTime() - new Date(a.updated_at || 0).getTime());
+      const adminVerdict = verdictScores.find((s: any) => reviewers.find((r: any) => r.code === s.reviewer_code)?.is_admin);
+      const walkerVerdict = verdictScores.find((s: any) => s.reviewer_code?.toUpperCase() === 'W');
+      verdict = (adminVerdict || walkerVerdict || verdictScores[0])?.comment || null;
+
       projectScores.forEach((s: any) => {
-        if (s.dim_name === '__verdict__') {
-          verdict = s.comment || null;
-          return;
-        }
+        if (s.dim_name === '__verdict__') return;
         if (s.dim_name === '__bonus__') {
           bonusScore += Number(s.score);
           bonusDetails.push({ reviewer: s.reviewer_code, value: Number(s.score), reason: s.comment || '' });

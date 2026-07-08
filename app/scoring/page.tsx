@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { DIMENSION_BY_NAME, SCORING_DIMENSIONS, scoreKey } from '@/lib/scoringRules';
 
@@ -44,18 +44,22 @@ export default function ScoringPage() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [activeProject, setActiveProject] = useState<Project | null>(null);
   const [scores, setScores] = useState<Record<string, Record<string, number>>>({});
+  const [scoreDrafts, setScoreDrafts] = useState<Record<string, Record<string, string>>>({});
   const [projectProblems, setProjectProblems] = useState<Record<string, string>>({});
   const [projectActions, setProjectActions] = useState<Record<string, string>>({});
+  const [projectVerdicts, setProjectVerdicts] = useState<Record<string, string | null>>({});
   const [bonusReason, setBonusReason] = useState<Record<string, string>>({});
-  const [bonusValue, setBonusValue] = useState<Record<string, number>>({});
+  const [bonusValue, setBonusValue] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState('');
+  const saveTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  const saveVersions = useRef<Record<string, number>>({});
 
   const isWalker = reviewer?.code?.toUpperCase() === 'W';
   const reviewerRules = useMemo(() => {
     if (!reviewer) return [];
-    const names = new Set(reviewer.dimensions.map((dim) => dim.dim_name));
+    const names = new Set(reviewer.dimensions.map((dim) => DIMENSION_BY_NAME[dim.dim_name] ? dim.dim_name : (dim.dim_name === '风险性' ? '风险评估' : dim.dim_name)));
     return SCORING_DIMENSIONS.filter((rule: any) => names.has(rule.name));
   }, [reviewer]);
 
@@ -107,28 +111,36 @@ export default function ScoringPage() {
     const res = await fetch(`/api/scores?meetingId=${meetingId}&reviewerCode=${r.code}`, { cache: 'no-store' });
     const data = await res.json();
     const scoreMap: Record<string, Record<string, number>> = {};
+    const scoreDraftMap: Record<string, Record<string, string>> = {};
     const probMap: Record<string, string> = {};
     const actMap: Record<string, string> = {};
+    const verdictMap: Record<string, string | null> = {};
     const bonusReasonMap: Record<string, string> = {};
-    const bonusValueMap: Record<string, number> = {};
+    const bonusValueMap: Record<string, string> = {};
 
     (data.scores || []).forEach((s: Score) => {
       if (s.dim_name === '__bonus__') {
-        bonusValueMap[s.project_id] = Number(s.score);
+        bonusValueMap[s.project_id] = String(Number(s.score));
         bonusReasonMap[s.project_id] = s.comment || '';
       } else if (s.dim_name === '__problems__') {
         probMap[s.project_id] = s.comment || '';
       } else if (s.dim_name === '__actions__') {
         actMap[s.project_id] = s.comment || '';
+      } else if (s.dim_name === '__verdict__') {
+        verdictMap[s.project_id] = s.comment || null;
       } else {
         if (!scoreMap[s.project_id]) scoreMap[s.project_id] = {};
+        if (!scoreDraftMap[s.project_id]) scoreDraftMap[s.project_id] = {};
         scoreMap[s.project_id][s.dim_name] = Number(s.score);
+        scoreDraftMap[s.project_id][s.dim_name] = String(Number(s.score));
       }
     });
 
     setScores(scoreMap);
+    setScoreDrafts(scoreDraftMap);
     setProjectProblems(probMap);
     setProjectActions(actMap);
+    setProjectVerdicts(verdictMap);
     setBonusReason(bonusReasonMap);
     setBonusValue(bonusValueMap);
   };
@@ -138,7 +150,7 @@ export default function ScoringPage() {
     setTimeout(() => setMessage(''), 1800);
   };
 
-  const handleScoreChange = async (dimName: string, value: number, comment?: string | null) => {
+  const legacyHandleScoreChange = async (dimName: string, value: number, comment?: string | null) => {
     if (!activeMeeting || !activeProject || !reviewer || Number.isNaN(value)) return;
     setSaving(true);
     setMessage('');
@@ -172,10 +184,93 @@ export default function ScoringPage() {
     }
   };
 
-  const handleBonusSave = async () => {
+  const persistScore = async (projectId: string, dimName: string, value: number, comment?: string | null) => {
+    if (!activeMeeting || !reviewer || Number.isNaN(value)) return;
+    const saveKey = `${projectId}:${dimName}`;
+    const version = (saveVersions.current[saveKey] || 0) + 1;
+    saveVersions.current[saveKey] = version;
+    setSaving(true);
+    setMessage('');
+    try {
+      const res = await fetch('/api/scores', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          meeting_id: activeMeeting.id,
+          project_id: projectId,
+          reviewer_code: reviewer.code,
+          dim_name: dimName,
+          score: value,
+          comment: comment || null
+        })
+      });
+      const data = await res.json();
+      if (saveVersions.current[saveKey] !== version) return;
+      if (!res.ok) showMessage(data.error || '保存失败');
+      else showMessage('已保存');
+    } catch (err: any) {
+      if (saveVersions.current[saveKey] === version) showMessage(err.message);
+    } finally {
+      if (saveVersions.current[saveKey] === version) setSaving(false);
+    }
+  };
+
+  const schedulePersistScore = (projectId: string, dimName: string, value: number, comment?: string | null, delay = 450) => {
+    const saveKey = `${projectId}:${dimName}`;
+    if (saveTimers.current[saveKey]) clearTimeout(saveTimers.current[saveKey]);
+    saveTimers.current[saveKey] = setTimeout(() => {
+      persistScore(projectId, dimName, value, comment);
+    }, delay);
+  };
+
+  const setLocalScore = (projectId: string, dimName: string, value: number) => {
+    setScores((prev) => ({
+      ...prev,
+      [projectId]: { ...prev[projectId], [dimName]: value }
+    }));
+    setScoreDrafts((prev) => ({
+      ...prev,
+      [projectId]: { ...prev[projectId], [dimName]: String(value) }
+    }));
+  };
+
+  const handleScoreChange = (dimName: string, value: number, comment?: string | null, immediate = false) => {
+    if (!activeProject || Number.isNaN(value)) return;
+    setLocalScore(activeProject.id, dimName, value);
+    schedulePersistScore(activeProject.id, dimName, value, comment, immediate ? 0 : 450);
+  };
+
+  const handleNumericDraftChange = (dimName: string, raw: string) => {
+    if (!activeProject) return;
+    const projectId = activeProject.id;
+    setScoreDrafts((prev) => ({
+      ...prev,
+      [projectId]: { ...prev[projectId], [dimName]: raw }
+    }));
+    if (raw === '') return;
+    const value = Math.max(0, Math.min(10, Number(raw)));
+    if (Number.isNaN(value)) return;
+    setScores((prev) => ({
+      ...prev,
+      [projectId]: { ...prev[projectId], [dimName]: value }
+    }));
+    schedulePersistScore(projectId, dimName, value);
+  };
+
+  const commitNumericDraft = (dimName: string) => {
+    if (!activeProject) return;
+    const projectId = activeProject.id;
+    const raw = scoreDrafts[projectId]?.[dimName] ?? '';
+    const value = raw === '' ? 0 : Math.max(0, Math.min(10, Number(raw)));
+    if (Number.isNaN(value)) return;
+    setLocalScore(projectId, dimName, value);
+    schedulePersistScore(projectId, dimName, value, null, 0);
+  };
+
+  const legacyHandleBonusSave = async () => {
     if (!activeProject) return;
     const reason = (bonusReason[activeProject.id] || '').trim();
-    const value = bonusValue[activeProject.id];
+    const value = Number(bonusValue[activeProject.id]);
     if (!value || value < 1 || value > 5) {
       showMessage('加分值必须在 1-5 之间');
       return;
@@ -185,6 +280,23 @@ export default function ScoringPage() {
       return;
     }
     await handleScoreChange('__bonus__', value, reason);
+  };
+
+  const handleBonusSave = async () => {
+    if (!activeProject) return;
+    const reason = (bonusReason[activeProject.id] || '').trim();
+    const rawValue = bonusValue[activeProject.id] ?? '';
+    const value = rawValue === '' ? 0 : Math.max(0, Math.min(5, Number(rawValue)));
+    if (Number.isNaN(value)) {
+      showMessage('加分值必须是 0-5');
+      return;
+    }
+    if (value > 0 && !reason) {
+      showMessage('请填写加分原因');
+      return;
+    }
+    setBonusValue((prev) => ({ ...prev, [activeProject.id]: String(value) }));
+    await persistScore(activeProject.id, '__bonus__', value, reason);
   };
 
   const handleProblemsActionsSave = async () => {
@@ -213,6 +325,17 @@ export default function ScoringPage() {
 
     if (problemsRes.ok && actionsRes.ok) showMessage('评审意见已保存');
     else showMessage('评审意见保存失败');
+  };
+
+  const persistTextField = (projectId: string, dimName: '__problems__' | '__actions__', comment: string, delay = 650) => {
+    schedulePersistScore(projectId, dimName, 0, comment.trim() || null, delay);
+  };
+
+  const handleVerdictChange = (value: string) => {
+    if (!activeProject) return;
+    const next = projectVerdicts[activeProject.id] === value ? null : value;
+    setProjectVerdicts((prev) => ({ ...prev, [activeProject.id]: next }));
+    schedulePersistScore(activeProject.id, '__verdict__', 0, next, 0);
   };
 
   const getExpectedCount = () => reviewerRules.reduce((sum: number, rule: any) => {
@@ -246,8 +369,10 @@ export default function ScoringPage() {
               if (!meeting) return;
               setActiveMeeting(meeting);
               setScores({});
+              setScoreDrafts({});
               setProjectProblems({});
               setProjectActions({});
+              setProjectVerdicts({});
               setBonusReason({});
               setBonusValue({});
               loadProjects(meeting.id);
@@ -331,8 +456,8 @@ export default function ScoringPage() {
                                   <span style={{ fontSize: 12, color: '#64748b' }}>{current ?? '-'} / 10</span>
                                 </div>
                                 <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
-                                  <input type="range" min="0" max="10" step="1" value={current ?? 0} onChange={(event) => handleScoreChange(key, Number(event.target.value))} style={{ flex: 1, accentColor: '#3b82f6' }} />
-                                  <input type="number" min="0" max="10" step="1" value={current ?? ''} placeholder="0" onChange={(event) => handleScoreChange(key, Math.max(0, Math.min(10, Number(event.target.value) || 0)))} style={{ width: 70, padding: '8px 10px', fontSize: 16, fontWeight: 800, border: '1.5px solid #cbd5e1', borderRadius: 8, textAlign: 'center' }} />
+                                  <input type="range" min="0" max="10" step="1" value={current ?? 0} onChange={(event) => handleScoreChange(key, Number(event.target.value))} onMouseUp={() => commitNumericDraft(key)} onTouchEnd={() => commitNumericDraft(key)} style={{ flex: 1, accentColor: '#3b82f6' }} />
+                                  <input type="number" min="0" max="10" step="1" value={scoreDrafts[activeProject.id]?.[key] ?? ''} placeholder="0" onChange={(event) => handleNumericDraftChange(key, event.target.value)} onBlur={() => commitNumericDraft(key)} style={{ width: 70, padding: '8px 10px', fontSize: 16, fontWeight: 800, border: '1.5px solid #cbd5e1', borderRadius: 8, textAlign: 'center' }} />
                                 </div>
                               </div>
                             );
@@ -349,7 +474,7 @@ export default function ScoringPage() {
                   <div style={{ fontSize: 16, fontWeight: 800, color: '#92400e', marginBottom: 12 }}>Walker 加分项</div>
                   <textarea value={bonusReason[activeProject.id] || ''} onChange={(event) => setBonusReason((prev) => ({ ...prev, [activeProject.id]: event.target.value }))} placeholder="填写加分原因" rows={2} style={{ width: '100%', boxSizing: 'border-box', padding: 10, border: '1px solid #fbbf24', borderRadius: 8, marginBottom: 10 }} />
                   <div style={{ display: 'flex', gap: 10 }}>
-                    <input type="number" min="1" max="5" step="1" value={bonusValue[activeProject.id] ?? ''} placeholder="1-5" onChange={(event) => setBonusValue((prev) => ({ ...prev, [activeProject.id]: Math.max(1, Math.min(5, Number(event.target.value) || 1)) }))} style={{ width: 100, padding: 10, border: '1px solid #f59e0b', borderRadius: 8, fontWeight: 800 }} />
+                    <input type="number" min="0" max="5" step="1" value={bonusValue[activeProject.id] ?? ''} placeholder="0-5" onChange={(event) => setBonusValue((prev) => ({ ...prev, [activeProject.id]: event.target.value }))} onBlur={handleBonusSave} style={{ width: 100, padding: 10, border: '1px solid #f59e0b', borderRadius: 8, fontWeight: 800 }} />
                     <button onClick={handleBonusSave} disabled={saving} style={{ padding: '10px 18px', border: 'none', borderRadius: 8, background: '#f59e0b', color: 'white', fontWeight: 800, cursor: 'pointer' }}>保存加分</button>
                   </div>
                 </section>
@@ -358,13 +483,32 @@ export default function ScoringPage() {
               <section style={{ background: 'white', borderRadius: 12, padding: 20, border: '1px solid #e2e8f0' }}>
                 <div style={{ fontSize: 16, fontWeight: 800, color: '#0f172a', marginBottom: 14 }}>评审意见</div>
                 <label style={{ display: 'block', fontSize: 13, color: '#dc2626', fontWeight: 700, marginBottom: 6 }}>存在问题（每行一条）</label>
-                <textarea value={projectProblems[activeProject.id] || ''} onChange={(event) => setProjectProblems((prev) => ({ ...prev, [activeProject.id]: event.target.value }))} rows={4} style={{ width: '100%', boxSizing: 'border-box', padding: 10, border: '1px solid #fecaca', borderRadius: 8, background: '#fef2f2', marginBottom: 14 }} />
+                <textarea value={projectProblems[activeProject.id] || ''} onChange={(event) => { const value = event.target.value; setProjectProblems((prev) => ({ ...prev, [activeProject.id]: value })); persistTextField(activeProject.id, '__problems__', value); }} onBlur={() => persistTextField(activeProject.id, '__problems__', projectProblems[activeProject.id] || '', 0)} rows={4} style={{ width: '100%', boxSizing: 'border-box', padding: 10, border: '1px solid #fecaca', borderRadius: 8, background: '#fef2f2', marginBottom: 14 }} />
                 <label style={{ display: 'block', fontSize: 13, color: '#16a34a', fontWeight: 700, marginBottom: 6 }}>整改意见（每行一条）</label>
-                <textarea value={projectActions[activeProject.id] || ''} onChange={(event) => setProjectActions((prev) => ({ ...prev, [activeProject.id]: event.target.value }))} rows={4} style={{ width: '100%', boxSizing: 'border-box', padding: 10, border: '1px solid #bbf7d0', borderRadius: 8, background: '#f0fdf4', marginBottom: 14 }} />
+                <textarea value={projectActions[activeProject.id] || ''} onChange={(event) => { const value = event.target.value; setProjectActions((prev) => ({ ...prev, [activeProject.id]: value })); persistTextField(activeProject.id, '__actions__', value); }} onBlur={() => persistTextField(activeProject.id, '__actions__', projectActions[activeProject.id] || '', 0)} rows={4} style={{ width: '100%', boxSizing: 'border-box', padding: 10, border: '1px solid #bbf7d0', borderRadius: 8, background: '#f0fdf4', marginBottom: 14 }} />
                 <button onClick={handleProblemsActionsSave} style={{ padding: '9px 18px', border: 'none', borderRadius: 8, background: '#0f172a', color: 'white', fontWeight: 700, cursor: 'pointer' }}>保存评审意见</button>
               </section>
 
               {message && <div style={{ marginTop: 18, padding: 10, textAlign: 'center', borderRadius: 8, fontSize: 13, fontWeight: 700, color: message.includes('失败') || message.includes('必须') || message.includes('请') ? '#dc2626' : '#059669', background: message.includes('失败') || message.includes('必须') || message.includes('请') ? '#fef2f2' : '#f0fdf4' }}>{message}</div>}
+              {isWalker && (
+                <section style={{ background: 'white', borderRadius: 12, padding: 20, border: '1.5px solid #8b5cf6', marginTop: 24 }}>
+                  <div style={{ fontSize: 16, fontWeight: 800, color: '#5b21b6', marginBottom: 12 }}>Walker 评审结论</div>
+                  <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                    {[
+                      { value: 'approved', label: '评审通过', color: '#10b981', bg: '#d1fae5' },
+                      { value: 'needs_rework', label: '待修改', color: '#f59e0b', bg: '#fef3c7' },
+                      { value: 'needs_review', label: '待重评', color: '#ef4444', bg: '#fee2e2' }
+                    ].map((option) => {
+                      const selected = projectVerdicts[activeProject.id] === option.value;
+                      return (
+                        <button key={option.value} onClick={() => handleVerdictChange(option.value)} style={{ padding: '10px 16px', borderRadius: 8, border: selected ? `2px solid ${option.color}` : '1px solid #e2e8f0', background: selected ? option.bg : 'white', color: selected ? option.color : '#475569', fontWeight: 800, cursor: 'pointer' }}>
+                          {option.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </section>
+              )}
             </>
           )}
         </main>
