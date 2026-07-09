@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase';
+import { getMissingTemplateProjects } from '@/lib/projectSlots';
 
 export const dynamic = 'force-dynamic';
 
@@ -11,6 +12,17 @@ export async function GET(request: NextRequest) {
 
     if (!meetingId) {
       return NextResponse.json({ error: 'meetingId 必填' }, { status: 400 });
+    }
+
+    const { data: existingProjects, error: existingError } = await supabaseAdmin
+      .from('projects')
+      .select('seq_no')
+      .eq('meeting_id', meetingId);
+    if (existingError) throw existingError;
+    const missingProjects = getMissingTemplateProjects(existingProjects || [], meetingId);
+    if (missingProjects.length > 0) {
+      const { error: insertError } = await supabaseAdmin.from('projects').insert(missingProjects);
+      if (insertError) throw insertError;
     }
 
     let query = supabaseAdmin

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase';
+import { getMissingTemplateProjects } from '@/lib/projectSlots';
 import {
   SCORING_DIMENSIONS,
   computeProjectScore,
@@ -20,6 +21,17 @@ export async function GET(request: NextRequest) {
 
     if (!meetingId) {
       return NextResponse.json({ error: 'meetingId 必填' }, { status: 400 });
+    }
+
+    const { data: existingProjects, error: existingProjectsError } = await supabaseAdmin
+      .from('projects')
+      .select('seq_no')
+      .eq('meeting_id', meetingId);
+    if (existingProjectsError) throw existingProjectsError;
+    const missingProjects = getMissingTemplateProjects(existingProjects || [], meetingId);
+    if (missingProjects.length > 0) {
+      const { error: insertMissingError } = await supabaseAdmin.from('projects').insert(missingProjects);
+      if (insertMissingError) throw insertMissingError;
     }
 
     const [meetingRes, projectsRes, scoresRes, reviewersRes, reviewerDimsRes] = await Promise.all([

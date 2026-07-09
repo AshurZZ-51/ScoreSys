@@ -1013,7 +1013,20 @@ function EditProjectModal({ project, onClose, onSuccess }: any) {
   const handleDelete = async () => {
     if (!confirm(`确定要删除「${project.name || '项目'+project.seq_no}」吗？\n\n将清空项目名和提报人，评委无法再看到此项目。`)) return;
     setLoading(true);
-    const res = await fetch(`/api/projects?id=${project.id}`, { method: 'DELETE' });
+    const res = await fetch('/api/projects', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        id: project.id,
+        name: '',
+        submitter: '',
+        description: '',
+        is_template: true,
+        is_pending: false,
+        problems: [],
+        actions: []
+      })
+    });
     const data = await res.json();
     if (data.success) onSuccess();
     setLoading(false);
