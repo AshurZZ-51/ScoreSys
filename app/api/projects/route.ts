@@ -3,6 +3,7 @@ import { supabaseAdmin } from '@/lib/supabase';
 import { getMissingTemplateProjects } from '@/lib/projectSlots';
 
 export const dynamic = 'force-dynamic';
+export const revalidate = 0;
 
 export async function GET(request: NextRequest) {
   try {
@@ -42,7 +43,10 @@ export async function GET(request: NextRequest) {
 
     if (error) throw error;
 
-    return NextResponse.json({ projects: projects || [] });
+    return NextResponse.json(
+      { projects: projects || [] },
+      { headers: { 'Cache-Control': 'no-store, max-age=0' } }
+    );
   } catch (err: any) {
     return NextResponse.json(
       { error: '获取项目失败: ' + err.message },

@@ -11,6 +11,7 @@ import {
 } from '@/lib/scoringRules';
 
 export const dynamic = 'force-dynamic';
+export const revalidate = 0;
 
 const SPECIAL_DIMENSIONS = new Set(['__bonus__', '__problems__', '__actions__', '__verdict__']);
 
@@ -44,7 +45,14 @@ export async function GET(request: NextRequest) {
 
     if (meetingRes.error) throw meetingRes.error;
 
-    const projects = projectsRes.data || [];
+    const fetchedProjects = projectsRes.data || [];
+    const summaryMissingProjects = getMissingTemplateProjects(fetchedProjects, meetingId).map((project: any) => ({
+      ...project,
+      id: `missing-slot-${meetingId}-${project.seq_no}`,
+      is_pending: false
+    }));
+    const projects = [...fetchedProjects, ...summaryMissingProjects]
+      .sort((a: any, b: any) => Number(a.seq_no) - Number(b.seq_no));
     const scores = scoresRes.data || [];
     const reviewers = reviewersRes.data || [];
     const reviewerDims = reviewerDimsRes.data || [];
@@ -170,14 +178,17 @@ export async function GET(request: NextRequest) {
       };
     });
 
-    return NextResponse.json({
-      meeting: meetingRes.data,
-      projects: projectsWithScores,
-      scores,
-      reviewers: reviewerStats,
-      dimConfig,
-      totalMaxScore: 100
-    });
+    return NextResponse.json(
+      {
+        meeting: meetingRes.data,
+        projects: projectsWithScores,
+        scores,
+        reviewers: reviewerStats,
+        dimConfig,
+        totalMaxScore: 100
+      },
+      { headers: { 'Cache-Control': 'no-store, max-age=0' } }
+    );
   } catch (err: any) {
     console.error('Get summary error:', err);
     return NextResponse.json({ error: '获取汇总失败: ' + err.message }, { status: 500 });
