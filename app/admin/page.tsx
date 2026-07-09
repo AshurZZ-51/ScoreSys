@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
+import { projectDisplayName, projectDisplaySubmitter, shouldShowProjectSlot } from '@/lib/projectDisplay';
 import { PROJECT_SLOT_COUNT } from '@/lib/projectSlots';
 
 interface Project {
@@ -533,8 +534,8 @@ export default function AdminPage() {
                         return (
                           <tr key={p.id} style={{ borderTop: '1px solid #f1f5f9' }}>
                             <td style={{ padding: '12px 10px', fontSize: '14px', color: '#64748b' }}>{p.seq_no}</td>
-                            <td style={{ padding: '12px 10px', fontSize: '14px', fontWeight: '600', color: '#0f172a' }}>{p.name}</td>
-                            <td style={{ padding: '12px 10px', fontSize: '13px', color: '#64748b' }}>{p.submitter}</td>
+                            <td style={{ padding: '12px 10px', fontSize: '14px', fontWeight: '600', color: p.name ? '#0f172a' : '#94a3b8' }}>{projectDisplayName(p)}</td>
+                            <td style={{ padding: '12px 10px', fontSize: '13px', color: p.submitter ? '#64748b' : '#94a3b8' }}>{projectDisplaySubmitter(p)}</td>
                             {dimConfig.map(d => d.name).map(d => (
                               <td key={d} style={{ padding: '12px 10px', textAlign: 'center', fontSize: '13px', color: '#475569' }}>
                                 {p.dimTotals[d] ? p.dimTotals[d].avg.toFixed(1) : '-'}
@@ -563,7 +564,7 @@ export default function AdminPage() {
             </div>
 
             {/* 项目评审详情（问题/意见/加分/结论） */}
-            {!loading && summaryProjects.filter(p => p.name && p.submitter).length > 0 && (
+            {!loading && summaryProjects.filter(shouldShowProjectSlot).length > 0 && (
               <div style={{
                 background: 'white',
                 borderRadius: '14px',
@@ -573,7 +574,7 @@ export default function AdminPage() {
                 <h2 style={{ margin: '0 0 16px', fontSize: '18px', fontWeight: '700', color: '#0f172a' }}>
                   📋 项目评审详情
                 </h2>
-                {[...summaryProjects].filter(p => p.name && p.submitter).sort((a, b) => a.seq_no - b.seq_no).map(p => (
+                {[...summaryProjects].filter(shouldShowProjectSlot).sort((a, b) => a.seq_no - b.seq_no).map(p => (
                   <ProjectDetailCard
                     key={p.id}
                     project={p}
@@ -902,9 +903,9 @@ function ProjectDetailCard({ project, meetingId, onSaved }: { project: SummaryPr
       }}>
         <div style={{ fontSize: '13px', color: '#94a3b8' }}>{expanded ? '▼' : '▶'}</div>
         <div style={{ flex: 1 }}>
-          <span style={{ fontSize: '14px', fontWeight: '600', color: '#0f172a' }}>#{project.seq_no} {project.name}</span>
+          <span style={{ fontSize: '14px', fontWeight: '600', color: project.name ? '#0f172a' : '#94a3b8' }}>#{project.seq_no} {projectDisplayName(project)}</span>
           <span style={{ fontSize: '12px', color: '#64748b', marginLeft: '8px' }}>
-            {project.submitter} · {project.totalScore.toFixed(1)}分
+            {projectDisplaySubmitter(project)} · {project.totalScore.toFixed(1)}分
             {project.bonusScore > 0 && <span style={{ color: '#f59e0b' }}> (含+{project.bonusScore}加分)</span>}
           </span>
         </div>

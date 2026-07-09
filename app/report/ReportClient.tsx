@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useMemo } from 'react';
 import { useSearchParams } from 'next/navigation';
+import { hasProjectIdentity, projectDisplayName, projectDisplaySubmitter, shouldShowProjectSlot } from '@/lib/projectDisplay';
 
 export default function ReportClient() {
   const params = useSearchParams();
@@ -27,7 +28,7 @@ export default function ReportClient() {
   const rankedProjects = useMemo(() => {
     if (!data) return [];
     return [...data.projects]
-      .filter((p: any) => p.name && p.submitter)
+      .filter(shouldShowProjectSlot)
       .sort((a: any, b: any) => a.seq_no - b.seq_no);
   }, [data]);
 
@@ -41,7 +42,7 @@ export default function ReportClient() {
 
   const { meeting, reviewers, dimConfig, totalMaxScore } = data;
   const nonAdminReviewers = reviewers.filter((r: any) => !r.is_admin);
-  const filledProjects = data.projects.filter((p: any) => p.name && p.submitter);
+  const filledProjects = data.projects.filter(hasProjectIdentity);
   const completedProjects = filledProjects.filter((p: any) => p.completionRate === 100);
   const pendingProjects = data.projects.filter((p: any) => p.is_pending);
 
@@ -225,7 +226,7 @@ export default function ReportClient() {
                     }}>#{p.seq_no}</div>
                     <div style={{ flex: 1 }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                        <span style={{ fontSize: '17px', fontWeight: '700', color: '#0f172a' }}>{p.name}</span>
+                        <span style={{ fontSize: '17px', fontWeight: '700', color: p.name ? '#0f172a' : '#94a3b8' }}>{projectDisplayName(p)}</span>
                         {p.verdict && (() => {
                           const vMap: Record<string, { label: string; color: string; bg: string }> = {
                             approved: { label: '评审通过', color: '#10b981', bg: '#d1fae5' },
@@ -237,7 +238,7 @@ export default function ReportClient() {
                         })()}
                       </div>
                       <div style={{ fontSize: '12px', color: '#64748b', marginTop: '2px' }}>
-                        提报人: {p.submitter}
+                        提报人: {projectDisplaySubmitter(p)}
                         {p.is_pending && <span style={{ color: '#f59e0b', fontWeight: '600' }}> · 待补评</span>}
                       </div>
                     </div>
@@ -367,7 +368,7 @@ export default function ReportClient() {
                           width: '120px', fontSize: '12px', color: '#475569',
                           textAlign: 'right', flexShrink: 0,
                           overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'
-                        }}>{p.name}</div>
+                        }}>{projectDisplayName(p)}</div>
                         <div style={{
                           flex: 1, height: '20px',
                           background: '#e2e8f0',
@@ -483,8 +484,8 @@ export default function ReportClient() {
                     alignItems: 'center'
                   }}>
                     <div>
-                      <div style={{ fontSize: '14px', fontWeight: '600', color: '#92400e' }}>{p.name}</div>
-                      <div style={{ fontSize: '12px', color: '#a16207' }}>提报人: {p.submitter}</div>
+                      <div style={{ fontSize: '14px', fontWeight: '600', color: '#92400e' }}>{projectDisplayName(p)}</div>
+                      <div style={{ fontSize: '12px', color: '#a16207' }}>提报人: {projectDisplaySubmitter(p)}</div>
                     </div>
                     <div style={{
                       background: '#fbbf24',
@@ -547,7 +548,7 @@ export default function ReportClient() {
                           borderRadius: '6px',
                           fontSize: '12px', fontWeight: '700'
                         }}>#{p.seq_no}</span>
-                        {p.name}
+                        {projectDisplayName(p)}
                       </div>
 
                       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px' }}>
@@ -661,7 +662,7 @@ export default function ReportClient() {
                       return (
                         <tr key={p.id} style={{ borderTop: '1px solid #e2e8f0' }}>
                           <td style={{ padding: '10px 12px', color: '#64748b' }}>#{p.seq_no}</td>
-                          <td style={{ padding: '10px 12px', fontWeight: '600', color: '#0f172a' }}>{p.name}</td>
+                          <td style={{ padding: '10px 12px', fontWeight: '600', color: p.name ? '#0f172a' : '#94a3b8' }}>{projectDisplayName(p)}</td>
                           <td style={{ padding: '10px 12px', textAlign: 'center', fontWeight: '700', color: '#1e40af' }}>{p.totalScore.toFixed(1)}</td>
                           <td style={{ padding: '10px 12px', textAlign: 'center' }}>
                             {v ? (
