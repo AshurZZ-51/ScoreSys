@@ -293,7 +293,7 @@ export default function ReportClient() {
                             </div>
                           )}
                           {d && <div style={{ fontSize: '10px', color: '#94a3b8', marginTop: '2px' }}>
-                            {d.percentage}% · {d.count}人评
+                            {d.percentage}%
                           </div>}
                         </div>
                       );

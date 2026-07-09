@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { DIMENSION_BY_NAME, SCORING_DIMENSIONS, scoreKey } from '@/lib/scoringRules';
+import { DIMENSION_BY_NAME, SCORING_DIMENSIONS, computeWeightedBaseScoreFromScoreMap, scoreKey } from '@/lib/scoringRules';
 
 interface Reviewer {
   code: string;
@@ -353,7 +353,7 @@ export default function ScoringPage() {
     return Math.round((filled / expected) * 100);
   };
 
-  const getLocalRawTotal = (projectId: string) => Object.values(scores[projectId] || {}).reduce((sum, value) => sum + value, 0);
+  const getLocalWeightedBaseScore = (projectId: string) => computeWeightedBaseScoreFromScoreMap(scores[projectId] || {});
 
   if (!reviewer) return <div style={{ padding: 40 }}>加载中...</div>;
 
@@ -399,7 +399,7 @@ export default function ScoringPage() {
                   <div style={{ flex: 1, height: 5, background: '#e2e8f0', borderRadius: 3, overflow: 'hidden' }}><div style={{ width: `${completion}%`, height: '100%', background: completion === 100 ? '#10b981' : '#3b82f6' }} /></div>
                   <span style={{ fontSize: 12, fontWeight: 700, color: completion === 100 ? '#10b981' : '#64748b' }}>{completion}%</span>
                 </div>
-                {completion === 100 && <div style={{ marginTop: 6, fontSize: 12, color: '#64748b' }}>已填原始项合计：{getLocalRawTotal(project.id).toFixed(1)}</div>}
+                {completion === 100 && <div style={{ marginTop: 6, fontSize: 12, color: '#64748b' }}>已填五维综合分：{getLocalWeightedBaseScore(project.id).toFixed(1)}/100（不含加分）</div>}
               </button>
             );
           })}
