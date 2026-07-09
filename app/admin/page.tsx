@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
+import { PROJECT_SLOT_COUNT } from '@/lib/projectSlots';
 
 interface Project {
   id: string;
@@ -446,7 +447,7 @@ export default function AdminPage() {
               }}>{message}</div>
             )}
 
-            {/* 项目管理 - 8个模板 */}
+            {/* 项目管理 */}
             <div style={{
               background: 'white',
               borderRadius: '14px',
@@ -454,7 +455,7 @@ export default function AdminPage() {
               marginBottom: '20px'
             }}>
               <h2 style={{ margin: '0 0 16px', fontSize: '18px', fontWeight: '700', color: '#0f172a' }}>
-                📝 项目模板（8个）
+                📝 项目模板（{PROJECT_SLOT_COUNT}个）
               </h2>
               <div style={{ fontSize: '12px', color: '#64748b', marginBottom: '12px' }}>
                 填写项目名和提报人后，评委才能在项目列表中看到。未填的项不会出现在评委页面。
@@ -789,7 +790,7 @@ function NewMeetingModal({ meetings, onClose, onSuccess }: any) {
           </select>
         </div>
         <div style={{ fontSize: '12px', color: '#64748b', background: '#f0f9ff', padding: '10px', borderRadius: '6px', marginBottom: '14px' }}>
-          💡 创建后会自动生成 8 个空模板项目。管理员编辑项目名+提报人后，评委才能在项目列表中看到。
+          💡 创建后会自动生成 {PROJECT_SLOT_COUNT} 个空模板项目。管理员编辑项目名+提报人后，评委才能在项目列表中看到。
         </div>
         {error && <div style={{ color: '#dc2626', fontSize: '13px', marginBottom: '12px' }}>⚠ {error}</div>}
         <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>

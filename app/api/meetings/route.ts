@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase';
+import { PROJECT_SLOT_COUNT, copyProjectsForMeeting, createTemplateProjects } from '@/lib/projectSlots';
 
 export const dynamic = 'force-dynamic';
 
@@ -60,20 +61,8 @@ export async function POST(request: NextRequest) {
 
     if (error) throw error;
 
-    // 自动创建 8 个空模板项目
-    const templateProjects = [];
-    for (let i = 1; i <= 8; i++) {
-      templateProjects.push({
-        meeting_id: meeting.id,
-        seq_no: i,
-        name: '',
-        submitter: '',
-        description: '',
-        is_template: true,
-        problems: [],
-        actions: []
-      });
-    }
+    // 自动创建空模板项目
+    const templateProjects = createTemplateProjects(meeting.id);
     await supabaseAdmin.from('projects').insert(templateProjects);
 
     // 如果指定了复制来源，覆盖模板
@@ -91,17 +80,13 @@ export async function POST(request: NextRequest) {
           .delete()
           .eq('meeting_id', meeting.id);
 
-        // 复制来源（限前8个）
-        const newProjects = sourceProjects.slice(0, 8).map(p => ({
-          ...p,
-          meeting_id: meeting.id,
-          is_template: false
-        }));
+        // 复制来源（限前 PROJECT_SLOT_COUNT 个）
+        const newProjects = copyProjectsForMeeting(sourceProjects, meeting.id);
         await supabaseAdmin.from('projects').insert(newProjects);
       }
     }
 
-    return NextResponse.json({ success: true, meeting });
+    return NextResponse.json({ success: true, meeting, projectSlotCount: PROJECT_SLOT_COUNT });
   } catch (err: any) {
     console.error('Create meeting error:', err);
     return NextResponse.json(
