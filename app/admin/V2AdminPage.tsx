@@ -9,6 +9,7 @@ import ProjectArchivePanel from './components/ProjectArchivePanel';
 import MeetingList from './components/MeetingList';
 import MeetingRecycleBin from './components/MeetingRecycleBin';
 import MeetingWorkspace from './components/MeetingWorkspace';
+import ReportSelector from './components/ReportSelector';
 
 type AnyRecord = Record<string, any>;
 const tabs = [['pending', '待评审项目池'], ['meetings', '评审会管理'], ['reports', '结论与报告'], ['reviewed', '已评审项目池'], ['results', '结果池'], ['archive', '归档与恢复']] as const;
@@ -69,6 +70,10 @@ export default function V2AdminPage() {
     load();
   }, [router]);
 
+  useEffect(() => {
+    if (tab === 'reports' && !selectedMeeting && meetings.length) setSelectedMeeting(meetings[0]);
+  }, [tab, selectedMeeting, meetings]);
+
   const pendingProjects = useMemo(() => projects.filter((project) => !project.latest_verdict && !project.archived_at), [projects]);
   const reviewedProjects = useMemo(() => projects.filter((project) => (project.projects || []).length > 0 && !project.archived_at), [projects]);
   const assignmentsForMeeting = (meetingId: string) => projects.flatMap((project) => project.projects || []).filter((assignment: AnyRecord) => assignment.meeting_id === meetingId).sort((a: AnyRecord, b: AnyRecord) => a.seq_no - b.seq_no);
@@ -124,6 +129,7 @@ export default function V2AdminPage() {
   const openMeeting = (meeting: AnyRecord) => { setSelectedMeeting(meeting); setMeetingView('workspace'); };
 
   return <main style={styles.page}>
+    {tab === 'reports' && <ReportSelector meetings={meetings} selectedId={selectedMeeting?.id} onSelect={setSelectedMeeting} onOpen={(meeting) => window.open(`/report?meetingId=${encodeURIComponent(meeting.id)}&fromAdmin=true`, '_blank', 'noopener,noreferrer')}/>}
     <header style={styles.header}><div><h1 style={styles.h1}>立项评审管理</h1><p style={styles.subtle}>项目池管理项目本身；每次评审会只承载一个轮次的评审记录。</p></div><button style={styles.secondary} onClick={() => { localStorage.removeItem('reviewer'); router.push('/'); }}>退出</button></header>
     <nav style={styles.tabs}>{tabs.map(([id, label]) => <button key={id} style={{ ...styles.tab, ...(tab === id ? styles.tabActive : {}) }} onClick={() => { setTab(id); if (id !== 'reports') setSelectedMeeting(null); }}>{label}</button>)}</nav>
     {notice && <div style={styles.notice}>{notice}</div>}

@@ -128,11 +128,9 @@ export async function GET(request: NextRequest) {
       const getRoundVerdict = (roundId: string) => {
         const dimName = specialScoreKey(roundId, '__verdict__');
         const verdictScores = projectScores
-          .filter((s: any) => s.dim_name === dimName)
+          .filter((s: any) => s.dim_name === dimName && s.reviewer_code?.toUpperCase() === 'W')
           .sort((a: any, b: any) => new Date(b.updated_at || 0).getTime() - new Date(a.updated_at || 0).getTime());
-        const adminVerdict = verdictScores.find((s: any) => reviewers.find((r: any) => r.code === s.reviewer_code)?.is_admin);
-        const walkerVerdict = verdictScores.find((s: any) => s.reviewer_code?.toUpperCase() === 'W');
-        return (adminVerdict || walkerVerdict || verdictScores[0])?.comment || null;
+        return verdictScores[0]?.comment || null;
       };
 
       const roundSummaries: Record<string, any> = {};
@@ -187,11 +185,9 @@ export async function GET(request: NextRequest) {
       });
 
       const verdictScores = projectScores
-        .filter((s: any) => s.dim_name === '__verdict__')
+        .filter((s: any) => stripRoundPrefix(s.dim_name) === '__verdict__' && s.reviewer_code?.toUpperCase() === 'W')
         .sort((a: any, b: any) => new Date(b.updated_at || 0).getTime() - new Date(a.updated_at || 0).getTime());
-      const adminVerdict = verdictScores.find((s: any) => reviewers.find((r: any) => r.code === s.reviewer_code)?.is_admin);
-      const walkerVerdict = verdictScores.find((s: any) => s.reviewer_code?.toUpperCase() === 'W');
-      verdict = (adminVerdict || walkerVerdict || verdictScores[0])?.comment || null;
+      verdict = verdictScores[0]?.comment || null;
 
       const materialStatus = latestSpecialComment('__material_status__') || 'unchecked';
       const materialNote = latestSpecialComment('__material_note__');
@@ -256,6 +252,9 @@ export async function GET(request: NextRequest) {
         completionRate: currentRoundSummary?.completionRate || 0,
         reviewerProblems: currentRoundSummary?.reviewerProblems || reviewerProblems,
         reviewerActions: currentRoundSummary?.reviewerActions || reviewerActions,
+        problemSummary: currentRoundSummary?.problemSummary || '',
+        actionSummary: currentRoundSummary?.actionSummary || '',
+        walkerVerdict: currentRoundSummary?.verdict || verdict,
         verdict: currentRoundSummary?.verdict || verdict
       };
     });
