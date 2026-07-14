@@ -78,7 +78,7 @@ export default function V2AdminPage() {
     {tab === 'reports' && <section><h2 style={{ ...heading, marginTop: 20 }}>结论与报告</h2><p style={{ color: '#627089' }}>选择具体评审会后，报告页会按本轮独立 100 分排序；项目池会同步保留 Walker 结论、问题与改进建议。</p><select style={input} onChange={(e) => e.target.value && router.push(`/report?meetingId=${e.target.value}`)}><option value="">打开一场评审会报告</option>{meetings.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}</select></section>}
     {tab === 'reviewed' && <section><h2 style={{ ...heading, marginTop: 20 }}>已评审项目池 ({reviewed.length})</h2><ProjectTable projects={reviewed} meetings={meetings} onSelect={setSelected} onSchedule={schedule}/></section>}
     {tab === 'results' && <section><h2 style={{ ...heading, marginTop: 20 }}>结果池</h2><div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 12 }}>{['approved', 'recheck', 'rejected'].map((bucket) => <div key={bucket} style={panel}><strong>{({ approved: '通过项目', recheck: '待重评项目', rejected: '驳回项目' } as any)[bucket]}</strong>{projects.filter((p) => p.latest_verdict === bucket).map((p) => <button key={p.id} onClick={() => setSelected(p)} style={{ ...button('#fff', '#334155'), width: '100%', textAlign: 'left', marginTop: 8 }}>{p.name} · {p.status}</button>) || null}</div>)}</div></section>}
-    {selected && <ProjectDrawer project={selected} meetings={meetings} onClose={() => setSelected(null)} onSaveMaterial={saveMaterial} onSchedule={schedule}/>} 
+    {selected && <ProjectDrawer project={selected} meetings={meetings} onClose={() => setSelected(null)} onSaveMaterial={saveMaterial} onSchedule={schedule}/>}
   </main>;
 }
 
