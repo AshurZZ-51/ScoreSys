@@ -133,7 +133,12 @@ export default function V2AdminPage() {
   const showAccountManagement = isLocalSuperAdmin();
 
   return <main style={styles.page}>
-    {tab === 'reports' && <ReportSelector meetings={meetings} selectedId={selectedMeeting?.id} onSelect={setSelectedMeeting} onOpen={(meeting) => window.open(`/report?meetingId=${encodeURIComponent(meeting.id)}&fromAdmin=true`, '_blank', 'noopener,noreferrer')}/>}
+    {tab === 'reports' && <ReportSelector
+      meetings={meetings as Array<{ id: string; name: string; meeting_date?: string; is_current?: boolean }>}
+      selectedId={selectedMeeting?.id}
+      onSelect={(meeting) => setSelectedMeeting(meeting as AnyRecord)}
+      onOpen={(meeting) => window.open(`/report?meetingId=${encodeURIComponent(meeting.id)}&fromAdmin=true`, '_blank', 'noopener,noreferrer')}
+    />}
     <header style={styles.header}><div><h1 style={styles.h1}>立项评审管理</h1><p style={styles.subtle}>项目池管理项目本身；每次评审会只承载一个轮次的评审记录。</p></div><button style={styles.secondary} onClick={() => { localStorage.removeItem('reviewer'); router.push('/'); }}>退出</button></header>
     <nav style={styles.tabs}>{tabs.filter(([id]) => id !== 'accounts' || showAccountManagement).map(([id, label]) => <button key={id} style={{ ...styles.tab, ...(tab === id ? styles.tabActive : {}) }} onClick={() => { setTab(id); if (id !== 'reports') setSelectedMeeting(null); }}>{label}</button>)}</nav>
     {notice && <div style={styles.notice}>{notice}</div>}
