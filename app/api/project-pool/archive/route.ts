@@ -1,28 +1,20 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isProjectPoolV2Enabled, supabaseAdmin } from '@/lib/supabase';
 import { getPurgeAfter } from '@/lib/adminLifecycle';
+import { isSuperAdminSession, requireAdminSession } from '@/lib/adminSession';
 
 export const dynamic = 'force-dynamic';
-
-async function requireAdmin(code: string) {
-  if (!code) return false;
-  const { data } = await supabaseAdmin.from('reviewers').select('is_admin').eq('code', code).maybeSingle();
-  return Boolean(data?.is_admin);
-}
-
-function isSuperAdmin(code: string) {
-  return String(code || '').toLowerCase() === 'admin51';
-}
 
 export async function POST(request: NextRequest) {
   if (!isProjectPoolV2Enabled()) return NextResponse.json({ error: 'Project pool is unavailable' }, { status: 404 });
   try {
-    const { id, action, operator_code } = await request.json();
+    const { id, action } = await request.json();
     if (!id || !['restore', 'request_purge', 'restore_purge'].includes(action)) {
       return NextResponse.json({ error: 'id and a valid archive action are required' }, { status: 400 });
     }
-    if (!await requireAdmin(operator_code)) return NextResponse.json({ error: 'Only administrators can update archives' }, { status: 403 });
-    if (['request_purge', 'restore_purge'].includes(action) && !isSuperAdmin(operator_code)) {
+    const session = requireAdminSession(request);
+    if (!session) return NextResponse.json({ error: 'Only administrators can update archives' }, { status: 403 });
+    if (['request_purge', 'restore_purge'].includes(action) && !isSuperAdminSession(session)) {
       return NextResponse.json({ error: 'Only admin51 can manage purge requests' }, { status: 403 });
     }
 
@@ -54,7 +46,7 @@ export async function POST(request: NextRequest) {
         event_type: 'project_restored',
         from_status: 'archived',
         to_status: project.status,
-        operator_code,
+        operator_code: session.code,
         note: 'Restored from archive'
       });
       if (historyError) throw historyError;
@@ -65,7 +57,7 @@ export async function POST(request: NextRequest) {
       if (!project.archived_at) return NextResponse.json({ error: 'Only archived projects can be queued for purge' }, { status: 409 });
       const { error: requestError } = await supabaseAdmin.from('project_deletion_requests').upsert({
         project_id: id,
-        requested_by: operator_code,
+        requested_by: session.code,
         requested_at: now,
         purge_after: getPurgeAfter(requestedAt),
         restored_at: null,
@@ -77,7 +69,7 @@ export async function POST(request: NextRequest) {
         event_type: 'purge_requested',
         from_status: project.status,
         to_status: 'archived',
-        operator_code,
+        operator_code: session.code,
         note: 'Purge requested with a 15-day recovery window'
       });
       if (historyError) throw historyError;
@@ -86,7 +78,7 @@ export async function POST(request: NextRequest) {
 
     const { data: restoredRequest, error: restoreRequestError } = await supabaseAdmin
       .from('project_deletion_requests')
-      .update({ restored_at: now, restored_by: operator_code })
+      .update({ restored_at: now, restored_by: session.code })
       .eq('project_id', id)
       .is('restored_at', null)
       .select('project_id')
@@ -98,7 +90,7 @@ export async function POST(request: NextRequest) {
       event_type: 'purge_restored',
       from_status: 'archived',
       to_status: 'archived',
-      operator_code,
+      operator_code: session.code,
       note: 'Purge request restored to archive'
     });
     if (historyError) throw historyError;

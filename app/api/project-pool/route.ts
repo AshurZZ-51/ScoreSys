@@ -2,14 +2,9 @@ import { NextRequest, NextResponse } from 'next/server';
 import { isProjectPoolV2Enabled, supabaseAdmin } from '@/lib/supabase';
 import { createMaterialRows, getMaterialProgress, makeMatchKey, normalizeProjectPart } from '@/lib/projectPoolWorkflow';
 import { countCompletedReviews } from '@/lib/adminLifecycle';
+import { requireAdminSession } from '@/lib/adminSession';
 
 export const dynamic = 'force-dynamic';
-
-async function requireAdmin(code: string) {
-  if (!code) return false;
-  const { data } = await supabaseAdmin.from('reviewers').select('is_admin').eq('code', code).maybeSingle();
-  return Boolean(data?.is_admin);
-}
 
 function getMonthRange(month: string | null) {
   if (!month) return null;
@@ -73,8 +68,9 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   if (!isProjectPoolV2Enabled()) return unavailable();
   try {
-    const { name, submitter, description = '', operator_code } = await request.json();
-    if (!await requireAdmin(operator_code)) return NextResponse.json({ error: '只有管理员可以创建项目' }, { status: 403 });
+    const { name, submitter, description = '' } = await request.json();
+    const session = requireAdminSession(request);
+    if (!session) return NextResponse.json({ error: '只有管理员可以创建项目' }, { status: 403 });
     if (!String(name || '').trim() || !String(submitter || '').trim()) return NextResponse.json({ error: '项目名称和提报人必填' }, { status: 400 });
     const matchKey = makeMatchKey(name, submitter);
     const { data: project, error } = await supabaseAdmin.from('project_pool').insert({
@@ -86,7 +82,8 @@ export async function POST(request: NextRequest) {
     const materials = createMaterialRows(project.id);
     const { error: materialsError } = await supabaseAdmin.from('project_materials').insert(materials);
     if (materialsError) throw materialsError;
-    await supabaseAdmin.from('project_status_history').insert({ project_id: project.id, event_type: 'project_created', to_status: 'materials_pending', operator_code, note: '创建待评审项目' });
+    const { error: historyError } = await supabaseAdmin.from('project_status_history').insert({ project_id: project.id, event_type: 'project_created', to_status: 'materials_pending', operator_code: session.code, note: '创建待评审项目' });
+    if (historyError) throw historyError;
     return NextResponse.json({ success: true, project });
   } catch (err: any) {
     return NextResponse.json({ error: `创建项目失败: ${err.message}` }, { status: 500 });
@@ -96,8 +93,9 @@ export async function POST(request: NextRequest) {
 export async function PATCH(request: NextRequest) {
   if (!isProjectPoolV2Enabled()) return unavailable();
   try {
-    const { id, name, submitter, description, operator_code } = await request.json();
-    if (!await requireAdmin(operator_code)) return NextResponse.json({ error: '只有管理员可以编辑项目' }, { status: 403 });
+    const { id, name, submitter, description } = await request.json();
+    const session = requireAdminSession(request);
+    if (!session) return NextResponse.json({ error: '只有管理员可以编辑项目' }, { status: 403 });
     if (!id || !String(name || '').trim() || !String(submitter || '').trim()) return NextResponse.json({ error: '项目名称和提报人必填' }, { status: 400 });
     const { data, error } = await supabaseAdmin.from('project_pool').update({
       name: String(name).trim(), submitter: String(submitter).trim(), description: String(description || '').trim(),
@@ -114,13 +112,13 @@ export async function DELETE(request: NextRequest) {
   if (!isProjectPoolV2Enabled()) return unavailable();
   try {
     const id = new URL(request.url).searchParams.get('id');
-    const operatorCode = new URL(request.url).searchParams.get('operator_code') || '';
-    if (!id || !await requireAdmin(operatorCode)) return NextResponse.json({ error: 'Unauthorized or missing parameters' }, { status: 403 });
-    const now = new Date().toISOString();
-    const { error: archiveError } = await supabaseAdmin.from('project_pool').update({ archived_at: now, updated_at: now }).eq('id', id);
-    if (archiveError) throw archiveError;
-    const { error: historyError } = await supabaseAdmin.from('project_status_history').insert({ project_id: id, event_type: 'project_archived', to_status: 'archived', operator_code: operatorCode, note: 'Archived by administrator' });
-    if (historyError) throw historyError;
+    const session = requireAdminSession(request);
+    if (!id || !session) return NextResponse.json({ error: 'Unauthorized or missing parameters' }, { status: 403 });
+    const { data: mutations, error } = await supabaseAdmin.rpc('apply_project_pool_mutations', {
+      p_project_ids: [id], p_action: 'archive', p_status: null, p_operator_code: session.code, p_note: 'Archived by administrator'
+    });
+    if (error) throw error;
+    if (!mutations?.length) return NextResponse.json({ error: '项目不存在' }, { status: 404 });
     return NextResponse.json({ success: true });
   } catch (err: any) {
     return NextResponse.json({ error: `删除项目失败: ${err.message}` }, { status: 500 });

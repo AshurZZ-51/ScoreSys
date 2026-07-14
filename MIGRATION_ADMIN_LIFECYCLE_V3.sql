@@ -43,6 +43,122 @@ CREATE TABLE IF NOT EXISTS account_audit_logs (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- A project status mutation and its history row must commit together.
+CREATE OR REPLACE FUNCTION apply_project_pool_mutations(
+  p_project_ids UUID[],
+  p_action TEXT,
+  p_status TEXT,
+  p_operator_code TEXT,
+  p_note TEXT DEFAULT ''
+) RETURNS TABLE (
+  project_id UUID,
+  status TEXT,
+  latest_verdict TEXT,
+  archived_at TIMESTAMPTZ
+)
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  found_count INTEGER;
+BEGIN
+  IF coalesce(array_length(p_project_ids, 1), 0) = 0 THEN
+    RAISE EXCEPTION '至少需要一个项目';
+  END IF;
+  IF p_action NOT IN ('status', 'archive') THEN
+    RAISE EXCEPTION '无效项目操作';
+  END IF;
+  IF p_action = 'status' AND coalesce(trim(p_status), '') = '' THEN
+    RAISE EXCEPTION '状态不能为空';
+  END IF;
+  IF coalesce(trim(p_operator_code), '') = '' THEN
+    RAISE EXCEPTION '操作人不能为空';
+  END IF;
+
+  SELECT count(*) INTO found_count FROM project_pool WHERE id = ANY(p_project_ids);
+  IF found_count <> cardinality(p_project_ids) THEN
+    RAISE EXCEPTION '部分项目不存在';
+  END IF;
+
+  RETURN QUERY
+  WITH locked AS MATERIALIZED (
+    SELECT pool.id, pool.status AS from_status, pool.latest_verdict AS previous_verdict
+    FROM project_pool AS pool
+    WHERE pool.id = ANY(p_project_ids)
+    FOR UPDATE
+  ), updated AS (
+    UPDATE project_pool AS pool
+    SET status = CASE WHEN p_action = 'status' THEN p_status ELSE pool.status END,
+        latest_verdict = CASE
+          WHEN p_action <> 'status' THEN pool.latest_verdict
+          WHEN p_status = 'rejected' THEN 'rejected'
+          WHEN p_status IN ('initiation', 'ready_r2') THEN 'approved'
+          WHEN p_status LIKE '%recheck%' THEN 'recheck'
+          ELSE pool.latest_verdict
+        END,
+        archived_at = CASE WHEN p_action = 'archive' THEN now() ELSE pool.archived_at END,
+        updated_at = now()
+    FROM locked
+    WHERE pool.id = locked.id
+    RETURNING pool.id AS project_id, pool.status, pool.latest_verdict, pool.archived_at, locked.from_status
+  ), audit AS (
+    INSERT INTO project_status_history(project_id, event_type, from_status, to_status, operator_code, note)
+    SELECT project_id,
+      CASE WHEN p_action = 'archive' THEN 'project_archived' ELSE 'admin_adjustment' END,
+      from_status,
+      CASE WHEN p_action = 'archive' THEN 'archived' ELSE status END,
+      p_operator_code,
+      coalesce(p_note, '')
+    FROM updated
+    RETURNING project_id
+  )
+  SELECT updated.project_id, updated.status, updated.latest_verdict, updated.archived_at
+  FROM updated
+  INNER JOIN audit USING (project_id);
+END;
+$$;
+
+-- Lock each due purge request and its project row before deleting dependent data.
+-- SKIP LOCKED lets a concurrent restore win without a partial purge.
+CREATE OR REPLACE FUNCTION purge_due_project_deletions()
+RETURNS TABLE (project_id UUID)
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  RETURN QUERY
+  WITH due AS MATERIALIZED (
+    SELECT deletion_request.project_id
+    FROM project_deletion_requests AS deletion_request
+    INNER JOIN project_pool AS pool_row ON pool_row.id = deletion_request.project_id
+    WHERE deletion_request.restored_at IS NULL
+      AND deletion_request.purge_after <= now()
+    FOR UPDATE OF deletion_request, pool_row SKIP LOCKED
+  ), deleted_scores AS (
+    DELETE FROM scores
+    USING projects AS assignment, due
+    WHERE scores.project_id = assignment.id
+      AND assignment.pool_project_id = due.project_id
+    RETURNING scores.id
+  ), deleted_projects AS (
+    DELETE FROM projects
+    USING due
+    WHERE projects.pool_project_id = due.project_id
+    RETURNING projects.id
+  ), deleted_reports AS (
+    DELETE FROM report_snapshots
+    USING due
+    WHERE report_snapshots.scope_type = 'project'
+      AND report_snapshots.scope_id = due.project_id
+    RETURNING report_snapshots.id
+  ), deleted_pool AS (
+    DELETE FROM project_pool
+    USING due
+    WHERE project_pool.id = due.project_id
+    RETURNING project_pool.id
+  )
+  SELECT id FROM deleted_pool;
+END;
+$$;
+
 CREATE OR REPLACE FUNCTION assign_pool_project_to_meeting(
   p_project_id UUID,
   p_meeting_id UUID,
