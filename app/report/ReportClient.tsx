@@ -3,6 +3,7 @@
 import { useEffect, useState, useMemo } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { hasProjectIdentity, projectDisplayName, projectDisplaySubmitter, shouldShowProjectSlot } from '@/lib/projectDisplay';
+import { ROUND_LABELS, ROUND_TITLES, VERDICT_OPTIONS, getMaterialStatus, getReviewStatus } from '@/lib/reviewWorkflow';
 
 export default function ReportClient() {
   const params = useSearchParams();
@@ -50,19 +51,19 @@ export default function ReportClient() {
   const verdictCounts = {
     total: filledProjects.length,
     approved: filledProjects.filter((p: any) => p.verdict === 'approved').length,
-    needs_rework: filledProjects.filter((p: any) => p.verdict === 'needs_rework').length,
-    needs_review: filledProjects.filter((p: any) => p.verdict === 'needs_review').length,
+    recheck: filledProjects.filter((p: any) => p.verdict === 'recheck').length,
+    rejected: filledProjects.filter((p: any) => p.verdict === 'rejected').length,
     totalProblems: filledProjects.reduce((sum: number, p: any) => {
       return sum + (p.reviewerProblems || []).reduce((s: number, rp: any) => s + rp.problems.length, 0);
     }, 0)
   };
 
   const dimColors: Record<string, string> = {
-    '可玩性': '#3b82f6',
+    '游戏性': '#3b82f6',
     '创新性': '#8b5cf6',
     '项目规划': '#06b6d4',
     '技术&美术': '#ec4899',
-    '风险性': '#f59e0b'
+    '风险预估': '#f59e0b'
   };
 
   const getColor = (dimName: string) => dimColors[dimName] || '#64748b';
@@ -228,18 +229,18 @@ export default function ReportClient() {
                       <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                         <span style={{ fontSize: '17px', fontWeight: '700', color: p.name ? '#0f172a' : '#94a3b8' }}>{projectDisplayName(p)}</span>
                         {p.verdict && (() => {
-                          const vMap: Record<string, { label: string; color: string; bg: string }> = {
-                            approved: { label: '评审通过', color: '#10b981', bg: '#d1fae5' },
-                            needs_rework: { label: '待修改', color: '#f59e0b', bg: '#fef3c7' },
-                            needs_review: { label: '待重评', color: '#ef4444', bg: '#fee2e2' }
-                          };
-                          const v = vMap[p.verdict];
+                          const v = VERDICT_OPTIONS.find((option: any) => option.value === p.verdict);
                           return v ? <span style={{ padding: '2px 10px', borderRadius: '10px', fontSize: '11px', fontWeight: '600', background: v.bg, color: v.color }}>{v.label}</span> : null;
                         })()}
                       </div>
                       <div style={{ fontSize: '12px', color: '#64748b', marginTop: '2px' }}>
                         提报人: {projectDisplaySubmitter(p)}
                         {p.is_pending && <span style={{ color: '#f59e0b', fontWeight: '600' }}> · 待补评</span>}
+                      </div>
+                      <div style={{ display: 'flex', gap: '6px', marginTop: '8px', flexWrap: 'wrap' }}>
+                        <ReportStatusPill option={getReviewStatus(p.reviewStatus)} />
+                        <ReportStatusPill option={getMaterialStatus(p.materialStatus)} />
+                        {p.materialNote && <span style={{ fontSize: '11px', color: '#64748b' }}>资料备注：{p.materialNote}</span>}
                       </div>
                     </div>
                     <div style={{ textAlign: 'right' }}>
@@ -256,6 +257,12 @@ export default function ReportClient() {
                         }
                       </div>
                     </div>
+                  </div>
+
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '10px', marginBottom: '12px' }}>
+                    {['r1', 'r2'].map((roundId) => (
+                      <RoundReportCard key={roundId} roundId={roundId} summary={p.roundSummaries?.[roundId]} />
+                    ))}
                   </div>
 
                   {/* 维度得分条 */}
@@ -633,8 +640,8 @@ export default function ReportClient() {
           }}>
             <ConclusionBox label="参评项目" value={verdictCounts.total} color="#3b82f6" bg="#eff6ff" />
             <ConclusionBox label="评审通过" value={verdictCounts.approved} color="#10b981" bg="#d1fae5" />
-            <ConclusionBox label="待修改" value={verdictCounts.needs_rework} color="#f59e0b" bg="#fef3c7" />
-            <ConclusionBox label="待重评" value={verdictCounts.needs_review} color="#ef4444" bg="#fee2e2" />
+            <ConclusionBox label="重评" value={verdictCounts.recheck} color="#f59e0b" bg="#fef3c7" />
+            <ConclusionBox label="驳回" value={verdictCounts.rejected} color="#ef4444" bg="#fee2e2" />
             <ConclusionBox label="改进意见" value={verdictCounts.totalProblems} color="#8b5cf6" bg="#f3e8ff" />
           </div>
 
@@ -653,12 +660,7 @@ export default function ReportClient() {
                   </thead>
                   <tbody>
                     {rankedProjects.map((p: any) => {
-                      const vMap: Record<string, { label: string; color: string; bg: string }> = {
-                        approved: { label: '评审通过', color: '#10b981', bg: '#d1fae5' },
-                        needs_rework: { label: '待修改', color: '#f59e0b', bg: '#fef3c7' },
-                        needs_review: { label: '待重评', color: '#ef4444', bg: '#fee2e2' }
-                      };
-                      const v = p.verdict ? vMap[p.verdict] : null;
+                      const v = p.verdict ? VERDICT_OPTIONS.find((option: any) => option.value === p.verdict) : null;
                       return (
                         <tr key={p.id} style={{ borderTop: '1px solid #e2e8f0' }}>
                           <td style={{ padding: '10px 12px', color: '#64748b' }}>#{p.seq_no}</td>
@@ -746,6 +748,53 @@ function StatCard({ label, value, icon, color }: any) {
       <div style={{ fontSize: '24px', marginBottom: '6px' }}>{icon}</div>
       <div style={{ fontSize: '32px', fontWeight: '800', color }}>{value}</div>
       <div style={{ fontSize: '13px', color: '#64748b', marginTop: '4px' }}>{label}</div>
+    </div>
+  );
+}
+
+function ReportStatusPill({ option }: { option: { label: string; color: string; bg: string } }) {
+  return (
+    <span style={{
+      display: 'inline-block',
+      padding: '2px 10px',
+      borderRadius: '10px',
+      fontSize: '11px',
+      fontWeight: '600',
+      background: option.bg,
+      color: option.color
+    }}>{option.label}</span>
+  );
+}
+
+function RoundReportCard({ roundId, summary }: { roundId: string; summary: any }) {
+  const verdict = summary?.verdict ? VERDICT_OPTIONS.find((option: any) => option.value === summary.verdict) : null;
+  return (
+    <div style={{
+      background: 'white',
+      border: '1px solid #e2e8f0',
+      borderRadius: '10px',
+      padding: '12px 14px'
+    }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+        <div style={{ fontSize: '13px', fontWeight: 800, color: '#0f172a' }}>
+          {ROUND_LABELS[roundId as keyof typeof ROUND_LABELS]} · {ROUND_TITLES[roundId as keyof typeof ROUND_TITLES]}
+        </div>
+        {verdict ? <ReportStatusPill option={verdict} /> : <span style={{ fontSize: '11px', color: '#94a3b8' }}>未定</span>}
+      </div>
+      <div style={{ display: 'flex', gap: '16px', fontSize: '12px', color: '#64748b', marginBottom: '8px' }}>
+        <span>总分 <strong style={{ color: '#1e40af' }}>{summary ? summary.totalScore.toFixed(1) : '0.0'}</strong></span>
+        <span>完成度 <strong>{summary?.completionRate || 0}%</strong></span>
+      </div>
+      {summary?.problemSummary && (
+        <div style={{ fontSize: '12px', color: '#991b1b', lineHeight: 1.5, marginBottom: '4px' }}>
+          问题：{summary.problemSummary}
+        </div>
+      )}
+      {summary?.actionSummary && (
+        <div style={{ fontSize: '12px', color: '#065f46', lineHeight: 1.5 }}>
+          建议：{summary.actionSummary}
+        </div>
+      )}
     </div>
   );
 }

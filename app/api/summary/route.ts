@@ -3,12 +3,21 @@ import { supabaseAdmin } from '@/lib/supabase';
 import { getMissingTemplateProjects } from '@/lib/projectSlots';
 import {
   SCORING_DIMENSIONS,
+  REVIEW_ROUNDS,
+  ROUND_BY_ID,
   computeProjectScore,
+  computeRoundProjectScore,
   expectedInputCountForDimension,
   isNormalScoringKey,
   normalizeDimensionName,
-  parseScoreKey
+  parseScoreKey,
+  specialScoreKey
 } from '@/lib/scoringRules';
+import {
+  defaultRoundForStatus,
+  nextStatusForVerdict,
+  stripRoundPrefix
+} from '@/lib/reviewWorkflow';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -70,6 +79,7 @@ export async function GET(request: NextRequest) {
       name: rule.name,
       maxScore: rule.maxScore,
       type: rule.type,
+      roundId: rule.roundId,
       multiplier: rule.multiplier || null,
       items: rule.items || [],
       levels: rule.levels || [],
@@ -84,9 +94,13 @@ export async function GET(request: NextRequest) {
       }])
     ).values());
 
-    const totalExpectedPerProject = uniqueReviewerDims.reduce((sum: number, rd: any) => {
-      return sum + expectedInputCountForDimension(rd.dim_name);
-    }, 0);
+    const nonAdminReviewers = reviewers.filter((reviewer: any) => !reviewer.is_admin);
+    const expectedByRound: Record<string, number> = {};
+    REVIEW_ROUNDS.forEach((round: any) => {
+      expectedByRound[round.id] = nonAdminReviewers.length * round.dimensions.reduce((sum: number, dimName: string) => {
+        return sum + expectedInputCountForDimension(dimName);
+      }, 0);
+    });
 
     const expectedByReviewer: Record<string, number> = {};
     uniqueReviewerDims.forEach((rd: any) => {
@@ -104,6 +118,75 @@ export async function GET(request: NextRequest) {
       const reviewerActions: { reviewer_code: string; reviewer_name: string; actions: string[] }[] = [];
       let verdict: string | null = null;
 
+      const latestSpecialComment = (dimName: string) => {
+        const items = projectScores
+          .filter((s: any) => s.dim_name === dimName)
+          .sort((a: any, b: any) => new Date(b.updated_at || 0).getTime() - new Date(a.updated_at || 0).getTime());
+        const adminItem = items.find((s: any) => reviewers.find((r: any) => r.code === s.reviewer_code)?.is_admin);
+        return (adminItem || items[0])?.comment || '';
+      };
+
+      const getRoundVerdict = (roundId: string) => {
+        const dimName = specialScoreKey(roundId, '__verdict__');
+        const verdictScores = projectScores
+          .filter((s: any) => s.dim_name === dimName)
+          .sort((a: any, b: any) => new Date(b.updated_at || 0).getTime() - new Date(a.updated_at || 0).getTime());
+        const adminVerdict = verdictScores.find((s: any) => reviewers.find((r: any) => r.code === s.reviewer_code)?.is_admin);
+        const walkerVerdict = verdictScores.find((s: any) => s.reviewer_code?.toUpperCase() === 'W');
+        return (adminVerdict || walkerVerdict || verdictScores[0])?.comment || null;
+      };
+
+      const roundSummaries: Record<string, any> = {};
+      REVIEW_ROUNDS.forEach((round: any) => {
+        const roundScores = projectScores.filter((s: any) => parseScoreKey(s.dim_name)?.roundId === round.id);
+        const roundBonusDetails = projectScores
+          .filter((s: any) => s.dim_name === specialScoreKey(round.id, '__bonus__'))
+          .map((s: any) => ({ reviewer: s.reviewer_code, value: Number(s.score), reason: s.comment || '' }));
+        const roundBonusScore = roundBonusDetails.reduce((sum: number, item: any) => sum + item.value, 0);
+        const roundVerdict = getRoundVerdict(round.id);
+        const roundProblems: { reviewer_code: string; reviewer_name: string; problems: string[] }[] = [];
+        const roundActions: { reviewer_code: string; reviewer_name: string; actions: string[] }[] = [];
+        projectScores.forEach((s: any) => {
+          if (s.dim_name === specialScoreKey(round.id, '__problems__') && s.comment?.trim()) {
+            const rName = reviewers.find((r: any) => r.code === s.reviewer_code)?.name || s.reviewer_code;
+            roundProblems.push({
+              reviewer_code: s.reviewer_code,
+              reviewer_name: rName,
+              problems: s.comment.split('\n').map((line: string) => line.trim()).filter(Boolean)
+            });
+          }
+          if (s.dim_name === specialScoreKey(round.id, '__actions__') && s.comment?.trim()) {
+            const rName = reviewers.find((r: any) => r.code === s.reviewer_code)?.name || s.reviewer_code;
+            roundActions.push({
+              reviewer_code: s.reviewer_code,
+              reviewer_name: rName,
+              actions: s.comment.split('\n').map((line: string) => line.trim()).filter(Boolean)
+            });
+          }
+        });
+        const computed = computeRoundProjectScore(round.id, roundScores, roundBonusScore);
+        const autoProblems = roundProblems.flatMap((item) => item.problems);
+        const autoActions = roundActions.flatMap((item) => item.actions);
+        const adminProblems = latestSpecialComment(specialScoreKey(round.id, '__admin_problems__'));
+        const adminActions = latestSpecialComment(specialScoreKey(round.id, '__admin_actions__'));
+        roundSummaries[round.id] = {
+          ...computed,
+          label: round.label,
+          title: round.title,
+          bonusDetails: roundBonusDetails,
+          verdict: roundVerdict,
+          reviewerProblems: roundProblems,
+          reviewerActions: roundActions,
+          problemSummary: adminProblems || autoProblems.join('\n'),
+          actionSummary: adminActions || autoActions.join('\n'),
+          problemSummaryEdited: Boolean(adminProblems),
+          actionSummaryEdited: Boolean(adminActions),
+          completionRate: expectedByRound[round.id] > 0
+            ? Math.min(100, Math.round((roundScores.length / expectedByRound[round.id]) * 100))
+            : 0
+        };
+      });
+
       const verdictScores = projectScores
         .filter((s: any) => s.dim_name === '__verdict__')
         .sort((a: any, b: any) => new Date(b.updated_at || 0).getTime() - new Date(a.updated_at || 0).getTime());
@@ -111,8 +194,23 @@ export async function GET(request: NextRequest) {
       const walkerVerdict = verdictScores.find((s: any) => s.reviewer_code?.toUpperCase() === 'W');
       verdict = (adminVerdict || walkerVerdict || verdictScores[0])?.comment || null;
 
+      const materialStatus = latestSpecialComment('__material_status__') || 'unchecked';
+      const materialNote = latestSpecialComment('__material_note__');
+      const materialCheckedAt = latestSpecialComment('__material_checked_at__');
+      const materialChecker = latestSpecialComment('__material_checker__');
+      const savedStatus = latestSpecialComment('__review_status__');
+      const r1Verdict = roundSummaries.r1?.verdict;
+      const r2Verdict = roundSummaries.r2?.verdict;
+      const derivedStatus = savedStatus
+        || (r2Verdict ? nextStatusForVerdict('r2', r2Verdict)
+          : r1Verdict === 'approved' ? 'r2_pending'
+            : r1Verdict ? nextStatusForVerdict('r1', r1Verdict)
+              : project.name && project.submitter ? 'r1_pending' : 'draft');
+      const currentRound = latestSpecialComment('__current_round__') || defaultRoundForStatus(derivedStatus);
+      const currentRoundSummary = roundSummaries[currentRound] || roundSummaries.r1;
+
       projectScores.forEach((s: any) => {
-        if (s.dim_name === '__verdict__') return;
+        if (stripRoundPrefix(s.dim_name) === '__verdict__') return;
         if (s.dim_name === '__bonus__') {
           bonusScore += Number(s.score);
           bonusDetails.push({ reviewer: s.reviewer_code, value: Number(s.score), reason: s.comment || '' });
@@ -137,22 +235,27 @@ export async function GET(request: NextRequest) {
         }
       });
 
-      const computed = computeProjectScore(normalScores, bonusScore);
+      const computed = currentRoundSummary || computeProjectScore(normalScores, bonusScore);
 
       return {
         ...project,
-        dimTotals: computed.dimTotals,
-        baseScore: computed.baseScore,
-        bonusScore: computed.bonusScore,
-        bonusDetails,
-        totalScore: computed.totalScore,
+        currentRound,
+        reviewStatus: derivedStatus,
+        materialStatus,
+        materialNote,
+        materialCheckedAt,
+        materialChecker,
+        roundSummaries,
+        dimTotals: currentRoundSummary?.dimTotals || computed.dimTotals,
+        baseScore: currentRoundSummary?.baseScore ?? computed.baseScore,
+        bonusScore: currentRoundSummary?.bonusScore ?? computed.bonusScore,
+        bonusDetails: currentRoundSummary?.bonusDetails || bonusDetails,
+        totalScore: currentRoundSummary?.totalScore ?? computed.totalScore,
         scoreCount: projectScores.length,
-        completionRate: totalExpectedPerProject > 0
-          ? Math.min(100, Math.round((normalScores.length / totalExpectedPerProject) * 100))
-          : 0,
-        reviewerProblems,
-        reviewerActions,
-        verdict
+        completionRate: currentRoundSummary?.completionRate || 0,
+        reviewerProblems: currentRoundSummary?.reviewerProblems || reviewerProblems,
+        reviewerActions: currentRoundSummary?.reviewerActions || reviewerActions,
+        verdict: currentRoundSummary?.verdict || verdict
       };
     });
 

@@ -2,7 +2,8 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { DIMENSION_BY_NAME, SCORING_DIMENSIONS, computeWeightedBaseScoreFromScoreMap, scoreKey } from '@/lib/scoringRules';
+import { SCORING_DIMENSIONS, computeRoundBaseScoreFromScoreMap, roundScoreKey, specialScoreKey } from '@/lib/scoringRules';
+import { ROUND_LABELS, ROUND_TITLES, VERDICT_OPTIONS, getReviewStatus } from '@/lib/reviewWorkflow';
 
 interface Reviewer {
   code: string;
@@ -18,6 +19,10 @@ interface Project {
   name: string;
   submitter: string;
   description?: string;
+  currentRound?: string;
+  reviewStatus?: string;
+  materialStatus?: string;
+  roundSummaries?: Record<string, any>;
 }
 
 interface Meeting {
@@ -57,11 +62,12 @@ export default function ScoringPage() {
   const saveVersions = useRef<Record<string, number>>({});
 
   const isWalker = reviewer?.code?.toUpperCase() === 'W';
+  const getActiveRound = (project = activeProject) => project?.currentRound || 'r1';
+  const roundFieldKey = (projectId: string, roundId: string) => `${projectId}:${roundId}`;
   const reviewerRules = useMemo(() => {
-    if (!reviewer) return [];
-    const names = new Set(reviewer.dimensions.map((dim) => DIMENSION_BY_NAME[dim.dim_name] ? dim.dim_name : (dim.dim_name === '风险性' ? '风险评估' : dim.dim_name)));
-    return SCORING_DIMENSIONS.filter((rule: any) => names.has(rule.name));
-  }, [reviewer]);
+    const roundId = getActiveRound();
+    return SCORING_DIMENSIONS.filter((rule: any) => rule.roundId === roundId);
+  }, [activeProject?.currentRound]);
 
   useEffect(() => {
     const stored = localStorage.getItem('reviewer');
@@ -93,9 +99,13 @@ export default function ScoringPage() {
   const loadProjects = async (meetingId: string) => {
     setLoading(true);
     try {
-      const res = await fetch(`/api/projects?meetingId=${meetingId}&role=reviewer`, { cache: 'no-store' });
+      const res = await fetch(`/api/summary?meetingId=${meetingId}`, { cache: 'no-store' });
       const data = await res.json();
-      const nextProjects = data.projects || [];
+      const nextProjects = (data.projects || []).filter((project: Project) => (
+        project.name
+        && project.submitter
+        && !['cancelled', 'initiation', 'r1_rejected', 'r2_rejected'].includes(project.reviewStatus || '')
+      ));
       setProjects(nextProjects);
       setActiveProject(nextProjects[0] || null);
       await loadScores(meetingId);
@@ -119,15 +129,19 @@ export default function ScoringPage() {
     const bonusValueMap: Record<string, string> = {};
 
     (data.scores || []).forEach((s: Score) => {
-      if (s.dim_name === '__bonus__') {
-        bonusValueMap[s.project_id] = String(Number(s.score));
-        bonusReasonMap[s.project_id] = s.comment || '';
-      } else if (s.dim_name === '__problems__') {
-        probMap[s.project_id] = s.comment || '';
-      } else if (s.dim_name === '__actions__') {
-        actMap[s.project_id] = s.comment || '';
-      } else if (s.dim_name === '__verdict__') {
-        verdictMap[s.project_id] = s.comment || null;
+      const parts = String(s.dim_name).split('::');
+      const roundId = parts[0] === 'r1' || parts[0] === 'r2' ? parts[0] : 'legacy';
+      const baseDimName = roundId === 'legacy' ? s.dim_name : parts.slice(1).join('::');
+      const scopedKey = roundFieldKey(s.project_id, roundId);
+      if (baseDimName === '__bonus__') {
+        bonusValueMap[scopedKey] = String(Number(s.score));
+        bonusReasonMap[scopedKey] = s.comment || '';
+      } else if (baseDimName === '__problems__') {
+        probMap[scopedKey] = s.comment || '';
+      } else if (baseDimName === '__actions__') {
+        actMap[scopedKey] = s.comment || '';
+      } else if (baseDimName === '__verdict__') {
+        verdictMap[scopedKey] = s.comment || null;
       } else {
         if (!scoreMap[s.project_id]) scoreMap[s.project_id] = {};
         if (!scoreDraftMap[s.project_id]) scoreDraftMap[s.project_id] = {};
@@ -284,8 +298,10 @@ export default function ScoringPage() {
 
   const handleBonusSave = async () => {
     if (!activeProject) return;
-    const reason = (bonusReason[activeProject.id] || '').trim();
-    const rawValue = bonusValue[activeProject.id] ?? '';
+    const roundId = getActiveRound();
+    const scopedKey = roundFieldKey(activeProject.id, roundId);
+    const reason = (bonusReason[scopedKey] || '').trim();
+    const rawValue = bonusValue[scopedKey] ?? '';
     const value = rawValue === '' ? 0 : Math.max(0, Math.min(5, Number(rawValue)));
     if (Number.isNaN(value)) {
       showMessage('加分值必须是 0-5');
@@ -295,14 +311,16 @@ export default function ScoringPage() {
       showMessage('请填写加分原因');
       return;
     }
-    setBonusValue((prev) => ({ ...prev, [activeProject.id]: String(value) }));
-    await persistScore(activeProject.id, '__bonus__', value, reason);
+    setBonusValue((prev) => ({ ...prev, [scopedKey]: String(value) }));
+    await persistScore(activeProject.id, specialScoreKey(roundId, '__bonus__'), value, reason);
   };
 
   const handleProblemsActionsSave = async () => {
     if (!activeMeeting || !activeProject || !reviewer) return;
-    const problemsText = (projectProblems[activeProject.id] || '').trim();
-    const actionsText = (projectActions[activeProject.id] || '').trim();
+    const roundId = getActiveRound();
+    const scopedKey = roundFieldKey(activeProject.id, roundId);
+    const problemsText = (projectProblems[scopedKey] || '').trim();
+    const actionsText = (projectActions[scopedKey] || '').trim();
     const payloadBase = {
       meeting_id: activeMeeting.id,
       project_id: activeProject.id,
@@ -314,12 +332,12 @@ export default function ScoringPage() {
       fetch('/api/scores', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...payloadBase, dim_name: '__problems__', comment: problemsText || null })
+        body: JSON.stringify({ ...payloadBase, dim_name: specialScoreKey(roundId, '__problems__'), comment: problemsText || null })
       }),
       fetch('/api/scores', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...payloadBase, dim_name: '__actions__', comment: actionsText || null })
+        body: JSON.stringify({ ...payloadBase, dim_name: specialScoreKey(roundId, '__actions__'), comment: actionsText || null })
       })
     ]);
 
@@ -328,32 +346,38 @@ export default function ScoringPage() {
   };
 
   const persistTextField = (projectId: string, dimName: '__problems__' | '__actions__', comment: string, delay = 650) => {
-    schedulePersistScore(projectId, dimName, 0, comment.trim() || null, delay);
+    const roundId = getActiveRound();
+    schedulePersistScore(projectId, specialScoreKey(roundId, dimName), 0, comment.trim() || null, delay);
   };
 
   const handleVerdictChange = (value: string) => {
     if (!activeProject) return;
-    const next = projectVerdicts[activeProject.id] === value ? null : value;
-    setProjectVerdicts((prev) => ({ ...prev, [activeProject.id]: next }));
-    schedulePersistScore(activeProject.id, '__verdict__', 0, next, 0);
+    const roundId = getActiveRound();
+    const scopedKey = roundFieldKey(activeProject.id, roundId);
+    const next = projectVerdicts[scopedKey] === value ? null : value;
+    setProjectVerdicts((prev) => ({ ...prev, [scopedKey]: next }));
+    schedulePersistScore(activeProject.id, specialScoreKey(roundId, '__verdict__'), 0, next, 0);
   };
 
   const getExpectedCount = () => reviewerRules.reduce((sum: number, rule: any) => {
     return sum + (rule.type === 'level' ? 1 : rule.items.length);
   }, 0);
 
-  const getProjectCompletion = (projectId: string) => {
+  const getProjectCompletion = (project: Project) => {
+    const roundId = getActiveRound(project);
+    const rules = SCORING_DIMENSIONS.filter((rule: any) => rule.roundId === roundId);
+    const projectId = project.id;
     const current = scores[projectId] || {};
-    const expected = getExpectedCount();
+    const expected = rules.reduce((sum: number, rule: any) => sum + (rule.type === 'level' ? 1 : rule.items.length), 0);
     if (!expected) return 0;
-    const filled = reviewerRules.reduce((sum: number, rule: any) => {
-      if (rule.type === 'level') return sum + (current[scoreKey(rule.name, 'level')] !== undefined ? 1 : 0);
-      return sum + rule.items.filter((item: any) => current[scoreKey(rule.name, item.key)] !== undefined).length;
+    const filled = rules.reduce((sum: number, rule: any) => {
+      if (rule.type === 'level') return sum + (current[roundScoreKey(roundId, rule.name, 'level')] !== undefined ? 1 : 0);
+      return sum + rule.items.filter((item: any) => current[roundScoreKey(roundId, rule.name, item.key)] !== undefined).length;
     }, 0);
     return Math.round((filled / expected) * 100);
   };
 
-  const getLocalWeightedBaseScore = (projectId: string) => computeWeightedBaseScoreFromScoreMap(scores[projectId] || {});
+  const getLocalWeightedBaseScore = (project: Project) => computeRoundBaseScoreFromScoreMap(getActiveRound(project), scores[project.id] || {});
 
   if (!reviewer) return <div style={{ padding: 40 }}>加载中...</div>;
 
@@ -389,17 +413,23 @@ export default function ScoringPage() {
         <aside style={{ width: 320, background: 'white', borderRight: '1px solid #e2e8f0', minHeight: 'calc(100vh - 65px)' }}>
           <div style={{ padding: '16px 20px', borderBottom: '1px solid #e2e8f0', fontSize: 13, fontWeight: 700, color: '#64748b' }}>项目列表 ({projects.length})</div>
           {loading ? <div style={{ padding: 20, color: '#94a3b8' }}>加载中...</div> : projects.map((project) => {
-            const completion = getProjectCompletion(project.id);
+            const completion = getProjectCompletion(project);
             const active = activeProject?.id === project.id;
+            const status = getReviewStatus(project.reviewStatus);
+            const roundId = getActiveRound(project);
             return (
               <button key={project.id} onClick={() => setActiveProject(project)} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '14px 20px', border: 'none', borderBottom: '1px solid #f1f5f9', cursor: 'pointer', background: active ? '#eff6ff' : 'white', borderLeft: active ? '3px solid #3b82f6' : '3px solid transparent' }}>
                 <div style={{ fontSize: 14, fontWeight: 700, color: active ? '#1e40af' : '#0f172a', marginBottom: 4 }}>{project.seq_no}. {project.name}</div>
                 <div style={{ fontSize: 12, color: '#64748b', marginBottom: 8 }}>提报人：{project.submitter}</div>
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 8 }}>
+                  <span style={{ fontSize: 11, fontWeight: 800, color: '#1e40af', background: '#eff6ff', padding: '2px 8px', borderRadius: 999 }}>{ROUND_LABELS[roundId as keyof typeof ROUND_LABELS]}</span>
+                  <span style={{ fontSize: 11, fontWeight: 800, color: status.color, background: status.bg, padding: '2px 8px', borderRadius: 999 }}>{status.label}</span>
+                </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   <div style={{ flex: 1, height: 5, background: '#e2e8f0', borderRadius: 3, overflow: 'hidden' }}><div style={{ width: `${completion}%`, height: '100%', background: completion === 100 ? '#10b981' : '#3b82f6' }} /></div>
                   <span style={{ fontSize: 12, fontWeight: 700, color: completion === 100 ? '#10b981' : '#64748b' }}>{completion}%</span>
                 </div>
-                {completion === 100 && <div style={{ marginTop: 6, fontSize: 12, color: '#64748b' }}>已填五维综合分：{getLocalWeightedBaseScore(project.id).toFixed(1)}/100（不含加分）</div>}
+                {completion === 100 && <div style={{ marginTop: 6, fontSize: 12, color: '#64748b' }}>已填本轮基础分：{getLocalWeightedBaseScore(project).toFixed(1)}/100（不含加分）</div>}
               </button>
             );
           })}
@@ -411,10 +441,14 @@ export default function ScoringPage() {
               <div style={{ marginBottom: 22 }}>
                 <h1 style={{ margin: '0 0 8px', fontSize: 28, color: '#0f172a' }}>{activeProject.seq_no}. {activeProject.name}</h1>
                 <div style={{ fontSize: 14, color: '#64748b' }}>提报人：{activeProject.submitter}</div>
+                <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
+                  <span style={{ fontSize: 12, fontWeight: 800, color: '#1e40af', background: '#eff6ff', padding: '4px 10px', borderRadius: 999 }}>{ROUND_LABELS[getActiveRound() as keyof typeof ROUND_LABELS]} · {ROUND_TITLES[getActiveRound() as keyof typeof ROUND_TITLES]}</span>
+                  <span style={{ fontSize: 12, fontWeight: 800, color: getReviewStatus(activeProject.reviewStatus).color, background: getReviewStatus(activeProject.reviewStatus).bg, padding: '4px 10px', borderRadius: 999 }}>{getReviewStatus(activeProject.reviewStatus).label}</span>
+                </div>
               </div>
 
               <div style={{ background: '#eef2ff', border: '1px solid #c7d2fe', color: '#3730a3', padding: '12px 16px', borderRadius: 10, fontSize: 13, lineHeight: 1.7, marginBottom: 20 }}>
-                评分方法：打分型子项均为 0-10 分，按维度权重换算；创新性直接选择 4/6/10/14/20 档。管理员汇总时按多评委平均或中位档计算项目总分。
+                评分方法：当前轮次独立 100 分；打分型子项均为 0-10 分，五位评委取平均后计入大维度；创新性按 8/12/20/28/40 档位计入 40 分满分。
               </div>
 
               {activeMeeting?.deadline && <div style={{ background: '#fef3c7', border: '1px solid #fde68a', color: '#92400e', padding: '10px 16px', borderRadius: 8, fontSize: 13, marginBottom: 20 }}>打分截止日期：{activeMeeting.deadline}</div>}
@@ -427,7 +461,7 @@ export default function ScoringPage() {
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
                         <div>
                           <div style={{ fontSize: 16, fontWeight: 800, color: '#0f172a' }}>{rule.name}</div>
-                          <div style={{ fontSize: 12, color: '#64748b', marginTop: 2 }}>{rule.type === 'level' ? '档位型，汇总取中位档' : `子项平均 × ${rule.multiplier}`}</div>
+                          <div style={{ fontSize: 12, color: '#64748b', marginTop: 2 }}>{rule.type === 'level' ? '档位型，汇总取中位档' : `子项均分 × ${rule.multiplier}`}</div>
                         </div>
                         <div style={{ background: '#eff6ff', color: '#1e40af', padding: '4px 10px', borderRadius: 999, fontSize: 12, fontWeight: 700 }}>满分 {rule.maxScore}</div>
                       </div>
@@ -435,7 +469,7 @@ export default function ScoringPage() {
                       {rule.type === 'level' ? (
                         <div style={{ display: 'grid', gap: 8 }}>
                           {rule.levels.map((level: number) => {
-                            const key = scoreKey(rule.name, 'level');
+                            const key = roundScoreKey(getActiveRound(), rule.name, 'level');
                             const selected = ruleScores[key] === level;
                             return (
                               <button key={level} onClick={() => handleScoreChange(key, level)} disabled={saving} style={{ padding: '10px 12px', textAlign: 'left', borderRadius: 9, border: selected ? '2px solid #8b5cf6' : '1px solid #e2e8f0', background: selected ? '#f5f3ff' : 'white', color: selected ? '#6d28d9' : '#334155', cursor: 'pointer', fontWeight: selected ? 800 : 600 }}>
@@ -447,7 +481,7 @@ export default function ScoringPage() {
                       ) : (
                         <div style={{ display: 'grid', gap: 14 }}>
                           {rule.items.map((item: any) => {
-                            const key = scoreKey(rule.name, item.key);
+                            const key = roundScoreKey(getActiveRound(), rule.name, item.key);
                             const current = ruleScores[key];
                             return (
                               <div key={item.key}>
@@ -471,10 +505,10 @@ export default function ScoringPage() {
 
               {isWalker && (
                 <section style={{ background: '#fffbeb', border: '1.5px solid #f59e0b', borderRadius: 12, padding: 20, marginBottom: 24 }}>
-                  <div style={{ fontSize: 16, fontWeight: 800, color: '#92400e', marginBottom: 12 }}>Walker 加分项</div>
-                  <textarea value={bonusReason[activeProject.id] || ''} onChange={(event) => setBonusReason((prev) => ({ ...prev, [activeProject.id]: event.target.value }))} placeholder="填写加分原因" rows={2} style={{ width: '100%', boxSizing: 'border-box', padding: 10, border: '1px solid #fbbf24', borderRadius: 8, marginBottom: 10 }} />
+                  <div style={{ fontSize: 16, fontWeight: 800, color: '#92400e', marginBottom: 12 }}>Walker 本轮加分项</div>
+                  <textarea value={bonusReason[roundFieldKey(activeProject.id, getActiveRound())] || ''} onChange={(event) => setBonusReason((prev) => ({ ...prev, [roundFieldKey(activeProject.id, getActiveRound())]: event.target.value }))} placeholder="填写本轮加分原因" rows={2} style={{ width: '100%', boxSizing: 'border-box', padding: 10, border: '1px solid #fbbf24', borderRadius: 8, marginBottom: 10 }} />
                   <div style={{ display: 'flex', gap: 10 }}>
-                    <input type="number" min="0" max="5" step="1" value={bonusValue[activeProject.id] ?? ''} placeholder="0-5" onChange={(event) => setBonusValue((prev) => ({ ...prev, [activeProject.id]: event.target.value }))} onBlur={handleBonusSave} style={{ width: 100, padding: 10, border: '1px solid #f59e0b', borderRadius: 8, fontWeight: 800 }} />
+                    <input type="number" min="0" max="5" step="1" value={bonusValue[roundFieldKey(activeProject.id, getActiveRound())] ?? ''} placeholder="0-5" onChange={(event) => setBonusValue((prev) => ({ ...prev, [roundFieldKey(activeProject.id, getActiveRound())]: event.target.value }))} onBlur={handleBonusSave} style={{ width: 100, padding: 10, border: '1px solid #f59e0b', borderRadius: 8, fontWeight: 800 }} />
                     <button onClick={handleBonusSave} disabled={saving} style={{ padding: '10px 18px', border: 'none', borderRadius: 8, background: '#f59e0b', color: 'white', fontWeight: 800, cursor: 'pointer' }}>保存加分</button>
                   </div>
                 </section>
@@ -483,9 +517,9 @@ export default function ScoringPage() {
               <section style={{ background: 'white', borderRadius: 12, padding: 20, border: '1px solid #e2e8f0' }}>
                 <div style={{ fontSize: 16, fontWeight: 800, color: '#0f172a', marginBottom: 14 }}>评审意见</div>
                 <label style={{ display: 'block', fontSize: 13, color: '#dc2626', fontWeight: 700, marginBottom: 6 }}>存在问题（每行一条）</label>
-                <textarea value={projectProblems[activeProject.id] || ''} onChange={(event) => { const value = event.target.value; setProjectProblems((prev) => ({ ...prev, [activeProject.id]: value })); persistTextField(activeProject.id, '__problems__', value); }} onBlur={() => persistTextField(activeProject.id, '__problems__', projectProblems[activeProject.id] || '', 0)} rows={4} style={{ width: '100%', boxSizing: 'border-box', padding: 10, border: '1px solid #fecaca', borderRadius: 8, background: '#fef2f2', marginBottom: 14 }} />
+                <textarea value={projectProblems[roundFieldKey(activeProject.id, getActiveRound())] || ''} onChange={(event) => { const value = event.target.value; const scopedKey = roundFieldKey(activeProject.id, getActiveRound()); setProjectProblems((prev) => ({ ...prev, [scopedKey]: value })); persistTextField(activeProject.id, '__problems__', value); }} onBlur={() => persistTextField(activeProject.id, '__problems__', projectProblems[roundFieldKey(activeProject.id, getActiveRound())] || '', 0)} rows={4} style={{ width: '100%', boxSizing: 'border-box', padding: 10, border: '1px solid #fecaca', borderRadius: 8, background: '#fef2f2', marginBottom: 14 }} />
                 <label style={{ display: 'block', fontSize: 13, color: '#16a34a', fontWeight: 700, marginBottom: 6 }}>整改意见（每行一条）</label>
-                <textarea value={projectActions[activeProject.id] || ''} onChange={(event) => { const value = event.target.value; setProjectActions((prev) => ({ ...prev, [activeProject.id]: value })); persistTextField(activeProject.id, '__actions__', value); }} onBlur={() => persistTextField(activeProject.id, '__actions__', projectActions[activeProject.id] || '', 0)} rows={4} style={{ width: '100%', boxSizing: 'border-box', padding: 10, border: '1px solid #bbf7d0', borderRadius: 8, background: '#f0fdf4', marginBottom: 14 }} />
+                <textarea value={projectActions[roundFieldKey(activeProject.id, getActiveRound())] || ''} onChange={(event) => { const value = event.target.value; const scopedKey = roundFieldKey(activeProject.id, getActiveRound()); setProjectActions((prev) => ({ ...prev, [scopedKey]: value })); persistTextField(activeProject.id, '__actions__', value); }} onBlur={() => persistTextField(activeProject.id, '__actions__', projectActions[roundFieldKey(activeProject.id, getActiveRound())] || '', 0)} rows={4} style={{ width: '100%', boxSizing: 'border-box', padding: 10, border: '1px solid #bbf7d0', borderRadius: 8, background: '#f0fdf4', marginBottom: 14 }} />
                 <button onClick={handleProblemsActionsSave} style={{ padding: '9px 18px', border: 'none', borderRadius: 8, background: '#0f172a', color: 'white', fontWeight: 700, cursor: 'pointer' }}>保存评审意见</button>
               </section>
 
@@ -494,12 +528,8 @@ export default function ScoringPage() {
                 <section style={{ background: 'white', borderRadius: 12, padding: 20, border: '1.5px solid #8b5cf6', marginTop: 24 }}>
                   <div style={{ fontSize: 16, fontWeight: 800, color: '#5b21b6', marginBottom: 12 }}>Walker 评审结论</div>
                   <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-                    {[
-                      { value: 'approved', label: '评审通过', color: '#10b981', bg: '#d1fae5' },
-                      { value: 'needs_rework', label: '待修改', color: '#f59e0b', bg: '#fef3c7' },
-                      { value: 'needs_review', label: '待重评', color: '#ef4444', bg: '#fee2e2' }
-                    ].map((option) => {
-                      const selected = projectVerdicts[activeProject.id] === option.value;
+                    {VERDICT_OPTIONS.map((option) => {
+                      const selected = projectVerdicts[roundFieldKey(activeProject.id, getActiveRound())] === option.value;
                       return (
                         <button key={option.value} onClick={() => handleVerdictChange(option.value)} style={{ padding: '10px 16px', borderRadius: 8, border: selected ? `2px solid ${option.color}` : '1px solid #e2e8f0', background: selected ? option.bg : 'white', color: selected ? option.color : '#475569', fontWeight: 800, cursor: 'pointer' }}>
                           {option.label}

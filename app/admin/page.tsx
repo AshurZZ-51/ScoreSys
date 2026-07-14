@@ -4,6 +4,17 @@ import { useEffect, useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { projectDisplayName, projectDisplaySubmitter, shouldShowProjectSlot } from '@/lib/projectDisplay';
 import { PROJECT_SLOT_COUNT } from '@/lib/projectSlots';
+import { specialScoreKey } from '@/lib/scoringRules';
+import {
+  ROUND_IDS,
+  ROUND_LABELS,
+  ROUND_TITLES,
+  VERDICT_OPTIONS,
+  REVIEW_STATUS_OPTIONS,
+  MATERIAL_STATUS_OPTIONS,
+  getReviewStatus,
+  getMaterialStatus
+} from '@/lib/reviewWorkflow';
 
 interface Project {
   id: string;
@@ -57,6 +68,11 @@ interface SummaryProject {
   bonusDetails: { reviewer: string; value: number; reason: string }[];
   dimTotals: Record<string, { total: number; avg: number; count: number; maxScore: number; percentage: number; reviewers: string[] }>;
   verdict: string | null;
+  currentRound: string;
+  reviewStatus: string;
+  materialStatus: string;
+  materialNote: string;
+  roundSummaries: Record<string, any>;
 }
 
 interface DimConfig {
@@ -225,6 +241,11 @@ export default function AdminPage() {
         totalScore: p.totalScore,
         bonusDetails: p.bonusDetails,
         completionRate: p.completionRate,
+        currentRound: p.currentRound,
+        reviewStatus: p.reviewStatus,
+        materialStatus: p.materialStatus,
+        materialNote: p.materialNote,
+        roundSummaries: p.roundSummaries,
         dimTotals: p.dimTotals,
         reviewerProblems: p.reviewerProblems,
         reviewerActions: p.reviewerActions
@@ -245,7 +266,7 @@ export default function AdminPage() {
     if (!activeMeeting || summaryProjects.length === 0) return;
     const exportDims = dimConfig.map(d => d.name);
     const lines: string[] = [];
-    lines.push(['编号', '项目名', '提报人', ...exportDims, '基础分(换算)', '加分', '总分', '完成度', '问题', '意见'].join(','));
+    lines.push(['编号', '项目名', '提报人', '当前轮次', '评审状态', '资料完整度', '资料备注', ...exportDims, '基础分', '加分', '总分', '完成度', '问题', '意见'].join(','));
     summaryProjects.forEach(p => {
       // 汇总所有评委的 problems 和 actions
       const allProblems = (p.reviewerProblems || []).flatMap(rp => rp.problems);
@@ -254,6 +275,10 @@ export default function AdminPage() {
         p.seq_no,
         p.name,
         p.submitter,
+        ROUND_LABELS[p.currentRound as keyof typeof ROUND_LABELS] || '第一轮',
+        getReviewStatus(p.reviewStatus).label,
+        getMaterialStatus(p.materialStatus).label,
+        p.materialNote || '',
         ...exportDims.map(d => p.dimTotals[d]?.avg?.toFixed(1) ?? ''),
         p.baseScore,
         p.bonusScore || 0,
@@ -518,6 +543,9 @@ export default function AdminPage() {
                         <th style={{ padding: '12px 10px', textAlign: 'left', fontSize: '12px', fontWeight: '700', color: '#64748b' }}>编号</th>
                         <th style={{ padding: '12px 10px', textAlign: 'left', fontSize: '12px', fontWeight: '700', color: '#64748b' }}>项目名</th>
                         <th style={{ padding: '12px 10px', textAlign: 'left', fontSize: '12px', fontWeight: '700', color: '#64748b' }}>提报人</th>
+                        <th style={{ padding: '12px 10px', textAlign: 'center', fontSize: '12px', fontWeight: '700', color: '#64748b' }}>轮次</th>
+                        <th style={{ padding: '12px 10px', textAlign: 'center', fontSize: '12px', fontWeight: '700', color: '#64748b' }}>状态</th>
+                        <th style={{ padding: '12px 10px', textAlign: 'center', fontSize: '12px', fontWeight: '700', color: '#64748b' }}>资料</th>
                         <th style={{ padding: '12px 10px', textAlign: 'center', fontSize: '12px', fontWeight: '700', color: '#64748b' }}>可玩</th>
                         <th style={{ padding: '12px 10px', textAlign: 'center', fontSize: '12px', fontWeight: '700', color: '#64748b' }}>创新</th>
                         <th style={{ padding: '12px 10px', textAlign: 'center', fontSize: '12px', fontWeight: '700', color: '#64748b' }}>规划</th>
@@ -536,6 +564,15 @@ export default function AdminPage() {
                             <td style={{ padding: '12px 10px', fontSize: '14px', color: '#64748b' }}>{p.seq_no}</td>
                             <td style={{ padding: '12px 10px', fontSize: '14px', fontWeight: '600', color: p.name ? '#0f172a' : '#94a3b8' }}>{projectDisplayName(p)}</td>
                             <td style={{ padding: '12px 10px', fontSize: '13px', color: p.submitter ? '#64748b' : '#94a3b8' }}>{projectDisplaySubmitter(p)}</td>
+                            <td style={{ padding: '12px 10px', textAlign: 'center' }}>
+                              <span style={{ fontSize: '11px', fontWeight: 800, color: '#1e40af', background: '#eff6ff', padding: '3px 8px', borderRadius: 999 }}>{ROUND_LABELS[p.currentRound as keyof typeof ROUND_LABELS] || '第一轮'}</span>
+                            </td>
+                            <td style={{ padding: '12px 10px', textAlign: 'center' }}>
+                              <StatusPill option={getReviewStatus(p.reviewStatus)} />
+                            </td>
+                            <td style={{ padding: '12px 10px', textAlign: 'center' }}>
+                              <StatusPill option={getMaterialStatus(p.materialStatus)} />
+                            </td>
                             {dimConfig.map(d => d.name).map(d => (
                               <td key={d} style={{ padding: '12px 10px', textAlign: 'center', fontSize: '13px', color: '#475569' }}>
                                 {p.dimTotals[d] ? p.dimTotals[d].avg.toFixed(1) : '-'}
@@ -807,24 +844,45 @@ function NewMeetingModal({ meetings, onClose, onSuccess }: any) {
   );
 }
 
+function StatusPill({ option }: { option: { label: string; color: string; bg: string } }) {
+  return (
+    <span style={{
+      display: 'inline-block',
+      padding: '3px 10px',
+      borderRadius: '999px',
+      fontSize: '11px',
+      fontWeight: '700',
+      background: option.bg,
+      color: option.color,
+      whiteSpace: 'nowrap'
+    }}>{option.label}</span>
+  );
+}
+
 function ProjectDetailCard({ project, meetingId, onSaved }: { project: SummaryProject; meetingId: string; onSaved?: () => void }) {
   const [expanded, setExpanded] = useState(false);
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState('');
   const [localVerdict, setLocalVerdict] = useState<string | null>(project.verdict);
+  const [localRound, setLocalRound] = useState(project.currentRound || 'r1');
+  const [localStatus, setLocalStatus] = useState(project.reviewStatus || 'r1_pending');
+  const [localMaterialStatus, setLocalMaterialStatus] = useState(project.materialStatus || 'unchecked');
+  const [localMaterialNote, setLocalMaterialNote] = useState(project.materialNote || '');
+  const [localProblemSummary, setLocalProblemSummary] = useState(project.roundSummaries?.[project.currentRound || 'r1']?.problemSummary || '');
+  const [localActionSummary, setLocalActionSummary] = useState(project.roundSummaries?.[project.currentRound || 'r1']?.actionSummary || '');
 
   // 当外部数据刷新时同步本地状态
   useEffect(() => {
     setLocalVerdict(project.verdict);
-  }, [project.verdict]);
+    setLocalRound(project.currentRound || 'r1');
+    setLocalStatus(project.reviewStatus || 'r1_pending');
+    setLocalMaterialStatus(project.materialStatus || 'unchecked');
+    setLocalMaterialNote(project.materialNote || '');
+    setLocalProblemSummary(project.roundSummaries?.[project.currentRound || 'r1']?.problemSummary || '');
+    setLocalActionSummary(project.roundSummaries?.[project.currentRound || 'r1']?.actionSummary || '');
+  }, [project.verdict, project.currentRound, project.reviewStatus, project.materialStatus, project.materialNote, project.roundSummaries]);
 
-  const verdictOptions = [
-    { value: 'approved', label: '评审通过', color: '#10b981', bg: '#d1fae5' },
-    { value: 'needs_rework', label: '待修改', color: '#f59e0b', bg: '#fef3c7' },
-    { value: 'needs_review', label: '待重评', color: '#ef4444', bg: '#fee2e2' }
-  ];
-
-  const currentVerdict = verdictOptions.find(v => v.value === localVerdict);
+  const currentVerdict = VERDICT_OPTIONS.find(v => v.value === localVerdict);
 
   const saveVerdict = async (e: React.MouseEvent, value: string) => {
     e.stopPropagation();
@@ -841,7 +899,7 @@ function ProjectDetailCard({ project, meetingId, onSaved }: { project: SummaryPr
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           meeting_id: meetingId, project_id: project.id, reviewer_code: code,
-          dim_name: '__verdict__', score: 0, comment: newVerdict
+          dim_name: specialScoreKey(localRound, '__verdict__'), score: 0, comment: newVerdict
         })
       });
       if (res.ok) {
@@ -870,7 +928,7 @@ function ProjectDetailCard({ project, meetingId, onSaved }: { project: SummaryPr
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           meeting_id: meetingId, project_id: project.id, reviewer_code: code,
-          dim_name: '__verdict__', score: 0, comment: localVerdict
+          dim_name: specialScoreKey(localRound, '__verdict__'), score: 0, comment: localVerdict
         })
       });
       if (res.ok) {
@@ -880,6 +938,51 @@ function ProjectDetailCard({ project, meetingId, onSaved }: { project: SummaryPr
       } else {
         const d = await res.json();
         setMsg('保存失败：' + d.error);
+      }
+    } catch (e: any) {
+      setMsg('保存失败：' + e.message);
+    }
+    setSaving(false);
+  };
+
+  const saveTracking = async (e?: React.MouseEvent) => {
+    e?.stopPropagation();
+    e?.preventDefault();
+    setSaving(true);
+    setMsg('');
+    try {
+      const stored = localStorage.getItem('reviewer');
+      const admin = stored ? JSON.parse(stored) : null;
+      const code = admin?.code || 'admin';
+      const payloadBase = {
+        meeting_id: meetingId,
+        project_id: project.id,
+        reviewer_code: code,
+        score: 0
+      };
+      const rows = [
+        { dim_name: '__current_round__', comment: localRound },
+        { dim_name: '__review_status__', comment: localStatus },
+        { dim_name: '__material_status__', comment: localMaterialStatus },
+        { dim_name: '__material_note__', comment: localMaterialNote.trim() || null },
+        { dim_name: '__material_checked_at__', comment: new Date().toISOString() },
+        { dim_name: '__material_checker__', comment: code },
+        { dim_name: specialScoreKey(localRound, '__admin_problems__'), comment: localProblemSummary.trim() || null },
+        { dim_name: specialScoreKey(localRound, '__admin_actions__'), comment: localActionSummary.trim() || null }
+      ];
+      const responses = await Promise.all(rows.map((row) => fetch('/api/scores', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...payloadBase, ...row })
+      })));
+      const failed = responses.find((res) => !res.ok);
+      if (failed) {
+        const d = await failed.json();
+        setMsg('保存失败：' + d.error);
+      } else {
+        setMsg('✓ 追踪信息已保存');
+        onSaved?.();
+        setTimeout(() => setMsg(''), 1500);
       }
     } catch (e: any) {
       setMsg('保存失败：' + e.message);
@@ -915,6 +1018,9 @@ function ProjectDetailCard({ project, meetingId, onSaved }: { project: SummaryPr
         {!currentVerdict && (
           <div style={{ padding: '4px 12px', borderRadius: '12px', fontSize: '12px', fontWeight: '500', background: '#f1f5f9', color: '#94a3b8' }}>未定</div>
         )}
+        <span style={{ padding: '4px 12px', borderRadius: '12px', fontSize: '12px', fontWeight: '700', background: '#eff6ff', color: '#1e40af' }}>{ROUND_LABELS[project.currentRound as keyof typeof ROUND_LABELS] || '第一轮'}</span>
+        <StatusPill option={getReviewStatus(project.reviewStatus)} />
+        <StatusPill option={getMaterialStatus(project.materialStatus)} />
         <div style={{ display: 'flex', gap: '6px' }}>
           {allProblems.length > 0 && <span style={{ fontSize: '11px', padding: '2px 8px', borderRadius: '10px', background: '#fee2e2', color: '#dc2626' }}>⚠ {allProblems.length}</span>}
           {allActions.length > 0 && <span style={{ fontSize: '11px', padding: '2px 8px', borderRadius: '10px', background: '#dcfce7', color: '#059669' }}>✓ {allActions.length}</span>}
@@ -922,10 +1028,53 @@ function ProjectDetailCard({ project, meetingId, onSaved }: { project: SummaryPr
       </div>
       {expanded && (
         <div style={{ padding: '0 18px 18px', borderTop: '1px solid #e2e8f0' }}>
+          <div style={{ marginTop: '14px', marginBottom: '14px', padding: '14px', background: 'white', borderRadius: '10px', border: '1px solid #e2e8f0' }}>
+            <div style={{ fontSize: '12px', fontWeight: '700', color: '#475569', marginBottom: '10px' }}>评审追踪</div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(150px, 1fr))', gap: '10px', marginBottom: '10px' }}>
+              <label style={{ fontSize: '12px', color: '#64748b', fontWeight: '600' }}>
+                当前轮次
+                <select value={localRound} onClick={(e) => e.stopPropagation()} onChange={(e) => {
+                  const nextRound = e.target.value;
+                  setLocalRound(nextRound);
+                  setLocalProblemSummary(project.roundSummaries?.[nextRound]?.problemSummary || '');
+                  setLocalActionSummary(project.roundSummaries?.[nextRound]?.actionSummary || '');
+                }} disabled={saving} style={{ width: '100%', marginTop: '5px', padding: '8px 10px', border: '1px solid #cbd5e1', borderRadius: '8px', fontSize: '13px', color: '#0f172a', background: 'white' }}>
+                  {ROUND_IDS.map((roundId) => <option key={roundId} value={roundId}>{ROUND_LABELS[roundId as keyof typeof ROUND_LABELS]} · {ROUND_TITLES[roundId as keyof typeof ROUND_TITLES]}</option>)}
+                </select>
+              </label>
+              <label style={{ fontSize: '12px', color: '#64748b', fontWeight: '600' }}>
+                评审状态
+                <select value={localStatus} onClick={(e) => e.stopPropagation()} onChange={(e) => setLocalStatus(e.target.value)} disabled={saving} style={{ width: '100%', marginTop: '5px', padding: '8px 10px', border: '1px solid #cbd5e1', borderRadius: '8px', fontSize: '13px', color: '#0f172a', background: 'white' }}>
+                  {REVIEW_STATUS_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                </select>
+              </label>
+              <label style={{ fontSize: '12px', color: '#64748b', fontWeight: '600' }}>
+                资料完整度
+                <select value={localMaterialStatus} onClick={(e) => e.stopPropagation()} onChange={(e) => setLocalMaterialStatus(e.target.value)} disabled={saving} style={{ width: '100%', marginTop: '5px', padding: '8px 10px', border: '1px solid #cbd5e1', borderRadius: '8px', fontSize: '13px', color: '#0f172a', background: 'white' }}>
+                  {MATERIAL_STATUS_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                </select>
+              </label>
+              <label style={{ fontSize: '12px', color: '#64748b', fontWeight: '600' }}>
+                资料备注
+                <input value={localMaterialNote} onClick={(e) => e.stopPropagation()} onChange={(e) => setLocalMaterialNote(e.target.value)} disabled={saving} placeholder="缺失资料或补充要求" style={{ width: '100%', marginTop: '5px', padding: '8px 10px', border: '1px solid #cbd5e1', borderRadius: '8px', fontSize: '13px', boxSizing: 'border-box' }} />
+              </label>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', marginBottom: '10px' }}>
+              <label style={{ fontSize: '12px', color: '#dc2626', fontWeight: '700' }}>
+                本轮问题汇总（可修改）
+                <textarea value={localProblemSummary} onClick={(e) => e.stopPropagation()} onChange={(e) => setLocalProblemSummary(e.target.value)} rows={4} style={{ width: '100%', marginTop: '6px', boxSizing: 'border-box', padding: '10px', border: '1px solid #fecaca', borderRadius: '8px', background: '#fff' }} />
+              </label>
+              <label style={{ fontSize: '12px', color: '#059669', fontWeight: '700' }}>
+                本轮修改建议汇总（可修改）
+                <textarea value={localActionSummary} onClick={(e) => e.stopPropagation()} onChange={(e) => setLocalActionSummary(e.target.value)} rows={4} style={{ width: '100%', marginTop: '6px', boxSizing: 'border-box', padding: '10px', border: '1px solid #bbf7d0', borderRadius: '8px', background: '#fff' }} />
+              </label>
+            </div>
+            <button type="button" onClick={saveTracking} disabled={saving} style={{ padding: '8px 16px', borderRadius: '8px', fontSize: '13px', fontWeight: '700', cursor: saving ? 'not-allowed' : 'pointer', border: 'none', background: '#2563eb', color: 'white' }}>保存追踪信息</button>
+          </div>
           <div style={{ marginTop: '14px', marginBottom: '14px' }}>
             <div style={{ fontSize: '12px', fontWeight: '700', color: '#475569', marginBottom: '8px' }}>📌 评审结论</div>
             <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
-              {verdictOptions.map(opt => {
+              {VERDICT_OPTIONS.map(opt => {
                 const isActive = localVerdict === opt.value;
                 return (
                   <button type="button" key={opt.value} onClick={(e) => { e.stopPropagation(); e.preventDefault(); setLocalVerdict(localVerdict === opt.value ? null : opt.value); }} disabled={saving} style={{

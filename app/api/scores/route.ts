@@ -1,6 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase';
 import { getScoreMax, isValidScoreValue, parseScoreKey } from '@/lib/scoringRules';
+import {
+  ADMIN_TRACKING_SPECIAL_DIMENSIONS,
+  getRoundFromDimName,
+  nextStatusForVerdict,
+  stripRoundPrefix
+} from '@/lib/reviewWorkflow';
 
 export const dynamic = 'force-dynamic';
 
@@ -63,19 +69,29 @@ export async function POST(request: NextRequest) {
       .eq('code', reviewer_code)
       .single();
 
-    if (dim_name === '__bonus__') {
+    const baseDimName = stripRoundPrefix(dim_name);
+    const parsedScore = parseScoreKey(dim_name);
+
+    if (baseDimName === '__bonus__') {
       if (reviewer_code.toUpperCase() !== 'W') {
         return NextResponse.json({ error: '只有 Walker 可以使用加分项' }, { status: 403 });
       }
-    } else if (dim_name === '__verdict__') {
+    } else if (baseDimName === '__verdict__') {
       if (reviewer_code.toUpperCase() !== 'W' && !reviewerInfo?.is_admin) {
         return NextResponse.json({ error: '只有 Walker 或管理员可以设置评审结论' }, { status: 403 });
       }
-    } else if (dim_name === '__problems__' || dim_name === '__actions__') {
+    } else if (baseDimName === '__problems__' || baseDimName === '__actions__') {
       // Text-only review fields reuse the score table.
+    } else if (ADMIN_TRACKING_SPECIAL_DIMENSIONS.has(baseDimName)) {
+      if (!reviewerInfo?.is_admin) {
+        return NextResponse.json({ error: '只有管理员可以更新项目追踪字段' }, { status: 403 });
+      }
+    } else if (parsedScore?.roundId) {
+      if (reviewerInfo?.is_admin) {
+        return NextResponse.json({ error: '管理员账号不参与评委评分' }, { status: 403 });
+      }
     } else {
-      const parsed = parseScoreKey(dim_name);
-      const parentDimension = parsed?.dimensionName || dim_name;
+      const parentDimension = parsedScore?.dimensionName || dim_name;
       const { data: reviewerDim } = await supabaseAdmin
         .from('reviewer_dims')
         .select('max_score')
@@ -117,6 +133,49 @@ export async function POST(request: NextRequest) {
       .single();
 
     if (error) throw error;
+
+    if (baseDimName === '__verdict__' && comment) {
+      const verdictRound = getRoundFromDimName(dim_name);
+      if (verdictRound) {
+        const nextStatus = nextStatusForVerdict(verdictRound, comment);
+        const nextRound = verdictRound === 'r1' && comment === 'approved' ? 'r2' : verdictRound;
+        const trackingRows = [
+          {
+            meeting_id,
+            project_id,
+            reviewer_code,
+            dim_name: '__review_status__',
+            score: 0,
+            comment: nextStatus,
+            updated_at: new Date().toISOString()
+          },
+          {
+            meeting_id,
+            project_id,
+            reviewer_code,
+            dim_name: '__current_round__',
+            score: 0,
+            comment: nextRound,
+            updated_at: new Date().toISOString()
+          }
+        ];
+        if (comment === 'recheck') {
+          trackingRows.push({
+            meeting_id,
+            project_id,
+            reviewer_code,
+            dim_name: verdictRound === 'r1' ? '__r1_retry_count__' : '__r2_retry_count__',
+            score: 0,
+            comment: '1',
+            updated_at: new Date().toISOString()
+          });
+        }
+        const { error: trackingError } = await supabaseAdmin
+          .from('scores')
+          .upsert(trackingRows, { onConflict: 'meeting_id,project_id,reviewer_code,dim_name' });
+        if (trackingError) throw trackingError;
+      }
+    }
 
     return NextResponse.json({ success: true, score: data });
   } catch (err: any) {
