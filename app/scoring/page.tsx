@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { SCORING_DIMENSIONS, computeRoundBaseScoreFromScoreMap, roundScoreKey, specialScoreKey } from '@/lib/scoringRules';
 import { ROUND_LABELS, ROUND_TITLES, VERDICT_OPTIONS, getReviewStatus } from '@/lib/reviewWorkflow';
 import { createSaveFeedback } from '@/lib/saveFeedback';
+import { getMaterialProgress } from '@/lib/projectPoolWorkflow';
 
 interface Reviewer {
   code: string;
@@ -26,6 +27,8 @@ interface Project {
   currentRound?: string;
   reviewStatus?: string;
   materialStatus?: string;
+  pool_project_id?: string;
+  materialProgress?: { approved: number; total: number; complete: boolean };
   roundSummaries?: Record<string, any>;
 }
 
@@ -118,8 +121,18 @@ export default function ScoringPage() {
         && project.submitter
         && !['cancelled', 'initiation', 'r1_rejected', 'r2_rejected', 'rejected'].includes(project.reviewStatus || '')
       ));
-      setProjects(nextProjects);
-      setActiveProject(nextProjects[0] || null);
+      const projectsWithMaterialProgress = await Promise.all(nextProjects.map(async (project: Project) => {
+        if (!project.pool_project_id) return project;
+        try {
+          const materialResponse = await fetch(`/api/project-pool/${project.pool_project_id}/materials`, { cache: 'no-store' });
+          const materialData = await materialResponse.json();
+          return materialResponse.ok ? { ...project, materialProgress: getMaterialProgress(materialData.materials || []) } : project;
+        } catch {
+          return project;
+        }
+      }));
+      setProjects(projectsWithMaterialProgress);
+      setActiveProject(projectsWithMaterialProgress[0] || null);
       await loadScores(meetingId);
     } finally {
       setLoading(false);
@@ -488,6 +501,7 @@ export default function ScoringPage() {
                 <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
                   <span style={{ fontSize: 12, fontWeight: 800, color: '#1e40af', background: '#eff6ff', padding: '4px 10px', borderRadius: 999 }}>{ROUND_LABELS[getActiveRound() as keyof typeof ROUND_LABELS]} · {ROUND_TITLES[getActiveRound() as keyof typeof ROUND_TITLES]}</span>
                   <span style={{ fontSize: 12, fontWeight: 800, color: getReviewStatus(activeProject.reviewStatus).color, background: getReviewStatus(activeProject.reviewStatus).bg, padding: '4px 10px', borderRadius: 999 }}>{getReviewStatus(activeProject.reviewStatus).label}</span>
+                  {activeProject.pool_project_id && <span style={{ fontSize: 12, fontWeight: 800, color: activeProject.materialProgress?.complete ? '#047857' : '#b45309', background: activeProject.materialProgress?.complete ? '#ecfdf5' : '#fffbeb', padding: '4px 10px', borderRadius: 999 }}>{activeProject.materialProgress?.complete ? '资料齐全' : `待补充 ${activeProject.materialProgress?.approved || 0}/${activeProject.materialProgress?.total || 5}`}</span>}
                 </div>
               </div>
 

@@ -3,9 +3,12 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { MATERIAL_ITEMS, getMaterialProgress, projectStatusLabel } from '@/lib/projectPoolWorkflow';
+import ProjectPoolTable from './components/ProjectPoolTable';
+import ProjectDrawer from './components/ProjectDrawer';
+import ProjectArchivePanel from './components/ProjectArchivePanel';
 
 type AnyRecord = Record<string, any>;
-const tabs = [['pending', '待评审项目池'], ['meetings', '评审会管理'], ['reports', '结论与报告'], ['reviewed', '已评审项目池'], ['results', '结果池']] as const;
+const tabs = [['pending', '待评审项目池'], ['meetings', '评审会管理'], ['reports', '结论与报告'], ['reviewed', '已评审项目池'], ['results', '结果池'], ['archive', '归档与恢复']] as const;
 const readyStatuses = ['ready_r1', 'r1_recheck_ready', 'ready_r2', 'r2_recheck_ready'];
 const statusOptions = ['materials_pending', 'ready_r1', 'r1_recheck_ready', 'ready_r2', 'r2_recheck_ready', 'initiation', 'rejected'];
 const materialStatusOptions = [
@@ -23,6 +26,8 @@ export default function V2AdminPage() {
   const router = useRouter();
   const [tab, setTab] = useState<(typeof tabs)[number][0]>('pending');
   const [projects, setProjects] = useState<AnyRecord[]>([]);
+  const [archivedProjects, setArchivedProjects] = useState<AnyRecord[]>([]);
+  const [purgePendingProjects, setPurgePendingProjects] = useState<AnyRecord[]>([]);
   const [meetings, setMeetings] = useState<AnyRecord[]>([]);
   const [selectedProject, setSelectedProject] = useState<AnyRecord | null>(null);
   const [selectedMeeting, setSelectedMeeting] = useState<AnyRecord | null>(null);
@@ -31,11 +36,20 @@ export default function V2AdminPage() {
   const [showCreateMeeting, setShowCreateMeeting] = useState(false);
   const [projectForm, setProjectForm] = useState({ name: '', submitter: '', description: '' });
   const [meetingForm, setMeetingForm] = useState({ name: '', meeting_date: '', deadline: '' });
+  const [poolMonth, setPoolMonth] = useState('');
 
-  const load = async () => {
-    const [poolResponse, meetingResponse] = await Promise.all([fetch('/api/project-pool?scope=all', { cache: 'no-store' }), fetch('/api/meetings', { cache: 'no-store' })]);
-    const pool = await poolResponse.json(); const meeting = await meetingResponse.json();
-    if (poolResponse.ok) setProjects(pool.projects || []); else setNotice(pool.error || '读取项目池失败');
+  const load = async (month = poolMonth) => {
+    const query = month ? `&month=${encodeURIComponent(month)}` : '';
+    const [poolResponse, archiveResponse, purgeResponse, meetingResponse] = await Promise.all([
+      fetch(`/api/project-pool?scope=active${query}`, { cache: 'no-store' }),
+      fetch(`/api/project-pool?scope=archived${query}`, { cache: 'no-store' }),
+      fetch(`/api/project-pool?scope=purge_pending${query}`, { cache: 'no-store' }),
+      fetch('/api/meetings', { cache: 'no-store' })
+    ]);
+    const pool = await poolResponse.json(); const archive = await archiveResponse.json(); const purge = await purgeResponse.json(); const meeting = await meetingResponse.json();
+    if (poolResponse.ok) setProjects(pool.projects || []); else setNotice(pool.error || 'Unable to load the project pool');
+    if (archiveResponse.ok) setArchivedProjects(archive.projects || []);
+    if (purgeResponse.ok) setPurgePendingProjects(purge.projects || []);
     if (meetingResponse.ok) setMeetings((meeting.meetings || []).filter((item: AnyRecord) => !item.deleted_at));
   };
 
@@ -83,11 +97,15 @@ export default function V2AdminPage() {
     const results = await Promise.all(ids.map((id) => fetch(`/api/project-pool?id=${encodeURIComponent(id)}&operator_code=${encodeURIComponent(adminCode())}`, { method: 'DELETE' }).then(async (response) => ({ ok: response.ok, data: await response.json() }))));
     const failed = results.filter((result) => !result.ok); setNotice(failed.length ? `${ids.length - failed.length} 个已归档，${failed.length} 个失败。` : `已归档 ${ids.length} 个项目。`); await load();
   };
-  const refreshProject = async (id: string) => { await load(); await openProject({ id }); };
+  const refreshProject = async (updated?: AnyRecord) => {
+    if (updated?.id) setProjects((current) => current.map((project) => project.id === updated.id ? { ...project, ...updated } : project));
+    await load();
+    if (updated?.id && !updated.archived_at) await openProject(updated);
+  };
   const openProject = async (project: AnyRecord) => {
     const id = project.id || project.pool_project_id; if (!id) return;
     const response = await fetch(`/api/project-pool/${id}/history`, { cache: 'no-store' }); const data = await response.json();
-    if (response.ok) setSelectedProject({ ...data.project, projects: data.assignments || [], status_history: data.history || [] }); else setNotice(data.error || '读取项目详情失败');
+    if (response.ok) setSelectedProject({ ...data.project, projects: data.assignments || [], completed_reviews: data.completed_reviews || [], status_history: data.history || [] }); else setNotice(data.error || '读取项目详情失败');
   };
   const openMeeting = (meeting: AnyRecord) => { setSelectedMeeting(meeting); setTab('reports'); };
 
@@ -95,20 +113,21 @@ export default function V2AdminPage() {
     <header style={styles.header}><div><h1 style={styles.h1}>立项评审管理</h1><p style={styles.subtle}>项目池管理项目本身；每次评审会只承载一个轮次的评审记录。</p></div><button style={styles.secondary} onClick={() => { localStorage.removeItem('reviewer'); router.push('/'); }}>退出</button></header>
     <nav style={styles.tabs}>{tabs.map(([id, label]) => <button key={id} style={{ ...styles.tab, ...(tab === id ? styles.tabActive : {}) }} onClick={() => { setTab(id); if (id !== 'reports') setSelectedMeeting(null); }}>{label}</button>)}</nav>
     {notice && <div style={styles.notice}>{notice}</div>}
-    {tab === 'pending' && <section><Toolbar title={`待评审项目池 (${pendingProjects.length})`} action="新建项目" onAction={() => setShowCreateProject((value) => !value)} />{showCreateProject && <div style={styles.panel}><input style={styles.input} placeholder="项目名称" value={projectForm.name} onChange={(event) => setProjectForm({ ...projectForm, name: event.target.value })}/><input style={styles.input} placeholder="提报人" value={projectForm.submitter} onChange={(event) => setProjectForm({ ...projectForm, submitter: event.target.value })}/><textarea style={styles.input} rows={3} placeholder="项目说明" value={projectForm.description} onChange={(event) => setProjectForm({ ...projectForm, description: event.target.value })}/><button style={styles.primary} onClick={createProject}>建立项目</button></div>}<ProjectTable projects={pendingProjects} meetings={meetings} onOpen={openProject} onSchedule={schedule} onArchive={archiveProjects}/></section>}
+    {tab === 'pending' && <section><Toolbar title={`待评审项目池 (${pendingProjects.length})`} action="新建项目" onAction={() => setShowCreateProject((value) => !value)} />{showCreateProject && <div style={styles.panel}><input style={styles.input} placeholder="项目名称" value={projectForm.name} onChange={(event) => setProjectForm({ ...projectForm, name: event.target.value })}/><input style={styles.input} placeholder="提报人" value={projectForm.submitter} onChange={(event) => setProjectForm({ ...projectForm, submitter: event.target.value })}/><textarea style={styles.input} rows={3} placeholder="项目说明" value={projectForm.description} onChange={(event) => setProjectForm({ ...projectForm, description: event.target.value })}/><button style={styles.primary} onClick={createProject}>建立项目</button></div>}<ProjectPoolTable projects={pendingProjects} meetings={meetings} scope="active" month={poolMonth} onMonthChange={(month) => { setPoolMonth(month); load(month); }} onRefresh={load} onOpenProject={openProject}/></section>}
     {tab === 'meetings' && <section><Toolbar title="评审会管理" action="创建评审会" onAction={() => setShowCreateMeeting((value) => !value)} />{showCreateMeeting && <div style={styles.panel}><input style={styles.input} placeholder="评审会名称" value={meetingForm.name} onChange={(event) => setMeetingForm({ ...meetingForm, name: event.target.value })}/><input style={styles.input} type="date" value={meetingForm.meeting_date} onChange={(event) => setMeetingForm({ ...meetingForm, meeting_date: event.target.value })}/><input style={styles.input} type="datetime-local" value={meetingForm.deadline} onChange={(event) => setMeetingForm({ ...meetingForm, deadline: event.target.value })}/><button style={styles.primary} onClick={createMeeting}>保存评审会</button></div>}<MeetingTable meetings={meetings} assignmentsForMeeting={assignmentsForMeeting} onOpen={openMeeting} onCurrent={setCurrentMeeting} onDelete={deleteMeeting}/></section>}
     {tab === 'reports' && <section><Toolbar title="结论与报告" />{selectedMeeting ? <MeetingWorkspace meeting={selectedMeeting} projects={projects} onBack={() => setSelectedMeeting(null)} onOpenProject={openProject} onSchedule={schedule} onCurrent={setCurrentMeeting} onRefresh={load} onNotice={setNotice} /> : <MeetingTable meetings={meetings} assignmentsForMeeting={assignmentsForMeeting} onOpen={openMeeting} onCurrent={setCurrentMeeting} onDelete={deleteMeeting}/>}</section>}
-    {tab === 'reviewed' && <section><Toolbar title={`已评审项目池 (${reviewedProjects.length})`} /><ProjectTable projects={reviewedProjects} meetings={meetings} onOpen={openProject} onSchedule={schedule} onArchive={archiveProjects}/></section>}
+    {tab === 'reviewed' && <section><Toolbar title={`已评审项目池 (${reviewedProjects.length})`} /><ProjectPoolTable projects={reviewedProjects} meetings={meetings} scope="reviewed" month={poolMonth} onMonthChange={(month) => { setPoolMonth(month); load(month); }} onRefresh={load} onOpenProject={openProject}/></section>}
     {tab === 'results' && <section><Toolbar title="结果池" /><div style={styles.resultGrid}>{[['approved', '通过项目'], ['recheck', '待重评项目'], ['rejected', '驳回项目'], ['history', '历史待整理']].map(([bucket, label]) => <div key={bucket} style={styles.panel}><strong>{label}</strong>{projects.filter((project) => bucket === 'history' ? (project.projects || []).length > 0 && !project.latest_verdict : project.latest_verdict === bucket).map((project) => <button key={project.id} style={styles.listButton} onClick={() => openProject(project)}>{project.name}<span>{projectStatusLabel(project.status)}</span></button>)}</div>)}</div></section>}
+    {tab === 'archive' && <section><Toolbar title="归档与恢复" /><ProjectArchivePanel archivedProjects={archivedProjects} purgePendingProjects={purgePendingProjects} onRefresh={load} onOpenProject={openProject} /></section>}
     {selectedProject && (
-      <ProjectDrawer project={selectedProject} onClose={() => setSelectedProject(null)} onSaved={refreshProject} onArchive={() => archiveProjects([selectedProject.id]).then(() => setSelectedProject(null))} onNotice={setNotice}/>
+      <ProjectDrawer project={selectedProject} onDismiss={() => setSelectedProject(null)} onSaved={refreshProject}/>
     )}
   </main>;
 }
 
 function Toolbar({ title, action, onAction }: AnyRecord) { return <div style={styles.toolbar}><h2 style={styles.h2}>{title}</h2>{action && <button style={styles.primary} onClick={onAction}>{action}</button>}</div>; }
 
-function ProjectTable({ projects, meetings, onOpen, onSchedule, onArchive }: AnyRecord) {
+function LegacyProjectTable({ projects, meetings, onOpen, onSchedule, onArchive }: AnyRecord) {
   const [selected, setSelected] = useState<string[]>([]); const [meetingId, setMeetingId] = useState('');
   useEffect(() => setSelected((items) => items.filter((id) => projects.some((project: AnyRecord) => project.id === id))), [projects]);
   const toggle = (id: string) => setSelected((items) => items.includes(id) ? items.filter((item) => item !== id) : [...items, id]);
@@ -131,7 +150,7 @@ function MeetingWorkspace({ meeting, projects, onBack, onOpenProject, onSchedule
   return <div><div style={styles.toolbar}><div><button style={styles.secondary} onClick={onBack}>返回评审会列表</button><h2 style={{ ...styles.h2, marginTop: 12 }}>{meeting.name}</h2></div><div style={styles.actions}><button style={styles.secondary} onClick={() => onCurrent(meeting)}>设为当前评审会</button><button style={styles.secondary} onClick={() => router.push(`/report?meetingId=${meeting.id}&from=admin`)}>打开打印报告</button></div></div><div style={styles.panel}><h3 style={{ margin: 0 }}>评审会设置</h3><input style={styles.input} value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })}/><input style={styles.input} type="date" value={form.meeting_date} onChange={(event) => setForm({ ...form, meeting_date: event.target.value })}/><input style={styles.input} type="datetime-local" value={form.deadline} onChange={(event) => setForm({ ...form, deadline: event.target.value })}/><textarea style={styles.input} rows={2} placeholder="会议备注" value={form.notes} onChange={(event) => setForm({ ...form, notes: event.target.value })}/><button style={styles.primary} onClick={saveMeeting}>保存评审会设置</button></div><div style={styles.panel}><h3 style={{ margin: 0 }}>加入待评审项目</h3><div style={styles.choiceList}>{eligible.map((project: AnyRecord) => <label key={project.id} style={styles.choice}><input type="checkbox" checked={selected.includes(project.id)} onChange={() => setSelected((items) => items.includes(project.id) ? items.filter((id) => id !== project.id) : [...items, project.id])}/><span>{project.name}</span><small>{projectStatusLabel(project.status)}，{materialText(project)}</small></label>)}{eligible.length === 0 && <span style={styles.subtle}>当前没有可加入的合格项目。</span>}</div><button style={styles.primary} disabled={!selected.length || assignments.length >= 12} onClick={addSelected}>加入所选项目</button></div><h3>项目评审顺序（12 个槽位）</h3><div style={styles.slotGrid}>{Array.from({ length: 12 }, (_, index) => { const assignment = assignments[index]; return <div key={assignment?.id || index} style={styles.slot}>{assignment ? <><strong>{index + 1}. {assignment.name}</strong><span>{assignment.submitter} · 第 {assignment.round_no || 1} 轮 / 第 {assignment.attempt_no || 1} 次</span><span>{assignmentStatusLabel(assignment.assignment_status)}</span><div style={styles.actions}><button style={styles.iconButton} title="上移" disabled={index === 0} onClick={() => move(index, -1)}>上</button><button style={styles.iconButton} title="下移" disabled={index === assignments.length - 1} onClick={() => move(index, 1)}>下</button>{assignment.pool_project_id && <button style={styles.danger} onClick={() => removeAssignment(assignment)}>移出</button>}</div></> : <span style={styles.subtle}>{index + 1}. 空槽位</span>}</div>; })}</div><h3>本次评审结论与汇总</h3><div style={styles.tableWrap}><table style={styles.table}><thead><tr>{['排名', '项目', '轮次', '总分', '完成度', 'Walker 结论', '问题与建议'].map((text) => <th style={styles.cell} key={text}>{text}</th>)}</tr></thead><tbody>{summaryProjects.map((project: AnyRecord, index: number) => <tr key={project.id}><td style={styles.cell}>{index + 1}</td><td style={styles.cell}><button style={styles.link} onClick={() => onOpenProject({ id: project.pool_project_id })}>{project.name}</button></td><td style={styles.cell}>第 {project.round_no || 1} 轮 / 第 {project.attempt_no || 1} 次</td><td style={styles.cell}>{Number(project.totalScore || 0).toFixed(1)} / 100</td><td style={styles.cell}>{project.completionRate || 0}%</td><td style={styles.cell}>{({ approved: '通过', recheck: '重评', rejected: '驳回' } as AnyRecord)[project.verdict] || '未定'}</td><td style={styles.cell}><div>{project.roundSummaries?.[project.currentRound]?.problemSummary || '-'}</div><div style={styles.subtle}>{project.roundSummaries?.[project.currentRound]?.actionSummary || ''}</div></td></tr>)}{summaryProjects.length === 0 && <tr><td colSpan={7} style={styles.empty}>本场评审会尚未形成可汇总的评审数据。</td></tr>}</tbody></table></div></div>;
 }
 
-function ProjectDrawer({ project, onClose, onSaved, onArchive, onNotice }: AnyRecord) {
+function LegacyProjectDrawer({ project, onClose, onSaved, onArchive, onNotice }: AnyRecord) {
   const [form, setForm] = useState({ name: project.name || '', submitter: project.submitter || '', description: project.description || '' }); const [manualStatus, setManualStatus] = useState(project.status || 'materials_pending'); const [manualNote, setManualNote] = useState(''); const materials = new Map<string, AnyRecord>((project.project_materials || []).map((material: AnyRecord) => [material.item_key, material]));
   useEffect(() => { setForm({ name: project.name || '', submitter: project.submitter || '', description: project.description || '' }); setManualStatus(project.status || 'materials_pending'); }, [project]);
   const saveProject = async () => { const response = await fetch('/api/project-pool', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: project.id, ...form, operator_code: adminCode() }) }); const data = await response.json(); onNotice(response.ok ? '项目详情已保存，列表已同步更新。' : data.error || '保存失败'); if (response.ok) onSaved(project.id); };
