@@ -1,150 +1,134 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isProjectPoolV2Enabled, supabaseAdmin } from '@/lib/supabase';
-import { PROJECT_SLOT_COUNT, copyProjectsForMeeting, createTemplateProjects } from '@/lib/projectSlots';
+import { createMaterialRows, makeMatchKey, normalizeProjectPart } from '@/lib/projectPoolWorkflow';
+import { PROJECT_SLOT_COUNT, createTemplateProjects } from '@/lib/projectSlots';
+import { sortMeetingsForAdmin } from '@/lib/adminLifecycle';
+import { requireAdminSession } from '@/lib/adminSession';
 
 export const dynamic = 'force-dynamic';
+
+function assignmentRound(status: string) {
+  if (['ready_r2', 'r2_recheck_ready'].includes(status)) return 2;
+  if (['ready_r1', 'r1_recheck_ready'].includes(status)) return 1;
+  return null;
+}
 
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
     const meetingId = searchParams.get('meetingId');
     const includeDeleted = searchParams.get('includeDeleted') === 'true';
-
     let query = supabaseAdmin
       .from('meetings')
       .select('id, name, meeting_date, deadline, status, notes, workflow_version, is_current, deleted_at, scheduled_purge_at, created_at')
       .order('meeting_date', { ascending: false });
-
-    if (meetingId) {
-      query = query.eq('id', meetingId);
-    } else if (!includeDeleted) {
-      query = query.is('deleted_at', null);
-    }
-
-    const { data: meetings, error } = await query;
+    if (meetingId) query = query.eq('id', meetingId);
+    else if (!includeDeleted) query = query.is('deleted_at', null);
+    const { data, error } = await query;
     if (error) throw error;
-
-    return NextResponse.json({ meetings: meetings || [] });
+    return NextResponse.json({ meetings: sortMeetingsForAdmin(data || []) }, { headers: { 'Cache-Control': 'no-store' } });
   } catch (err: any) {
-    console.error('Get meetings error:', err);
-    return NextResponse.json(
-      { error: '获取评审会列表失败: ' + err.message },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: `获取评审会列表失败: ${err.message}` }, { status: 500 });
   }
 }
 
 export async function POST(request: NextRequest) {
+  let meetingId = '';
+  const quickProjectIds: string[] = [];
   try {
-    const body = await request.json();
-    const { name, meeting_date, deadline, notes, copy_from_meeting_id } = body;
-
-    if (!name || !meeting_date) {
-      return NextResponse.json(
-        { error: '评审会名称和日期必填' },
-        { status: 400 }
-      );
+    const { name, meeting_date, deadline, notes = '', pool_project_ids = [], create_projects = [] } = await request.json();
+    const session = requireAdminSession(request);
+    if (!session) return NextResponse.json({ error: '仅管理员可以创建评审会' }, { status: 403 });
+    if (!String(name || '').trim() || !meeting_date) return NextResponse.json({ error: '评审会名称和日期必填' }, { status: 400 });
+    const poolIds = Array.isArray(pool_project_ids) ? Array.from(new Set(pool_project_ids.filter((id) => typeof id === 'string' && id))) : [];
+    const quickProjects = Array.isArray(create_projects) ? create_projects : [];
+    if (poolIds.length + quickProjects.length > PROJECT_SLOT_COUNT) return NextResponse.json({ error: '每场评审会最多安排 12 个项目' }, { status: 400 });
+    if (quickProjects.some((project: any) => !String(project?.name || '').trim() || !String(project?.submitter || '').trim())) {
+      return NextResponse.json({ error: '快速创建项目需要项目名称和提报人' }, { status: 400 });
     }
-
-    // 创建评审会
-    const { data: meeting, error } = await supabaseAdmin
-      .from('meetings')
-      .insert({
-        name,
-        meeting_date,
-        deadline: deadline || null,
-        notes: notes || '',
-        status: 'active',
-        workflow_version: isProjectPoolV2Enabled() ? 'two_round_v2' : 'legacy_v1'
-      })
-      .select()
-      .single();
-
-    if (error) throw error;
 
     const v2 = isProjectPoolV2Enabled();
+    let selectedProjects: any[] = [];
+    if (v2 && poolIds.length) {
+      const { data, error } = await supabaseAdmin.from('project_pool').select('id, status, archived_at').in('id', poolIds);
+      if (error) throw error;
+      if ((data || []).length !== poolIds.length || (data || []).some((project: any) => project.archived_at || !assignmentRound(project.status))) {
+        return NextResponse.json({ error: '所选项目不存在、已归档或暂不可安排' }, { status: 400 });
+      }
+      selectedProjects = data || [];
+    }
+
+    const { data: meeting, error: meetingError } = await supabaseAdmin.from('meetings').insert({
+      name: String(name).trim(), meeting_date, deadline: deadline || null, notes: String(notes || '').trim(), status: 'active',
+      workflow_version: v2 ? 'two_round_v2' : 'legacy_v1'
+    }).select().single();
+    if (meetingError) throw meetingError;
+    meetingId = meeting.id;
+
     if (v2) {
-      const { data: reviewers } = await supabaseAdmin.from('reviewers').select('code, name, role, is_admin').eq('is_admin', false);
+      const { data: reviewers, error: reviewerError } = await supabaseAdmin.from('reviewers').select('code, name, role, is_admin').eq('is_admin', false);
+      if (reviewerError) throw reviewerError;
       if (reviewers?.length) {
-        await supabaseAdmin.from('meeting_reviewers').insert(reviewers.map((reviewer: any) => ({
+        const { error } = await supabaseAdmin.from('meeting_reviewers').insert(reviewers.map((reviewer: any) => ({
           meeting_id: meeting.id, reviewer_code: reviewer.code, reviewer_name: reviewer.name || '', reviewer_role: reviewer.role || ''
         })));
+        if (error) throw error;
+      }
+      for (const quick of quickProjects) {
+        const round = Number(quick.round_no) === 2 ? 2 : 1;
+        const { data: project, error } = await supabaseAdmin.from('project_pool').insert({
+          name: String(quick.name).trim(), submitter: String(quick.submitter).trim(), description: String(quick.description || '').trim(),
+          normalized_name: normalizeProjectPart(quick.name), normalized_submitter: normalizeProjectPart(quick.submitter),
+          match_key: makeMatchKey(quick.name, quick.submitter), status: round === 2 ? 'ready_r2' : 'ready_r1', material_status: 'incomplete'
+        }).select().single();
+        if (error) throw error;
+        quickProjectIds.push(project.id);
+        const { error: materialsError } = await supabaseAdmin.from('project_materials').insert(createMaterialRows(project.id));
+        if (materialsError) throw materialsError;
+        const { error: historyError } = await supabaseAdmin.from('project_status_history').insert({
+          project_id: project.id, event_type: 'project_created', to_status: project.status, operator_code: session.code, note: '在创建评审会时快速创建'
+        });
+        if (historyError) throw historyError;
+        selectedProjects.push(project);
+      }
+      for (const project of selectedProjects) {
+        const { error } = await supabaseAdmin.rpc('assign_pool_project_to_meeting', {
+          p_project_id: project.id, p_meeting_id: meeting.id, p_round_no: assignmentRound(project.status), p_operator_code: session.code
+        });
+        if (error) throw error;
       }
     } else {
-      const templateProjects = createTemplateProjects(meeting.id);
-      await supabaseAdmin.from('projects').insert(templateProjects);
+      const { error } = await supabaseAdmin.from('projects').insert(createTemplateProjects(meeting.id));
+      if (error) throw error;
     }
-
-    // 如果指定了复制来源，覆盖模板
-    if (copy_from_meeting_id && !v2) {
-      const { data: sourceProjects } = await supabaseAdmin
-        .from('projects')
-        .select('seq_no, name, submitter, description, problems, actions, is_pending')
-        .eq('meeting_id', copy_from_meeting_id)
-        .order('seq_no');
-
-      if (sourceProjects && sourceProjects.length > 0) {
-        // 删除刚建的模板
-        await supabaseAdmin
-          .from('projects')
-          .delete()
-          .eq('meeting_id', meeting.id);
-
-        // 复制来源（限前 PROJECT_SLOT_COUNT 个）
-        const newProjects = copyProjectsForMeeting(sourceProjects, meeting.id);
-        await supabaseAdmin.from('projects').insert(newProjects);
-      }
-    }
-
     return NextResponse.json({ success: true, meeting, projectSlotCount: PROJECT_SLOT_COUNT });
   } catch (err: any) {
-    console.error('Create meeting error:', err);
-    return NextResponse.json(
-      { error: '创建评审会失败: ' + err.message },
-      { status: 500 }
-    );
+    if (meetingId) await supabaseAdmin.from('meetings').delete().eq('id', meetingId);
+    if (quickProjectIds.length) await supabaseAdmin.from('project_pool').delete().in('id', quickProjectIds);
+    return NextResponse.json({ error: `创建评审会失败: ${err.message}` }, { status: 500 });
   }
 }
 
 export async function PATCH(request: NextRequest) {
   try {
-    const body = await request.json();
-    const { id, is_current, name, meeting_date, deadline, notes } = body;
-
-    if (!id) {
-      return NextResponse.json({ error: 'id 必填' }, { status: 400 });
-    }
-
-    // 切换当前评审会：先把所有is_current置false，再设指定id为true
+    const { id, is_current, name, meeting_date, deadline, notes } = await request.json();
+    const session = requireAdminSession(request);
+    if (!session) return NextResponse.json({ error: '仅管理员可以编辑评审会' }, { status: 403 });
+    if (!id) return NextResponse.json({ error: 'id 必填' }, { status: 400 });
     if (is_current === true) {
-      await supabaseAdmin
-        .from('meetings')
-        .update({ is_current: false })
-        .eq('is_current', true);
+      const { error } = await supabaseAdmin.from('meetings').update({ is_current: false }).eq('is_current', true);
+      if (error) throw error;
     }
-
-    const updateData: any = {};
+    const updateData: Record<string, any> = {};
     if (is_current !== undefined) updateData.is_current = is_current;
-    if (name !== undefined) updateData.name = name;
+    if (name !== undefined) updateData.name = String(name).trim();
     if (meeting_date !== undefined) updateData.meeting_date = meeting_date;
-    if (deadline !== undefined) updateData.deadline = deadline;
-    if (notes !== undefined) updateData.notes = notes;
-
-    const { data, error } = await supabaseAdmin
-      .from('meetings')
-      .update(updateData)
-      .eq('id', id)
-      .select()
-      .single();
-
+    if (deadline !== undefined) updateData.deadline = deadline || null;
+    if (notes !== undefined) updateData.notes = String(notes || '').trim();
+    const { data, error } = await supabaseAdmin.from('meetings').update(updateData).eq('id', id).is('deleted_at', null).select().single();
     if (error) throw error;
-
-    return NextResponse.json({ success: true, meeting: data });
+    return NextResponse.json({ success: true, meeting: data, operator: session.code });
   } catch (err: any) {
-    console.error('Update meeting error:', err);
-    return NextResponse.json(
-      { error: '更新评审会失败: ' + err.message },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: `更新评审会失败: ${err.message}` }, { status: 500 });
   }
 }

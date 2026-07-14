@@ -6,6 +6,9 @@ import { MATERIAL_ITEMS, getMaterialProgress, projectStatusLabel } from '@/lib/p
 import ProjectPoolTable from './components/ProjectPoolTable';
 import ProjectDrawer from './components/ProjectDrawer';
 import ProjectArchivePanel from './components/ProjectArchivePanel';
+import MeetingList from './components/MeetingList';
+import MeetingRecycleBin from './components/MeetingRecycleBin';
+import MeetingWorkspace from './components/MeetingWorkspace';
 
 type AnyRecord = Record<string, any>;
 const tabs = [['pending', '待评审项目池'], ['meetings', '评审会管理'], ['reports', '结论与报告'], ['reviewed', '已评审项目池'], ['results', '结果池'], ['archive', '归档与恢复']] as const;
@@ -29,28 +32,34 @@ export default function V2AdminPage() {
   const [archivedProjects, setArchivedProjects] = useState<AnyRecord[]>([]);
   const [purgePendingProjects, setPurgePendingProjects] = useState<AnyRecord[]>([]);
   const [meetings, setMeetings] = useState<AnyRecord[]>([]);
+  const [recycledMeetings, setRecycledMeetings] = useState<AnyRecord[]>([]);
   const [selectedProject, setSelectedProject] = useState<AnyRecord | null>(null);
   const [selectedMeeting, setSelectedMeeting] = useState<AnyRecord | null>(null);
+  const [meetingView, setMeetingView] = useState<'list' | 'workspace' | 'recycle'>('list');
   const [notice, setNotice] = useState('');
   const [showCreateProject, setShowCreateProject] = useState(false);
   const [showCreateMeeting, setShowCreateMeeting] = useState(false);
   const [projectForm, setProjectForm] = useState({ name: '', submitter: '', description: '' });
-  const [meetingForm, setMeetingForm] = useState({ name: '', meeting_date: '', deadline: '' });
+  const [meetingForm, setMeetingForm] = useState({ name: '', meeting_date: '', deadline: '', notes: '' });
+  const [meetingProjectIds, setMeetingProjectIds] = useState<string[]>([]);
+  const [quickProjects, setQuickProjects] = useState<Array<{ name: string; submitter: string; description: string; round_no: number }>>([]);
   const [poolMonth, setPoolMonth] = useState('');
 
   const load = async (month = poolMonth) => {
     const query = month ? `&month=${encodeURIComponent(month)}` : '';
-    const [poolResponse, archiveResponse, purgeResponse, meetingResponse] = await Promise.all([
+    const [poolResponse, archiveResponse, purgeResponse, meetingResponse, recycleResponse] = await Promise.all([
       fetch(`/api/project-pool?scope=active${query}`, { cache: 'no-store' }),
       fetch(`/api/project-pool?scope=archived${query}`, { cache: 'no-store' }),
       fetch(`/api/project-pool?scope=purge_pending${query}`, { cache: 'no-store' }),
-      fetch('/api/meetings', { cache: 'no-store' })
+      fetch('/api/meetings', { cache: 'no-store' }),
+      fetch('/api/meetings?includeDeleted=true', { cache: 'no-store' })
     ]);
     const pool = await poolResponse.json(); const archive = await archiveResponse.json(); const purge = await purgeResponse.json(); const meeting = await meetingResponse.json();
     if (poolResponse.ok) setProjects(pool.projects || []); else setNotice(pool.error || 'Unable to load the project pool');
     if (archiveResponse.ok) setArchivedProjects(archive.projects || []);
     if (purgeResponse.ok) setPurgePendingProjects(purge.projects || []);
     if (meetingResponse.ok) setMeetings((meeting.meetings || []).filter((item: AnyRecord) => !item.deleted_at));
+    if (recycleResponse.ok) setRecycledMeetings((await recycleResponse.json()).meetings?.filter((item: AnyRecord) => item.deleted_at) || []);
   };
 
   useEffect(() => {
@@ -63,6 +72,8 @@ export default function V2AdminPage() {
   const pendingProjects = useMemo(() => projects.filter((project) => !project.latest_verdict && !project.archived_at), [projects]);
   const reviewedProjects = useMemo(() => projects.filter((project) => (project.projects || []).length > 0 && !project.archived_at), [projects]);
   const assignmentsForMeeting = (meetingId: string) => projects.flatMap((project) => project.projects || []).filter((assignment: AnyRecord) => assignment.meeting_id === meetingId).sort((a: AnyRecord, b: AnyRecord) => a.seq_no - b.seq_no);
+  const meetingAssignmentCounts = useMemo(() => Object.fromEntries(meetings.map((meeting) => [meeting.id, assignmentsForMeeting(meeting.id).length])), [meetings, projects]);
+  const meetingEligibleProjects = useMemo(() => projects.filter((project) => readyStatuses.includes(project.status) && !project.archived_at), [projects]);
 
   const createProject = async () => {
     const response = await fetch('/api/project-pool', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...projectForm, operator_code: adminCode() }) });
@@ -70,18 +81,21 @@ export default function V2AdminPage() {
     if (response.ok) { setProjectForm({ name: '', submitter: '', description: '' }); setShowCreateProject(false); await load(); }
   };
   const createMeeting = async () => {
-    const response = await fetch('/api/meetings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(meetingForm) });
+    const response = await fetch('/api/meetings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...meetingForm, pool_project_ids: meetingProjectIds, create_projects: quickProjects }) });
     const data = await response.json(); setNotice(response.ok ? '评审会已创建。' : data.error || '创建失败');
-    if (response.ok) { setMeetingForm({ name: '', meeting_date: '', deadline: '' }); setShowCreateMeeting(false); await load(); }
+    if (response.ok) { setMeetingForm({ name: '', meeting_date: '', deadline: '', notes: '' }); setMeetingProjectIds([]); setQuickProjects([]); setShowCreateMeeting(false); await load(); }
   };
   const setCurrentMeeting = async (meeting: AnyRecord) => {
     const response = await fetch('/api/meetings', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: meeting.id, is_current: true }) });
     const data = await response.json(); setNotice(response.ok ? '已设为当前默认评审会。' : data.error || '设置失败'); if (response.ok) await load();
   };
-  const deleteMeeting = async (meeting: AnyRecord) => {
-    if (!window.confirm(`将“${meeting.name}”移入回收站？`)) return;
-    const response = await fetch('/api/meetings/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: meeting.id, action: 'soft_delete' }) });
-    const data = await response.json(); setNotice(response.ok ? '评审会已移入回收站。' : data.error || '删除失败'); if (response.ok) { setSelectedMeeting(null); await load(); }
+  const recycleMeetings = async (ids: string[]) => {
+    const response = await fetch('/api/meetings/batch', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids, action: 'recycle' }) });
+    const data = await response.json(); setNotice(response.ok ? `${data.updated || ids.length} 场评审会已移入回收站。` : data.error || '移入回收站失败'); if (response.ok) { setSelectedMeeting(null); setMeetingView('list'); await load(); }
+  };
+  const restoreMeetings = async (ids: string[]) => {
+    const response = await fetch('/api/meetings/batch', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids, action: 'restore' }) });
+    const data = await response.json(); setNotice(response.ok ? `${data.updated || ids.length} 场评审会已恢复。` : data.error || '恢复失败'); if (response.ok) { setMeetingView('list'); await load(); }
   };
   const schedule = async (projectIds: string[], meetingId: string) => {
     const selected = projects.filter((project) => projectIds.includes(project.id));
@@ -107,15 +121,15 @@ export default function V2AdminPage() {
     const response = await fetch(`/api/project-pool/${id}/history`, { cache: 'no-store' }); const data = await response.json();
     if (response.ok) setSelectedProject({ ...data.project, projects: data.assignments || [], completed_reviews: data.completed_reviews || [], status_history: data.history || [] }); else setNotice(data.error || '读取项目详情失败');
   };
-  const openMeeting = (meeting: AnyRecord) => { setSelectedMeeting(meeting); setTab('reports'); };
+  const openMeeting = (meeting: AnyRecord) => { setSelectedMeeting(meeting); setMeetingView('workspace'); };
 
   return <main style={styles.page}>
     <header style={styles.header}><div><h1 style={styles.h1}>立项评审管理</h1><p style={styles.subtle}>项目池管理项目本身；每次评审会只承载一个轮次的评审记录。</p></div><button style={styles.secondary} onClick={() => { localStorage.removeItem('reviewer'); router.push('/'); }}>退出</button></header>
     <nav style={styles.tabs}>{tabs.map(([id, label]) => <button key={id} style={{ ...styles.tab, ...(tab === id ? styles.tabActive : {}) }} onClick={() => { setTab(id); if (id !== 'reports') setSelectedMeeting(null); }}>{label}</button>)}</nav>
     {notice && <div style={styles.notice}>{notice}</div>}
     {tab === 'pending' && <section><Toolbar title={`待评审项目池 (${pendingProjects.length})`} action="新建项目" onAction={() => setShowCreateProject((value) => !value)} />{showCreateProject && <div style={styles.panel}><input style={styles.input} placeholder="项目名称" value={projectForm.name} onChange={(event) => setProjectForm({ ...projectForm, name: event.target.value })}/><input style={styles.input} placeholder="提报人" value={projectForm.submitter} onChange={(event) => setProjectForm({ ...projectForm, submitter: event.target.value })}/><textarea style={styles.input} rows={3} placeholder="项目说明" value={projectForm.description} onChange={(event) => setProjectForm({ ...projectForm, description: event.target.value })}/><button style={styles.primary} onClick={createProject}>建立项目</button></div>}<ProjectPoolTable projects={pendingProjects} meetings={meetings} scope="active" month={poolMonth} onMonthChange={(month) => { setPoolMonth(month); load(month); }} onRefresh={load} onOpenProject={openProject}/></section>}
-    {tab === 'meetings' && <section><Toolbar title="评审会管理" action="创建评审会" onAction={() => setShowCreateMeeting((value) => !value)} />{showCreateMeeting && <div style={styles.panel}><input style={styles.input} placeholder="评审会名称" value={meetingForm.name} onChange={(event) => setMeetingForm({ ...meetingForm, name: event.target.value })}/><input style={styles.input} type="date" value={meetingForm.meeting_date} onChange={(event) => setMeetingForm({ ...meetingForm, meeting_date: event.target.value })}/><input style={styles.input} type="datetime-local" value={meetingForm.deadline} onChange={(event) => setMeetingForm({ ...meetingForm, deadline: event.target.value })}/><button style={styles.primary} onClick={createMeeting}>保存评审会</button></div>}<MeetingTable meetings={meetings} assignmentsForMeeting={assignmentsForMeeting} onOpen={openMeeting} onCurrent={setCurrentMeeting} onDelete={deleteMeeting}/></section>}
-    {tab === 'reports' && <section><Toolbar title="结论与报告" />{selectedMeeting ? <MeetingWorkspace meeting={selectedMeeting} projects={projects} onBack={() => setSelectedMeeting(null)} onOpenProject={openProject} onSchedule={schedule} onCurrent={setCurrentMeeting} onRefresh={load} onNotice={setNotice} /> : <MeetingTable meetings={meetings} assignmentsForMeeting={assignmentsForMeeting} onOpen={openMeeting} onCurrent={setCurrentMeeting} onDelete={deleteMeeting}/>}</section>}
+    {tab === 'meetings' && <section>{meetingView === 'workspace' && selectedMeeting ? <MeetingWorkspace meeting={selectedMeeting} projects={projects} onBack={() => { setSelectedMeeting(null); setMeetingView('list'); }} onRefresh={load} onNotice={setNotice} /> : meetingView === 'recycle' ? <MeetingRecycleBin meetings={recycledMeetings} onRestore={restoreMeetings} onBack={() => setMeetingView('list')} /> : <><MeetingList meetings={meetings} assignmentCounts={meetingAssignmentCounts} onOpen={openMeeting} onCreate={() => setShowCreateMeeting((value) => !value)} onSetCurrent={setCurrentMeeting} onRecycle={recycleMeetings} onOpenRecycleBin={() => setMeetingView('recycle')} />{showCreateMeeting && <div style={styles.panel}><input style={styles.input} placeholder="评审会名称" value={meetingForm.name} onChange={(event) => setMeetingForm({ ...meetingForm, name: event.target.value })}/><input style={styles.input} type="date" value={meetingForm.meeting_date} onChange={(event) => setMeetingForm({ ...meetingForm, meeting_date: event.target.value })}/><input style={styles.input} type="datetime-local" value={meetingForm.deadline} onChange={(event) => setMeetingForm({ ...meetingForm, deadline: event.target.value })}/><textarea style={styles.input} rows={2} placeholder="会议备注" value={meetingForm.notes} onChange={(event) => setMeetingForm({ ...meetingForm, notes: event.target.value })}/><div style={styles.choiceList}>{meetingEligibleProjects.map((project) => <label key={project.id} style={styles.choice}><input type="checkbox" checked={meetingProjectIds.includes(project.id)} onChange={() => setMeetingProjectIds((ids) => ids.includes(project.id) ? ids.filter((id) => id !== project.id) : [...ids, project.id])}/><span>{project.name} · {project.submitter}</span><small>{projectStatusLabel(project.status)}</small></label>)}{!meetingEligibleProjects.length && <span style={styles.subtle}>暂无可直接安排的项目。</span>}</div><div style={styles.actions}><button style={styles.secondary} onClick={() => setQuickProjects((items) => [...items, { name: '', submitter: '', description: '', round_no: 1 }])}>添加快速项目</button></div>{quickProjects.map((project, index) => <div key={index} style={styles.panel}><input style={styles.input} placeholder="项目名称" value={project.name} onChange={(event) => setQuickProjects((items) => items.map((item, itemIndex) => itemIndex === index ? { ...item, name: event.target.value } : item))}/><input style={styles.input} placeholder="提报人" value={project.submitter} onChange={(event) => setQuickProjects((items) => items.map((item, itemIndex) => itemIndex === index ? { ...item, submitter: event.target.value } : item))}/><textarea style={styles.input} rows={2} placeholder="项目说明" value={project.description} onChange={(event) => setQuickProjects((items) => items.map((item, itemIndex) => itemIndex === index ? { ...item, description: event.target.value } : item))}/><select style={styles.select} value={project.round_no} onChange={(event) => setQuickProjects((items) => items.map((item, itemIndex) => itemIndex === index ? { ...item, round_no: Number(event.target.value) } : item))}><option value={1}>第一轮</option><option value={2}>第二轮</option></select><button style={styles.danger} onClick={() => setQuickProjects((items) => items.filter((_, itemIndex) => itemIndex !== index))}>移除快速项目</button></div>)}<button style={styles.primary} disabled={meetingProjectIds.length + quickProjects.length > 12} onClick={createMeeting}>创建评审会</button></div>}</>}</section>}
+    {tab === 'reports' && <section><Toolbar title="结论与报告" />{selectedMeeting ? <MeetingWorkspace meeting={selectedMeeting} projects={projects} source="reports" onBack={() => setSelectedMeeting(null)} onRefresh={load} onNotice={setNotice} /> : <MeetingList meetings={meetings} assignmentCounts={meetingAssignmentCounts} onOpen={(meeting) => { setSelectedMeeting(meeting); setTab('reports'); }} onCreate={() => { setTab('meetings'); setShowCreateMeeting(true); }} onSetCurrent={setCurrentMeeting} onRecycle={recycleMeetings} onOpenRecycleBin={() => { setTab('meetings'); setMeetingView('recycle'); }} />}</section>}
     {tab === 'reviewed' && <section><Toolbar title={`已评审项目池 (${reviewedProjects.length})`} /><ProjectPoolTable projects={reviewedProjects} meetings={meetings} scope="reviewed" month={poolMonth} onMonthChange={(month) => { setPoolMonth(month); load(month); }} onRefresh={load} onOpenProject={openProject}/></section>}
     {tab === 'results' && <section><Toolbar title="结果池" /><div style={styles.resultGrid}>{[['approved', '通过项目'], ['recheck', '待重评项目'], ['rejected', '驳回项目'], ['history', '历史待整理']].map(([bucket, label]) => <div key={bucket} style={styles.panel}><strong>{label}</strong>{projects.filter((project) => bucket === 'history' ? (project.projects || []).length > 0 && !project.latest_verdict : project.latest_verdict === bucket).map((project) => <button key={project.id} style={styles.listButton} onClick={() => openProject(project)}>{project.name}<span>{projectStatusLabel(project.status)}</span></button>)}</div>)}</div></section>}
     {tab === 'archive' && <section><Toolbar title="归档与恢复" /><ProjectArchivePanel archivedProjects={archivedProjects} purgePendingProjects={purgePendingProjects} onRefresh={load} onOpenProject={openProject} /></section>}
@@ -135,9 +149,7 @@ function LegacyProjectTable({ projects, meetings, onOpen, onSchedule, onArchive 
   return <><div style={styles.bulkBar}><span>已选 {selected.length} 项</span><select style={styles.select} value={meetingId} onChange={(event) => setMeetingId(event.target.value)}><option value="">选择评审会</option>{meetings.filter((meeting: AnyRecord) => meeting.status === 'active').map((meeting: AnyRecord) => <option key={meeting.id} value={meeting.id}>{meeting.name}</option>)}</select><button style={styles.secondary} disabled={!selected.length || !meetingId} onClick={scheduleSelected}>批量加入评审会</button><button style={styles.danger} disabled={!selected.length} onClick={() => onArchive(selected)}>批量归档</button></div><div style={styles.tableWrap}><table style={styles.table}><thead><tr>{['', '项目', '提报人', '资料检查', '项目状态', '评审历史', '安排'].map((text) => <th style={styles.cell} key={text}>{text}</th>)}</tr></thead><tbody>{projects.map((project: AnyRecord) => <tr key={project.id}><td style={styles.cell}><input type="checkbox" checked={selected.includes(project.id)} onChange={() => toggle(project.id)} aria-label={`选择${project.name}`}/></td><td style={styles.cell}><button style={styles.link} onClick={() => onOpen(project)}>{project.name}</button></td><td style={styles.cell}>{project.submitter}</td><td style={styles.cell}>{materialText(project)}</td><td style={styles.cell}>{projectStatusLabel(project.status)}</td><td style={styles.cell}>{(project.projects || []).length ? `${(project.projects || []).length} 次` : '-'}</td><td style={styles.cell}>{readyStatuses.includes(project.status) ? <select value="" style={styles.select} onChange={(event) => event.target.value && onSchedule([project.id], event.target.value)}><option value="">安排入会</option>{meetings.filter((meeting: AnyRecord) => meeting.status === 'active').map((meeting: AnyRecord) => <option key={meeting.id} value={meeting.id}>{meeting.name}</option>)}</select> : '-'}</td></tr>)}{projects.length === 0 && <tr><td colSpan={7} style={styles.empty}>暂无项目</td></tr>}</tbody></table></div></>;
 }
 
-function MeetingTable({ meetings, assignmentsForMeeting, onOpen, onCurrent, onDelete }: AnyRecord) { return <div style={styles.tableWrap}><table style={styles.table}><thead><tr>{['评审会', '日期', '截止时间', '已安排项目', '操作'].map((text) => <th style={styles.cell} key={text}>{text}</th>)}</tr></thead><tbody>{meetings.map((meeting: AnyRecord) => { const assignments = assignmentsForMeeting(meeting.id); return <tr key={meeting.id} style={meeting.is_current ? styles.currentRow : {}}><td style={styles.cell}>{meeting.is_current && <span style={styles.currentBadge}>当前评审会</span>}<strong>{meeting.name}</strong></td><td style={styles.cell}>{meeting.meeting_date || '-'}</td><td style={styles.cell}>{meeting.deadline || '-'}</td><td style={styles.cell}>{assignments.length}/12</td><td style={styles.cell}><div style={styles.actions}><button style={styles.secondary} onClick={() => onOpen(meeting)}>进入管理</button><button style={styles.secondary} onClick={() => onCurrent(meeting)}>设为当前</button><button style={styles.danger} onClick={() => onDelete(meeting)}>删除</button></div></td></tr>; })}{meetings.length === 0 && <tr><td colSpan={5} style={styles.empty}>暂无评审会</td></tr>}</tbody></table></div>; }
-
-function MeetingWorkspace({ meeting, projects, onBack, onOpenProject, onSchedule, onCurrent, onRefresh, onNotice }: AnyRecord) {
+function LegacyMeetingWorkspace({ meeting, projects, onBack, onOpenProject, onSchedule, onCurrent, onRefresh, onNotice }: AnyRecord) {
   const router = useRouter(); const [assignments, setAssignments] = useState<AnyRecord[]>([]); const [summary, setSummary] = useState<AnyRecord | null>(null); const [selected, setSelected] = useState<string[]>([]); const [form, setForm] = useState({ name: meeting.name || '', meeting_date: meeting.meeting_date || '', deadline: meeting.deadline ? String(meeting.deadline).slice(0, 16) : '', notes: meeting.notes || '' });
   const loadWorkspace = async () => { const [projectResponse, summaryResponse] = await Promise.all([fetch(`/api/projects?meetingId=${meeting.id}&role=admin`, { cache: 'no-store' }), fetch(`/api/summary?meetingId=${meeting.id}&_=${Date.now()}`, { cache: 'no-store' })]); const projectData = await projectResponse.json(); const summaryData = await summaryResponse.json(); if (projectResponse.ok) setAssignments((projectData.projects || []).sort((a: AnyRecord, b: AnyRecord) => a.seq_no - b.seq_no)); if (summaryResponse.ok) setSummary(summaryData); };
   useEffect(() => { loadWorkspace(); }, [meeting.id]);

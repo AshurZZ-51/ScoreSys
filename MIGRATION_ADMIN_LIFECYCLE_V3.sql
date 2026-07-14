@@ -123,39 +123,40 @@ CREATE OR REPLACE FUNCTION purge_due_project_deletions()
 RETURNS TABLE (project_id UUID)
 LANGUAGE plpgsql
 AS $$
+DECLARE
+  due_record RECORD;
 BEGIN
-  RETURN QUERY
-  WITH due AS MATERIALIZED (
-    SELECT deletion_request.project_id
+  FOR due_record IN
+    SELECT deletion_request.project_id, deletion_request.purge_after, deletion_request.restored_at
     FROM project_deletion_requests AS deletion_request
     INNER JOIN project_pool AS pool_row ON pool_row.id = deletion_request.project_id
     WHERE deletion_request.restored_at IS NULL
       AND deletion_request.purge_after <= now()
     FOR UPDATE OF deletion_request, pool_row SKIP LOCKED
-  ), deleted_scores AS (
+  LOOP
+    -- The locks remain held through the recheck and all dependent deletes.
+    IF due_record.restored_at IS NULL AND due_record.purge_after <= now() THEN
     DELETE FROM scores
-    USING projects AS assignment, due
+    USING projects AS assignment
     WHERE scores.project_id = assignment.id
-      AND assignment.pool_project_id = due.project_id
-    RETURNING scores.id
-  ), deleted_projects AS (
+        AND assignment.pool_project_id = due_record.project_id;
+
     DELETE FROM projects
-    USING due
-    WHERE projects.pool_project_id = due.project_id
-    RETURNING projects.id
-  ), deleted_reports AS (
+    WHERE projects.pool_project_id = due_record.project_id;
+
     DELETE FROM report_snapshots
-    USING due
     WHERE report_snapshots.scope_type = 'project'
-      AND report_snapshots.scope_id = due.project_id
-    RETURNING report_snapshots.id
-  ), deleted_pool AS (
+        AND report_snapshots.scope_id = due_record.project_id;
+
     DELETE FROM project_pool
-    USING due
-    WHERE project_pool.id = due.project_id
-    RETURNING project_pool.id
-  )
-  SELECT id FROM deleted_pool;
+    WHERE project_pool.id = due_record.project_id;
+
+    IF FOUND THEN
+      project_id := due_record.project_id;
+      RETURN NEXT;
+    END IF;
+    END IF;
+  END LOOP;
 END;
 $$;
 
