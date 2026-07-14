@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isProjectPoolV2Enabled, supabaseAdmin } from '@/lib/supabase';
 import { computeLegacyProjectScore, extractLegacyFeedback } from '@/lib/legacyScoring';
+import { isCompletedReview } from '@/lib/adminLifecycle';
 
 export const dynamic = 'force-dynamic';
 
@@ -21,7 +22,8 @@ export async function GET(_: NextRequest, { params }: { params: { id: string } }
       const feedback = extractLegacyFeedback(scores);
       return { ...assignment, history_summary: isLegacy ? { ...computeLegacyProjectScore(scores), problems: feedback.problems, actions: feedback.actions } : null };
     });
-    return NextResponse.json({ project: project.data, history: history.data || [], assignments: enrichedAssignments });
+    const completedReviews = enrichedAssignments.filter(isCompletedReview);
+    return NextResponse.json({ project: project.data, history: history.data || [], assignments: enrichedAssignments, completed_reviews: completedReviews });
   } catch (err: any) {
     return NextResponse.json({ error: `获取项目历史失败: ${err.message}` }, { status: 500 });
   }

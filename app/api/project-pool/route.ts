@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isProjectPoolV2Enabled, supabaseAdmin } from '@/lib/supabase';
-import { createMaterialRows, makeMatchKey, normalizeProjectPart } from '@/lib/projectPoolWorkflow';
+import { createMaterialRows, getMaterialProgress, makeMatchKey, normalizeProjectPart } from '@/lib/projectPoolWorkflow';
+import { countCompletedReviews } from '@/lib/adminLifecycle';
 
 export const dynamic = 'force-dynamic';
 
@@ -10,6 +11,18 @@ async function requireAdmin(code: string) {
   return Boolean(data?.is_admin);
 }
 
+function getMonthRange(month: string | null) {
+  if (!month) return null;
+  const match = /^(\d{4})-(\d{2})$/.exec(month);
+  if (!match) return undefined;
+  const year = Number(match[1]);
+  const monthIndex = Number(match[2]) - 1;
+  if (monthIndex < 0 || monthIndex > 11) return undefined;
+  const start = new Date(Date.UTC(year, monthIndex, 1));
+  const end = new Date(Date.UTC(year, monthIndex + 1, 1));
+  return { start: start.toISOString(), end: end.toISOString() };
+}
+
 function unavailable() {
   return NextResponse.json({ error: '项目池功能尚未启用' }, { status: 404 });
 }
@@ -17,17 +30,41 @@ function unavailable() {
 export async function GET(request: NextRequest) {
   if (!isProjectPoolV2Enabled()) return unavailable();
   try {
-    const scope = new URL(request.url).searchParams.get('scope') || 'all';
+    const searchParams = new URL(request.url).searchParams;
+    const scope = searchParams.get('scope') || 'active';
+    if (!['active', 'archived', 'purge_pending', 'pending', 'reviewed'].includes(scope)) {
+      return NextResponse.json({ error: 'Invalid project scope' }, { status: 400 });
+    }
+    const monthRange = getMonthRange(searchParams.get('month'));
+    if (monthRange === undefined) return NextResponse.json({ error: 'month must use YYYY-MM' }, { status: 400 });
     let query = supabaseAdmin
       .from('project_pool')
-      .select('*, project_materials(*), projects(id, meeting_id, seq_no, round_no, attempt_no, scoring_version, assignment_status, meetings(id, name, meeting_date, status))')
-      .is('archived_at', null)
+      .select('*, project_materials(*), project_deletion_requests(*), projects(id, meeting_id, seq_no, round_no, attempt_no, scoring_version, assignment_status, meetings(id, name, meeting_date, status), scores(reviewer_code, dim_name, comment))')
       .order('updated_at', { ascending: false });
+    if (scope === 'active' || scope === 'pending' || scope === 'reviewed') query = query.is('archived_at', null);
+    else query = query.not('archived_at', 'is', null);
+    if (monthRange) query = query.gte('created_at', monthRange.start).lt('created_at', monthRange.end);
     if (scope === 'pending') query = query.in('status', ['draft', 'materials_pending', 'ready_r1', 'r1_recheck_ready', 'ready_r2', 'r2_recheck_ready']);
     if (scope === 'reviewed') query = query.not('latest_verdict', 'is', null);
     const { data, error } = await query;
     if (error) throw error;
-    return NextResponse.json({ projects: data || [] }, { headers: { 'Cache-Control': 'no-store' } });
+    const now = new Date();
+    const projects = (data || [])
+      .filter((project: any) => {
+        const deletionRequest = Array.isArray(project.project_deletion_requests)
+          ? project.project_deletion_requests[0]
+          : project.project_deletion_requests;
+        const isActiveDeletionRequest = deletionRequest && !deletionRequest.restored_at;
+        if (scope === 'archived') return !isActiveDeletionRequest;
+        if (scope === 'purge_pending') return isActiveDeletionRequest && new Date(deletionRequest.purge_after).getTime() > now.getTime();
+        return true;
+      })
+      .map((project: any) => ({
+        ...project,
+        material_progress: getMaterialProgress(project.project_materials || []),
+        completed_review_count: countCompletedReviews(project.projects || [])
+      }));
+    return NextResponse.json({ projects }, { headers: { 'Cache-Control': 'no-store' } });
   } catch (err: any) {
     return NextResponse.json({ error: `获取项目池失败: ${err.message}` }, { status: 500 });
   }
@@ -82,15 +119,8 @@ export async function DELETE(request: NextRequest) {
     const now = new Date().toISOString();
     const { error: archiveError } = await supabaseAdmin.from('project_pool').update({ archived_at: now, updated_at: now }).eq('id', id);
     if (archiveError) throw archiveError;
-    await supabaseAdmin.from('project_status_history').insert({ project_id: id, event_type: 'project_archived', to_status: 'archived', operator_code: operatorCode, note: 'Archived by administrator' });
-    return NextResponse.json({ success: true });
-    if (!id || !await requireAdmin(operatorCode)) return NextResponse.json({ error: '无权限或参数不完整' }, { status: 403 });
-    const { data: project, error: readError } = await supabaseAdmin.from('project_pool').select('id, projects(id)').eq('id', id).single();
-    if (readError) throw readError;
-    if ((project.projects || []).length > 0) return NextResponse.json({ error: '已有评审历史的项目不能删除，可使用人工状态调整归档' }, { status: 409 });
-    const { error } = await supabaseAdmin.from('project_pool').update({ archived_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq('id', id);
-    if (error) throw error;
-    await supabaseAdmin.from('project_status_history').insert({ project_id: id, event_type: 'project_archived', to_status: 'archived', operator_code: operatorCode, note: '管理员归档未评审项目' });
+    const { error: historyError } = await supabaseAdmin.from('project_status_history').insert({ project_id: id, event_type: 'project_archived', to_status: 'archived', operator_code: operatorCode, note: 'Archived by administrator' });
+    if (historyError) throw historyError;
     return NextResponse.json({ success: true });
   } catch (err: any) {
     return NextResponse.json({ error: `删除项目失败: ${err.message}` }, { status: 500 });
