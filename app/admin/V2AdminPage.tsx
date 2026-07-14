@@ -38,7 +38,7 @@ export default function V2AdminPage() {
   }, [router]);
 
   const pendingProjects = useMemo(() => projects.filter((project) => !project.latest_verdict && !project.archived_at), [projects]);
-  const reviewedProjects = useMemo(() => projects.filter((project) => project.latest_verdict), [projects]);
+  const reviewedProjects = useMemo(() => projects.filter((project) => (project.projects || []).length > 0), [projects]);
   const assignmentsForMeeting = (meetingId: string) => projects.flatMap((project) => project.projects || []).filter((assignment: any) => assignment.meeting_id === meetingId);
 
   const createProject = async () => {
@@ -51,6 +51,24 @@ export default function V2AdminPage() {
     const response = await fetch('/api/meetings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(meetingForm) });
     const data = await response.json(); setNotice(response.ok ? '评审会已创建。请从项目池安排合格项目入会。' : data.error || '创建失败');
     if (response.ok) { setMeetingForm({ name: '', meeting_date: '', deadline: '' }); await load(); }
+  };
+
+  const setCurrentMeeting = async (meeting: Meeting) => {
+    const response = await fetch('/api/meetings', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: meeting.id, is_current: true }) });
+    const data = await response.json(); setNotice(response.ok ? '已设为当前默认评审会。' : data.error || '设置失败'); if (response.ok) await load();
+  };
+
+  const editMeeting = async (meeting: Meeting) => {
+    const name = window.prompt('评审会名称', meeting.name); if (name === null || !name.trim()) return;
+    const meetingDate = window.prompt('评审日期（YYYY-MM-DD）', meeting.meeting_date || ''); if (meetingDate === null) return;
+    const response = await fetch('/api/meetings', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: meeting.id, name: name.trim(), meeting_date: meetingDate }) });
+    const data = await response.json(); setNotice(response.ok ? '评审会信息已保存。' : data.error || '保存失败'); if (response.ok) await load();
+  };
+
+  const deleteMeeting = async (meeting: Meeting) => {
+    if (!window.confirm(`将「${meeting.name}」移入回收站？`)) return;
+    const response = await fetch('/api/meetings/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: meeting.id, action: 'soft_delete' }) });
+    const data = await response.json(); setNotice(response.ok ? '评审会已移入回收站。' : data.error || '删除失败'); if (response.ok) await load();
   };
 
   const schedule = async (project: PoolProject, meetingId: string) => {
@@ -86,16 +104,16 @@ export default function V2AdminPage() {
     {tab === 'meetings' && <section>
       <Toolbar title="评审会管理" action="创建评审会" onAction={createMeeting}/>
       <div style={styles.panel}><input style={styles.input} placeholder="评审会名称" value={meetingForm.name} onChange={(event) => setMeetingForm({ ...meetingForm, name: event.target.value })}/><input style={styles.input} type="date" value={meetingForm.meeting_date} onChange={(event) => setMeetingForm({ ...meetingForm, meeting_date: event.target.value })}/><input style={styles.input} type="datetime-local" value={meetingForm.deadline} onChange={(event) => setMeetingForm({ ...meetingForm, deadline: event.target.value })}/></div>
-      <MeetingTable meetings={meetings} assignmentsForMeeting={assignmentsForMeeting} onOpen={(meeting) => { setSelectedMeeting(meeting); setTab('reports'); }}/>
+      <MeetingTable meetings={meetings} assignmentsForMeeting={assignmentsForMeeting} onOpen={(meeting) => { setSelectedMeeting(meeting); setTab('reports'); }} onCurrent={setCurrentMeeting} onEdit={editMeeting} onDelete={deleteMeeting}/>
     </section>}
 
     {tab === 'reports' && <section>
       <Toolbar title="结论与报告" />
-      {!selectedMeeting ? <MeetingTable meetings={meetings} assignmentsForMeeting={assignmentsForMeeting} onOpen={setSelectedMeeting}/> : <MeetingSummary meeting={selectedMeeting} onBack={() => setSelectedMeeting(null)} onOpenProject={openProject} onOpenReport={() => router.push(`/report?meetingId=${selectedMeeting.id}&from=admin`)}/>} 
+      {!selectedMeeting ? <MeetingTable meetings={meetings} assignmentsForMeeting={assignmentsForMeeting} onOpen={setSelectedMeeting} onCurrent={setCurrentMeeting} onEdit={editMeeting} onDelete={deleteMeeting}/> : <MeetingSummary meeting={selectedMeeting} onBack={() => setSelectedMeeting(null)} onOpenProject={openProject} onOpenReport={() => router.push(`/report?meetingId=${selectedMeeting.id}&from=admin`)}/>} 
     </section>}
 
     {tab === 'reviewed' && <section><Toolbar title={`已评审项目池 (${reviewedProjects.length})`}/><ProjectTable projects={reviewedProjects} meetings={meetings} onOpen={openProject} onSchedule={schedule}/></section>}
-    {tab === 'results' && <section><Toolbar title="结果池"/><div style={styles.resultGrid}>{['approved', 'recheck', 'rejected'].map((bucket) => <div key={bucket} style={styles.panel}><strong>{({ approved: '通过项目', recheck: '待重评项目', rejected: '驳回项目' } as any)[bucket]}</strong>{projects.filter((project) => project.latest_verdict === bucket).map((project) => <button key={project.id} style={styles.listButton} onClick={() => openProject(project)}>{project.name}<span>{project.status}</span></button>)}</div>)}</div></section>}
+    {tab === 'results' && <section><Toolbar title="结果池"/><div style={styles.resultGrid}>{[['approved', '通过项目'], ['recheck', '待重评项目'], ['rejected', '驳回项目'], ['history', '历史待整理']].map(([bucket, label]) => <div key={bucket} style={styles.panel}><strong>{label}</strong>{projects.filter((project) => bucket === 'history' ? (project.projects || []).length > 0 && !project.latest_verdict : project.latest_verdict === bucket).map((project) => <button key={project.id} style={styles.listButton} onClick={() => openProject(project)}>{project.name}<span>{project.status}</span></button>)}</div>)}</div></section>}
 
     {selectedProject && <ProjectDrawer project={selectedProject} onClose={() => setSelectedProject(null)} onSaved={refreshProject} onNotice={setNotice}/>} 
   </main>;
@@ -105,7 +123,7 @@ function Toolbar({ title, action, onAction }: any) { return <div style={styles.t
 
 function ProjectTable({ projects, meetings, onOpen, onSchedule }: any) { return <div style={styles.tableWrap}><table style={styles.table}><thead><tr>{['项目', '提报人', '资料', '状态', '评审历史', '安排'].map((text) => <th style={styles.cell} key={text}>{text}</th>)}</tr></thead><tbody>{projects.map((project: any) => <tr key={project.id}><td style={styles.cell}><button style={styles.link} onClick={() => onOpen(project)}>{project.name}</button></td><td style={styles.cell}>{project.submitter}</td><td style={styles.cell}>{project.material_status === 'complete' ? '资料齐全' : '待补充'}</td><td style={styles.cell}>{project.status}</td><td style={styles.cell}>{(project.projects || []).length ? `${(project.projects || []).length} 次` : '-'}</td><td style={styles.cell}>{readyStatuses.includes(project.status) ? <select defaultValue="" style={styles.select} onChange={(event) => event.target.value && onSchedule(project, event.target.value)}><option value="">安排入会</option>{meetings.filter((meeting: any) => meeting.status === 'active').map((meeting: any) => <option key={meeting.id} value={meeting.id}>{meeting.name}</option>)}</select> : '-'}</td></tr>)}{projects.length === 0 && <tr><td colSpan={6} style={styles.empty}>暂无项目</td></tr>}</tbody></table></div>; }
 
-function MeetingTable({ meetings, assignmentsForMeeting, onOpen }: any) { return <div style={styles.tableWrap}><table style={styles.table}><thead><tr>{['评审会', '日期', '截止时间', '已安排项目', '操作'].map((text) => <th style={styles.cell} key={text}>{text}</th>)}</tr></thead><tbody>{meetings.map((meeting: any) => { const assignments = assignmentsForMeeting(meeting.id); return <tr key={meeting.id}><td style={styles.cell}>{meeting.name}</td><td style={styles.cell}>{meeting.meeting_date || '-'}</td><td style={styles.cell}>{meeting.deadline || '-'}</td><td style={styles.cell}>{assignments.length}/12</td><td style={styles.cell}><button style={styles.secondary} onClick={() => onOpen(meeting)}>进入会议汇总</button></td></tr>; })}{meetings.length === 0 && <tr><td colSpan={5} style={styles.empty}>暂无评审会</td></tr>}</tbody></table></div>; }
+function MeetingTable({ meetings, assignmentsForMeeting, onOpen, onCurrent, onEdit, onDelete }: any) { return <div style={styles.tableWrap}><table style={styles.table}><thead><tr>{['评审会', '日期', '截止时间', '已安排项目', '操作'].map((text) => <th style={styles.cell} key={text}>{text}</th>)}</tr></thead><tbody>{meetings.map((meeting: any) => { const assignments = assignmentsForMeeting(meeting.id); return <tr key={meeting.id}><td style={styles.cell}>{meeting.is_current ? '当前 · ' : ''}{meeting.name}</td><td style={styles.cell}>{meeting.meeting_date || '-'}</td><td style={styles.cell}>{meeting.deadline || '-'}</td><td style={styles.cell}>{assignments.length}/12</td><td style={styles.cell}><div style={styles.actions}><button style={styles.secondary} onClick={() => onOpen(meeting)}>会议汇总</button><button style={styles.secondary} onClick={() => onCurrent(meeting)}>设为当前</button><button style={styles.secondary} onClick={() => onEdit(meeting)}>编辑</button><button style={styles.danger} onClick={() => onDelete(meeting)}>删除</button></div></td></tr>; })}{meetings.length === 0 && <tr><td colSpan={5} style={styles.empty}>暂无评审会</td></tr>}</tbody></table></div>; }
 
 function MeetingSummary({ meeting, onBack, onOpenProject, onOpenReport }: any) {
   const [data, setData] = useState<any>(null); const [message, setMessage] = useState('');

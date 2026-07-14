@@ -72,3 +72,21 @@ export async function PATCH(request: NextRequest) {
     return NextResponse.json({ error: `更新项目失败: ${err.message}` }, { status: 500 });
   }
 }
+
+export async function DELETE(request: NextRequest) {
+  if (!isProjectPoolV2Enabled()) return unavailable();
+  try {
+    const id = new URL(request.url).searchParams.get('id');
+    const operatorCode = new URL(request.url).searchParams.get('operator_code') || '';
+    if (!id || !await requireAdmin(operatorCode)) return NextResponse.json({ error: '无权限或参数不完整' }, { status: 403 });
+    const { data: project, error: readError } = await supabaseAdmin.from('project_pool').select('id, projects(id)').eq('id', id).single();
+    if (readError) throw readError;
+    if ((project.projects || []).length > 0) return NextResponse.json({ error: '已有评审历史的项目不能删除，可使用人工状态调整归档' }, { status: 409 });
+    const { error } = await supabaseAdmin.from('project_pool').update({ archived_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq('id', id);
+    if (error) throw error;
+    await supabaseAdmin.from('project_status_history').insert({ project_id: id, event_type: 'project_archived', to_status: 'archived', operator_code: operatorCode, note: '管理员归档未评审项目' });
+    return NextResponse.json({ success: true });
+  } catch (err: any) {
+    return NextResponse.json({ error: `删除项目失败: ${err.message}` }, { status: 500 });
+  }
+}
