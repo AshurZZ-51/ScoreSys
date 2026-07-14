@@ -65,6 +65,8 @@ BEGIN
   ELSIF p_round_no = 2 AND pool_row.status = 'ready_r2' THEN attempt := 1;
   ELSIF p_round_no = 2 AND pool_row.status = 'r2_recheck_ready' THEN attempt := 2;
   ELSE RAISE EXCEPTION '项目当前状态与评审轮次不匹配'; END IF;
+  PERFORM 1 FROM meetings WHERE id = p_meeting_id FOR UPDATE;
+  IF NOT FOUND THEN RAISE EXCEPTION '评审会不存在'; END IF;
   SELECT count(*) INTO assignment_count FROM projects WHERE meeting_id = p_meeting_id AND pool_project_id IS NOT NULL;
   IF assignment_count >= 12 THEN RAISE EXCEPTION '评审会已满（最多 12 个项目）'; END IF;
   SELECT coalesce(max(seq_no), 0) + 1 INTO seq FROM projects WHERE meeting_id = p_meeting_id;
