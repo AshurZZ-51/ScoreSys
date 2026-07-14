@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { supabaseAdmin } from '@/lib/supabase';
+import { isProjectPoolV2Enabled, supabaseAdmin } from '@/lib/supabase';
 import { getMissingTemplateProjects } from '@/lib/projectSlots';
 import {
   SCORING_DIMENSIONS,
@@ -33,20 +33,19 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'meetingId 必填' }, { status: 400 });
     }
 
-    const { data: existingProjects, error: existingProjectsError } = await supabaseAdmin
-      .from('projects')
-      .select('seq_no')
-      .eq('meeting_id', meetingId);
-    if (existingProjectsError) throw existingProjectsError;
-    const missingProjects = getMissingTemplateProjects(existingProjects || [], meetingId);
-    if (missingProjects.length > 0) {
-      const { error: insertMissingError } = await supabaseAdmin.from('projects').insert(missingProjects);
-      if (insertMissingError) throw insertMissingError;
+    if (!isProjectPoolV2Enabled()) {
+      const { data: existingProjects, error: existingProjectsError } = await supabaseAdmin.from('projects').select('seq_no').eq('meeting_id', meetingId);
+      if (existingProjectsError) throw existingProjectsError;
+      const missingProjects = getMissingTemplateProjects(existingProjects || [], meetingId);
+      if (missingProjects.length > 0) {
+        const { error: insertMissingError } = await supabaseAdmin.from('projects').insert(missingProjects);
+        if (insertMissingError) throw insertMissingError;
+      }
     }
 
     const [meetingRes, projectsRes, scoresRes, reviewersRes, reviewerDimsRes] = await Promise.all([
       supabaseAdmin.from('meetings').select('id, name, meeting_date, deadline, status, notes').eq('id', meetingId).single(),
-      supabaseAdmin.from('projects').select('id, meeting_id, seq_no, name, submitter, description, problems, actions, is_pending').eq('meeting_id', meetingId).order('seq_no'),
+      supabaseAdmin.from('projects').select('id, meeting_id, seq_no, name, submitter, description, problems, actions, is_pending, pool_project_id, round_no, attempt_no, scoring_version, assignment_status').eq('meeting_id', meetingId).order('seq_no'),
       supabaseAdmin.from('scores').select('id, meeting_id, project_id, reviewer_code, dim_name, score, comment, updated_at').eq('meeting_id', meetingId),
       supabaseAdmin.from('reviewers').select('code, name, role, is_admin').order('code'),
       supabaseAdmin.from('reviewer_dims').select('reviewer_code, dim_name, max_score')
@@ -55,7 +54,7 @@ export async function GET(request: NextRequest) {
     if (meetingRes.error) throw meetingRes.error;
 
     const fetchedProjects = projectsRes.data || [];
-    const summaryMissingProjects = getMissingTemplateProjects(fetchedProjects, meetingId).map((project: any) => ({
+    const summaryMissingProjects = isProjectPoolV2Enabled() ? [] : getMissingTemplateProjects(fetchedProjects, meetingId).map((project: any) => ({
       ...project,
       id: `missing-slot-${meetingId}-${project.seq_no}`,
       is_pending: false
@@ -206,7 +205,9 @@ export async function GET(request: NextRequest) {
           : r1Verdict === 'approved' ? 'r2_pending'
             : r1Verdict ? nextStatusForVerdict('r1', r1Verdict)
               : project.name && project.submitter ? 'r1_pending' : 'draft');
-      const currentRound = latestSpecialComment('__current_round__') || defaultRoundForStatus(derivedStatus);
+      const currentRound = project.scoring_version === 'two_round_v2' && project.round_no
+        ? `r${project.round_no}`
+        : latestSpecialComment('__current_round__') || defaultRoundForStatus(derivedStatus);
       const currentRoundSummary = roundSummaries[currentRound] || roundSummaries.r1;
 
       projectScores.forEach((s: any) => {

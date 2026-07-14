@@ -42,3 +42,7 @@ export const supabaseAnon = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL || fallbackUrl,
   supabaseAnonKey || fallbackKey
 );
+
+export function isProjectPoolV2Enabled() {
+  return process.env.PROJECT_POOL_V2_ENABLED === 'true';
+}

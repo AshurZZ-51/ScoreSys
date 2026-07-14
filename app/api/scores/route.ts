@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { supabaseAdmin } from '@/lib/supabase';
+import { isProjectPoolV2Enabled, supabaseAdmin } from '@/lib/supabase';
+import { transitionForVerdict } from '@/lib/projectPoolWorkflow';
 import { getScoreMax, isValidScoreValue, parseScoreKey } from '@/lib/scoringRules';
 import {
   ADMIN_TRACKING_SPECIAL_DIMENSIONS,
@@ -63,6 +64,15 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '已超过打分截止日期' }, { status: 403 });
     }
 
+    const { data: assignment } = await supabaseAdmin
+      .from('projects')
+      .select('id, pool_project_id, round_no, attempt_no, scoring_version, assignment_status')
+      .eq('id', project_id)
+      .eq('meeting_id', meeting_id)
+      .maybeSingle();
+    if (!assignment) return NextResponse.json({ error: '评审项目不存在' }, { status: 404 });
+    const isV2Assignment = isProjectPoolV2Enabled() && assignment.scoring_version === 'two_round_v2';
+
     const { data: reviewerInfo } = await supabaseAdmin
       .from('reviewers')
       .select('is_admin')
@@ -72,6 +82,14 @@ export async function POST(request: NextRequest) {
     const baseDimName = stripRoundPrefix(dim_name);
     const parsedScore = parseScoreKey(dim_name);
 
+    if (isV2Assignment && parsedScore?.roundId !== `r${assignment.round_no}` && !baseDimName.startsWith('__')) {
+      return NextResponse.json({ error: '该项目不属于当前评分轮次' }, { status: 400 });
+    }
+    if (isV2Assignment && !reviewerInfo?.is_admin) {
+      const { data: snapshot } = await supabaseAdmin.from('meeting_reviewers').select('reviewer_code').eq('meeting_id', meeting_id).eq('reviewer_code', reviewer_code).maybeSingle();
+      if (!snapshot) return NextResponse.json({ error: '您不在本场评审会的评委名单中' }, { status: 403 });
+    }
+
     if (baseDimName === '__bonus__') {
       if (reviewer_code.toUpperCase() !== 'W') {
         return NextResponse.json({ error: '只有 Walker 可以使用加分项' }, { status: 403 });
@@ -80,6 +98,7 @@ export async function POST(request: NextRequest) {
       if (reviewer_code.toUpperCase() !== 'W' && !reviewerInfo?.is_admin) {
         return NextResponse.json({ error: '只有 Walker 或管理员可以设置评审结论' }, { status: 403 });
       }
+      if (isV2Assignment && reviewer_code.toUpperCase() !== 'W') return NextResponse.json({ error: '新版评审结论只能由 Walker 给出' }, { status: 403 });
     } else if (baseDimName === '__problems__' || baseDimName === '__actions__') {
       // Text-only review fields reuse the score table.
     } else if (ADMIN_TRACKING_SPECIAL_DIMENSIONS.has(baseDimName)) {
@@ -134,7 +153,23 @@ export async function POST(request: NextRequest) {
 
     if (error) throw error;
 
-    if (baseDimName === '__verdict__' && comment) {
+    if (baseDimName === '__verdict__' && comment && isV2Assignment) {
+      const transition = transitionForVerdict(Number(assignment.round_no), Number(assignment.attempt_no), comment);
+      if (!transition.ok) return NextResponse.json({ error: transition.error }, { status: 400 });
+      const nextAssignmentStatus = 'completed';
+      const { error: assignmentError } = await supabaseAdmin.from('projects').update({ assignment_status: nextAssignmentStatus }).eq('id', project_id);
+      if (assignmentError) throw assignmentError;
+      const { error: poolError } = await supabaseAdmin.from('project_pool').update({
+        status: transition.status, current_round: transition.currentRound, current_attempt: transition.currentAttempt,
+        latest_verdict: transition.verdict, updated_at: new Date().toISOString()
+      }).eq('id', assignment.pool_project_id);
+      if (poolError) throw poolError;
+      const { error: historyError } = await supabaseAdmin.from('project_status_history').insert({
+        project_id: assignment.pool_project_id, meeting_project_id: project_id, meeting_id,
+        event_type: 'walker_verdict', to_status: transition.status, operator_code: reviewer_code, note: comment
+      });
+      if (historyError) throw historyError;
+    } else if (baseDimName === '__verdict__' && comment) {
       const verdictRound = getRoundFromDimName(dim_name);
       if (verdictRound) {
         const nextStatus = nextStatusForVerdict(verdictRound, comment);

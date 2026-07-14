@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
+import V2AdminPage from './V2AdminPage';
 import { projectDisplayName, projectDisplaySubmitter, shouldShowProjectSlot } from '@/lib/projectDisplay';
 import { PROJECT_SLOT_COUNT } from '@/lib/projectSlots';
 import { specialScoreKey } from '@/lib/scoringRules';
@@ -82,6 +83,11 @@ interface DimConfig {
 }
 
 export default function AdminPage() {
+  if (process.env.NEXT_PUBLIC_PROJECT_POOL_V2_ENABLED === 'true') return <V2AdminPage />;
+  return <LegacyAdminPage />;
+}
+
+function LegacyAdminPage() {
   const router = useRouter();
   const [reviewer, setReviewer] = useState<any>(null);
   const [meetings, setMeetings] = useState<Meeting[]>([]);

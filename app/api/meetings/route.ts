@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { supabaseAdmin } from '@/lib/supabase';
+import { isProjectPoolV2Enabled, supabaseAdmin } from '@/lib/supabase';
 import { PROJECT_SLOT_COUNT, copyProjectsForMeeting, createTemplateProjects } from '@/lib/projectSlots';
 
 export const dynamic = 'force-dynamic';
@@ -12,7 +12,7 @@ export async function GET(request: NextRequest) {
 
     let query = supabaseAdmin
       .from('meetings')
-      .select('id, name, meeting_date, deadline, status, notes, is_current, deleted_at, scheduled_purge_at, created_at')
+      .select('id, name, meeting_date, deadline, status, notes, workflow_version, is_current, deleted_at, scheduled_purge_at, created_at')
       .order('meeting_date', { ascending: false });
 
     if (meetingId) {
@@ -54,19 +54,29 @@ export async function POST(request: NextRequest) {
         meeting_date,
         deadline: deadline || null,
         notes: notes || '',
-        status: 'active'
+        status: 'active',
+        workflow_version: isProjectPoolV2Enabled() ? 'two_round_v2' : 'legacy_v1'
       })
       .select()
       .single();
 
     if (error) throw error;
 
-    // 自动创建空模板项目
-    const templateProjects = createTemplateProjects(meeting.id);
-    await supabaseAdmin.from('projects').insert(templateProjects);
+    const v2 = isProjectPoolV2Enabled();
+    if (v2) {
+      const { data: reviewers } = await supabaseAdmin.from('reviewers').select('code, name, role, is_admin').eq('is_admin', false);
+      if (reviewers?.length) {
+        await supabaseAdmin.from('meeting_reviewers').insert(reviewers.map((reviewer: any) => ({
+          meeting_id: meeting.id, reviewer_code: reviewer.code, reviewer_name: reviewer.name || '', reviewer_role: reviewer.role || ''
+        })));
+      }
+    } else {
+      const templateProjects = createTemplateProjects(meeting.id);
+      await supabaseAdmin.from('projects').insert(templateProjects);
+    }
 
     // 如果指定了复制来源，覆盖模板
-    if (copy_from_meeting_id) {
+    if (copy_from_meeting_id && !v2) {
       const { data: sourceProjects } = await supabaseAdmin
         .from('projects')
         .select('seq_no, name, submitter, description, problems, actions, is_pending')

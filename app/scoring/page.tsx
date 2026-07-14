@@ -20,6 +20,9 @@ interface Project {
   name: string;
   submitter: string;
   description?: string;
+  round_no?: number;
+  attempt_no?: number;
+  scoring_version?: string;
   currentRound?: string;
   reviewStatus?: string;
   materialStatus?: string;
@@ -71,12 +74,12 @@ export default function ScoringPage() {
   const feedbackTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const isWalker = reviewer?.code?.toUpperCase() === 'W';
-  const getActiveRound = (project = activeProject) => project?.currentRound || 'r1';
+  const getActiveRound = (project = activeProject) => project?.round_no ? `r${project.round_no}` : project?.currentRound || 'r1';
   const roundFieldKey = (projectId: string, roundId: string) => `${projectId}:${roundId}`;
   const reviewerRules = useMemo(() => {
     const roundId = getActiveRound();
     return SCORING_DIMENSIONS.filter((rule: any) => rule.roundId === roundId);
-  }, [activeProject?.currentRound]);
+  }, [activeProject?.currentRound, activeProject?.round_no]);
 
   useEffect(() => {
     const stored = localStorage.getItem('reviewer');
@@ -113,7 +116,7 @@ export default function ScoringPage() {
       const nextProjects = (data.projects || []).filter((project: Project) => (
         project.name
         && project.submitter
-        && !['cancelled', 'initiation', 'r1_rejected', 'r2_rejected'].includes(project.reviewStatus || '')
+        && !['cancelled', 'initiation', 'r1_rejected', 'r2_rejected', 'rejected'].includes(project.reviewStatus || '')
       ));
       setProjects(nextProjects);
       setActiveProject(nextProjects[0] || null);
@@ -568,7 +571,7 @@ export default function ScoringPage() {
                 <section style={{ background: 'white', borderRadius: 12, padding: 20, border: '1.5px solid #8b5cf6', marginTop: 24 }}>
                   <div style={{ fontSize: 16, fontWeight: 800, color: '#5b21b6', marginBottom: 12 }}>Walker 评审结论</div>
                   <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-                    {VERDICT_OPTIONS.map((option) => {
+                    {VERDICT_OPTIONS.filter((option) => !(activeProject.attempt_no === 2 && option.value === 'recheck')).map((option) => {
                       const selected = projectVerdicts[roundFieldKey(activeProject.id, getActiveRound())] === option.value;
                       return (
                         <button key={option.value} onClick={() => handleVerdictChange(option.value)} style={{ padding: '10px 16px', borderRadius: 8, border: selected ? `2px solid ${option.color}` : '1px solid #e2e8f0', background: selected ? option.bg : 'white', color: selected ? option.color : '#475569', fontWeight: 800, cursor: 'pointer' }}>
