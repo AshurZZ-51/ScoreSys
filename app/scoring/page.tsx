@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { SCORING_DIMENSIONS, computeRoundBaseScoreFromScoreMap, roundScoreKey, specialScoreKey } from '@/lib/scoringRules';
 import { ROUND_LABELS, ROUND_TITLES, VERDICT_OPTIONS, getReviewStatus } from '@/lib/reviewWorkflow';
+import { createSaveFeedback } from '@/lib/saveFeedback';
 
 interface Reviewer {
   code: string;
@@ -41,6 +42,13 @@ interface Score {
   comment?: string;
 }
 
+type FeedbackTone = 'saving' | 'success' | 'error';
+
+interface SaveFeedback {
+  tone: FeedbackTone;
+  text: string;
+}
+
 export default function ScoringPage() {
   const router = useRouter();
   const [reviewer, setReviewer] = useState<Reviewer | null>(null);
@@ -57,9 +65,10 @@ export default function ScoringPage() {
   const [bonusValue, setBonusValue] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [message, setMessage] = useState('');
+  const [saveFeedback, setSaveFeedback] = useState<SaveFeedback | null>(null);
   const saveTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
   const saveVersions = useRef<Record<string, number>>({});
+  const feedbackTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const isWalker = reviewer?.code?.toUpperCase() === 'W';
   const getActiveRound = (project = activeProject) => project?.currentRound || 'r1';
@@ -159,15 +168,34 @@ export default function ScoringPage() {
     setBonusValue(bonusValueMap);
   };
 
+  const showFeedback = (feedback: SaveFeedback, duration = 2200) => {
+    if (feedbackTimer.current) clearTimeout(feedbackTimer.current);
+    setSaveFeedback(feedback);
+    if (duration > 0) {
+      feedbackTimer.current = setTimeout(() => setSaveFeedback(null), duration);
+    }
+  };
+
+  const showSaveFeedback = (state: FeedbackTone, action: string, errorMessage = '') => {
+    showFeedback(createSaveFeedback(state, action, errorMessage), state === 'saving' ? 0 : 2400);
+  };
+
   const showMessage = (text: string) => {
-    setMessage(text);
-    setTimeout(() => setMessage(''), 1800);
+    showFeedback({ tone: 'error', text }, 3000);
+  };
+
+  const getSaveAction = (dimName: string) => {
+    const baseDimName = String(dimName).replace(/^r[12]::/, '');
+    if (baseDimName === '__bonus__') return '加分';
+    if (baseDimName === '__problems__' || baseDimName === '__actions__') return '评审意见';
+    if (baseDimName === '__verdict__') return '评审结论';
+    return '评分';
   };
 
   const legacyHandleScoreChange = async (dimName: string, value: number, comment?: string | null) => {
     if (!activeMeeting || !activeProject || !reviewer || Number.isNaN(value)) return;
     setSaving(true);
-    setMessage('');
+    showSaveFeedback('saving', '评分');
     try {
       const res = await fetch('/api/scores', {
         method: 'POST',
@@ -183,16 +211,16 @@ export default function ScoringPage() {
       });
       const data = await res.json();
       if (!res.ok) {
-        showMessage(data.error || '保存失败');
+        showSaveFeedback('error', '评分', data.error || '请稍后重试');
       } else {
         setScores((prev) => ({
           ...prev,
           [activeProject.id]: { ...prev[activeProject.id], [dimName]: value }
         }));
-        showMessage('已保存');
+        showSaveFeedback('success', '评分');
       }
     } catch (err: any) {
-      showMessage(err.message);
+      showSaveFeedback('error', '评分', err.message || '请稍后重试');
     } finally {
       setSaving(false);
     }
@@ -204,7 +232,8 @@ export default function ScoringPage() {
     const version = (saveVersions.current[saveKey] || 0) + 1;
     saveVersions.current[saveKey] = version;
     setSaving(true);
-    setMessage('');
+    const action = getSaveAction(dimName);
+    showSaveFeedback('saving', action);
     try {
       const res = await fetch('/api/scores', {
         method: 'POST',
@@ -220,10 +249,10 @@ export default function ScoringPage() {
       });
       const data = await res.json();
       if (saveVersions.current[saveKey] !== version) return;
-      if (!res.ok) showMessage(data.error || '保存失败');
-      else showMessage('已保存');
+      if (!res.ok) showSaveFeedback('error', action, data.error || '请稍后重试');
+      else showSaveFeedback('success', action);
     } catch (err: any) {
-      if (saveVersions.current[saveKey] === version) showMessage(err.message);
+      if (saveVersions.current[saveKey] === version) showSaveFeedback('error', action, err.message || '请稍后重试');
     } finally {
       if (saveVersions.current[saveKey] === version) setSaving(false);
     }
@@ -328,21 +357,33 @@ export default function ScoringPage() {
       score: 0
     };
 
-    const [problemsRes, actionsRes] = await Promise.all([
-      fetch('/api/scores', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...payloadBase, dim_name: specialScoreKey(roundId, '__problems__'), comment: problemsText || null })
-      }),
-      fetch('/api/scores', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...payloadBase, dim_name: specialScoreKey(roundId, '__actions__'), comment: actionsText || null })
-      })
-    ]);
-
-    if (problemsRes.ok && actionsRes.ok) showMessage('评审意见已保存');
-    else showMessage('评审意见保存失败');
+    setSaving(true);
+    showSaveFeedback('saving', '评审意见');
+    try {
+      const [problemsRes, actionsRes] = await Promise.all([
+        fetch('/api/scores', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ...payloadBase, dim_name: specialScoreKey(roundId, '__problems__'), comment: problemsText || null })
+        }),
+        fetch('/api/scores', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ...payloadBase, dim_name: specialScoreKey(roundId, '__actions__'), comment: actionsText || null })
+        })
+      ]);
+      if (problemsRes.ok && actionsRes.ok) {
+        showSaveFeedback('success', '评审意见');
+      } else {
+        const failedRes = problemsRes.ok ? actionsRes : problemsRes;
+        const failedData = await failedRes.json().catch(() => ({}));
+        showSaveFeedback('error', '评审意见', failedData.error || '请稍后重试');
+      }
+    } catch (err: any) {
+      showSaveFeedback('error', '评审意见', err.message || '请稍后重试');
+    } finally {
+      setSaving(false);
+    }
   };
 
   const persistTextField = (projectId: string, dimName: '__problems__' | '__actions__', comment: string, delay = 650) => {
@@ -448,7 +489,7 @@ export default function ScoringPage() {
               </div>
 
               <div style={{ background: '#eef2ff', border: '1px solid #c7d2fe', color: '#3730a3', padding: '12px 16px', borderRadius: 10, fontSize: 13, lineHeight: 1.7, marginBottom: 20 }}>
-                评分方法：当前轮次独立 100 分；打分型子项均为 0-10 分，五位评委取平均后计入大维度；创新性按 8/12/20/28/40 档位计入 40 分满分。
+                评分方法：当前轮次独立 100 分；打分型子项均为 0-10 分，五位评委取平均后计入大维度；创新性按 10/16/24/30/40 档位计入 40 分满分。
               </div>
 
               {activeMeeting?.deadline && <div style={{ background: '#fef3c7', border: '1px solid #fde68a', color: '#92400e', padding: '10px 16px', borderRadius: 8, fontSize: 13, marginBottom: 20 }}>打分截止日期：{activeMeeting.deadline}</div>}
@@ -523,7 +564,6 @@ export default function ScoringPage() {
                 <button onClick={handleProblemsActionsSave} style={{ padding: '9px 18px', border: 'none', borderRadius: 8, background: '#0f172a', color: 'white', fontWeight: 700, cursor: 'pointer' }}>保存评审意见</button>
               </section>
 
-              {message && <div style={{ marginTop: 18, padding: 10, textAlign: 'center', borderRadius: 8, fontSize: 13, fontWeight: 700, color: message.includes('失败') || message.includes('必须') || message.includes('请') ? '#dc2626' : '#059669', background: message.includes('失败') || message.includes('必须') || message.includes('请') ? '#fef2f2' : '#f0fdf4' }}>{message}</div>}
               {isWalker && (
                 <section style={{ background: 'white', borderRadius: 12, padding: 20, border: '1.5px solid #8b5cf6', marginTop: 24 }}>
                   <div style={{ fontSize: 16, fontWeight: 800, color: '#5b21b6', marginBottom: 12 }}>Walker 评审结论</div>
@@ -543,6 +583,22 @@ export default function ScoringPage() {
           )}
         </main>
       </div>
+      {saveFeedback && (
+        <div
+          role="status"
+          aria-live="polite"
+          style={{
+            position: 'fixed', top: 16, right: 16, zIndex: 50,
+            minWidth: 190, maxWidth: 360, padding: '11px 14px', borderRadius: 8,
+            fontSize: 13, fontWeight: 700, boxShadow: '0 10px 24px rgba(15, 23, 42, 0.16)',
+            color: saveFeedback.tone === 'error' ? '#b91c1c' : saveFeedback.tone === 'saving' ? '#1d4ed8' : '#047857',
+            background: saveFeedback.tone === 'error' ? '#fef2f2' : saveFeedback.tone === 'saving' ? '#eff6ff' : '#ecfdf5',
+            border: `1px solid ${saveFeedback.tone === 'error' ? '#fecaca' : saveFeedback.tone === 'saving' ? '#bfdbfe' : '#a7f3d0'}`
+          }}
+        >
+          {saveFeedback.text}
+        </div>
+      )}
     </div>
   );
 }
