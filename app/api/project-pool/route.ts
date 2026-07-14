@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isProjectPoolV2Enabled, supabaseAdmin } from '@/lib/supabase';
-import { MATERIAL_ITEMS, makeMatchKey, normalizeProjectPart } from '@/lib/projectPoolWorkflow';
+import { createMaterialRows, makeMatchKey, normalizeProjectPart } from '@/lib/projectPoolWorkflow';
 
 export const dynamic = 'force-dynamic';
 
@@ -46,7 +46,7 @@ export async function POST(request: NextRequest) {
       match_key: matchKey, status: 'materials_pending', material_status: 'incomplete'
     }).select().single();
     if (error) throw error;
-    const materials = MATERIAL_ITEMS.map((item) => ({ project_id: project.id, ...item, status: 'missing' }));
+    const materials = createMaterialRows(project.id);
     const { error: materialsError } = await supabaseAdmin.from('project_materials').insert(materials);
     if (materialsError) throw materialsError;
     await supabaseAdmin.from('project_status_history').insert({ project_id: project.id, event_type: 'project_created', to_status: 'materials_pending', operator_code, note: '创建待评审项目' });

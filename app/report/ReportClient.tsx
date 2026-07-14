@@ -1,12 +1,13 @@
 'use client';
 
 import { useEffect, useState, useMemo } from 'react';
-import { useSearchParams } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { hasProjectIdentity, projectDisplayName, projectDisplaySubmitter, shouldShowProjectSlot } from '@/lib/projectDisplay';
 import { ROUND_LABELS, ROUND_TITLES, VERDICT_OPTIONS, getMaterialStatus, getReviewStatus } from '@/lib/reviewWorkflow';
 
 export default function ReportClient() {
   const params = useSearchParams();
+  const router = useRouter();
   const meetingId = params.get('meetingId');
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
@@ -83,7 +84,7 @@ export default function ReportClient() {
             border: 'none', borderRadius: '10px', cursor: 'pointer', fontSize: '14px', fontWeight: '600',
             boxShadow: '0 2px 8px rgba(59,130,246,0.3)'
           }}>🖨 打印 / 导出PDF</button>
-          <button onClick={() => window.close()} style={{
+          <button onClick={() => params.get('from') === 'admin' ? router.push('/admin') : window.history.length > 1 ? window.history.back() : router.push('/admin')} style={{
             padding: '10px 20px', background: '#f1f5f9', color: '#475569',
             border: 'none', borderRadius: '10px', cursor: 'pointer', fontSize: '14px'
           }}>关闭</button>
