@@ -1,12 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isProjectPoolV2Enabled, supabaseAdmin } from '@/lib/supabase';
 import { getMissingTemplateProjects } from '@/lib/projectSlots';
+import { requireAdminSession, requireReviewerSession } from '@/lib/adminSession';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
 export async function GET(request: NextRequest) {
   try {
+    if (!requireReviewerSession(request)) return NextResponse.json({ error: '请先登录' }, { status: 401 });
     const { searchParams } = new URL(request.url);
     const meetingId = searchParams.get('meetingId');
     const role = searchParams.get('role') || 'reviewer';  // 'admin' | 'reviewer'
@@ -57,6 +59,7 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   try {
+    if (!requireAdminSession(request)) return NextResponse.json({ error: '仅管理员可创建项目' }, { status: 403 });
     const body = await request.json();
     const { meeting_id, seq_no, name, submitter, description, is_pending } = body;
 
@@ -93,6 +96,7 @@ export async function POST(request: NextRequest) {
 
 export async function PATCH(request: NextRequest) {
   try {
+    if (!requireAdminSession(request)) return NextResponse.json({ error: '仅管理员可更新项目' }, { status: 403 });
     const body = await request.json();
     const { id, ...updates } = body;
 
@@ -116,6 +120,7 @@ export async function PATCH(request: NextRequest) {
 
 export async function DELETE(request: NextRequest) {
   try {
+    if (!requireAdminSession(request)) return NextResponse.json({ error: '仅管理员可删除项目' }, { status: 403 });
     const { searchParams } = new URL(request.url);
     const id = searchParams.get('id');
 

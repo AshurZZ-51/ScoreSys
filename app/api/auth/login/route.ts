@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase';
-import { ADMIN_SESSION_COOKIE, adminSessionCookie, createAdminSession } from '@/lib/adminSession';
+import { adminSessionCookie, createReviewerSession } from '@/lib/adminSession';
 
 export const dynamic = 'force-dynamic';
 
@@ -54,18 +54,8 @@ export async function POST(request: NextRequest) {
         dimensions: dims || []
       }
     });
-    if (reviewer.is_admin) {
-      const cookie = adminSessionCookie(createAdminSession(reviewer));
-      response.cookies.set(cookie.name, cookie.value, cookie.options);
-    } else {
-      response.cookies.set(ADMIN_SESSION_COOKIE, '', {
-        httpOnly: true,
-        sameSite: 'lax',
-        secure: process.env.NODE_ENV === 'production',
-        path: '/',
-        expires: new Date(0)
-      });
-    }
+    const cookie = adminSessionCookie(createReviewerSession(reviewer));
+    response.cookies.set(cookie.name, cookie.value, cookie.options);
     return response;
   } catch (err: any) {
     console.error('Login error:', err);

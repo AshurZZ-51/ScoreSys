@@ -35,6 +35,9 @@ CREATE TABLE IF NOT EXISTS report_snapshots (
   generated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+CREATE UNIQUE INDEX IF NOT EXISTS report_snapshots_scope_version_key
+  ON report_snapshots(scope_type, scope_id, report_type, version);
+
 CREATE TABLE IF NOT EXISTS account_audit_logs (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   actor_code TEXT NOT NULL,

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isProjectPoolV2Enabled, supabaseAdmin } from '@/lib/supabase';
 import { getMissingTemplateProjects } from '@/lib/projectSlots';
+import { requireReviewerSession } from '@/lib/adminSession';
 import {
   SCORING_DIMENSIONS,
   REVIEW_ROUNDS,
@@ -26,6 +27,7 @@ const SPECIAL_DIMENSIONS = new Set(['__bonus__', '__problems__', '__actions__', 
 
 export async function GET(request: NextRequest) {
   try {
+    if (!requireReviewerSession(request)) return NextResponse.json({ error: '请先登录' }, { status: 401 });
     const { searchParams } = new URL(request.url);
     const meetingId = searchParams.get('meetingId');
 
