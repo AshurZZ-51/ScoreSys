@@ -78,6 +78,12 @@ export async function DELETE(request: NextRequest) {
   try {
     const id = new URL(request.url).searchParams.get('id');
     const operatorCode = new URL(request.url).searchParams.get('operator_code') || '';
+    if (!id || !await requireAdmin(operatorCode)) return NextResponse.json({ error: 'Unauthorized or missing parameters' }, { status: 403 });
+    const now = new Date().toISOString();
+    const { error: archiveError } = await supabaseAdmin.from('project_pool').update({ archived_at: now, updated_at: now }).eq('id', id);
+    if (archiveError) throw archiveError;
+    await supabaseAdmin.from('project_status_history').insert({ project_id: id, event_type: 'project_archived', to_status: 'archived', operator_code: operatorCode, note: 'Archived by administrator' });
+    return NextResponse.json({ success: true });
     if (!id || !await requireAdmin(operatorCode)) return NextResponse.json({ error: '无权限或参数不完整' }, { status: 403 });
     const { data: project, error: readError } = await supabaseAdmin.from('project_pool').select('id, projects(id)').eq('id', id).single();
     if (readError) throw readError;

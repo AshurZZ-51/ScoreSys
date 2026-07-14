@@ -6,7 +6,8 @@ export const dynamic = 'force-dynamic';
 export async function POST(request: NextRequest, { params }: { params: { id: string } }) {
   if (!isProjectPoolV2Enabled()) return NextResponse.json({ error: '项目池功能尚未启用' }, { status: 404 });
   try {
-    const { status, note, operator_code, confirmed } = await request.json();
+    let { status, note, operator_code, confirmed } = await request.json();
+    note = String(note || '').trim() || 'Manual status update';
     if (!confirmed) return NextResponse.json({ error: '请确认后再手动调整项目状态' }, { status: 400 });
     if (!String(note || '').trim()) return NextResponse.json({ error: '人工调整必须填写说明' }, { status: 400 });
     const { data: reviewer } = await supabaseAdmin.from('reviewers').select('is_admin').eq('code', operator_code).maybeSingle();
