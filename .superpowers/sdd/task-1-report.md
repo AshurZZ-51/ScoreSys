@@ -2,7 +2,7 @@
 
 ## Scope
 
-Implemented the confirmed Task 1 admin lifecycle foundations in commit `7d5d25d` (`feat: add admin lifecycle v3 foundations`). No account API or UI was added, and the Supabase migration was not executed.
+Implemented the confirmed Task 1 admin lifecycle foundations in commit `7d5d25d` (`feat: add admin lifecycle v3 foundations`). The P1 fix scope expanded to the active materials API and V2 admin UI so the V3 migration contract remains usable through the live flow. No account API or UI was added, and the Supabase migration was not executed.
 
 ## Changed Files
 
@@ -12,6 +12,11 @@ Implemented the confirmed Task 1 admin lifecycle foundations in commit `7d5d25d`
   - Adds `project_deletion_requests` and `report_snapshots` using the confirmed design schema.
   - Adds `account_audit_logs` with the Task 6 support schema.
   - Replaces `assign_pool_project_to_meeting` without the material-complete rejection while retaining project existence, round/attempt, capacity, and assignment validation.
+  - Locks the target `meetings` row before capacity counting and sequence allocation to serialize concurrent assignments.
+- `app/api/project-pool/[id]/materials/route.ts`
+  - Accepts only the V3 material statuses and updates `material_status` without overwriting a manually adjusted project lifecycle status.
+- `app/admin/V2AdminPage.tsx`
+  - Sends only `missing`, `needs_completion`, `submitted`, and `exempt` from the material status controls, with the required Chinese labels.
 - `lib/adminLifecycle.js`
   - Adds pure `isCompletedReview`, `sortMeetingsForAdmin`, and `deriveProjectDeletionState` helpers.
 - `lib/adminLifecycle.test.cjs`
@@ -22,6 +27,7 @@ Implemented the confirmed Task 1 admin lifecycle foundations in commit `7d5d25d`
   - Removes only the material-complete assignment rejection.
 - `lib/projectPoolWorkflow.test.cjs`
   - Updates material and assignment expectations and adds optional-material coverage.
+  - Adds the P1 regression tests for V3 status validation and migration lock ordering.
 
 ## TDD Evidence
 
@@ -67,3 +73,13 @@ The runtime directory was prepended because `node` is not otherwise available on
 - The migration was intentionally not run against Supabase, so SQL execution and compatibility with the live database remain deployment-time concerns.
 - The repository shell environment does not expose `node` by default; test commands require the bundled runtime path shown above.
 - The existing progress return property remains named `approved` for compatibility with current callers, although it counts `submitted` and `exempt` statuses.
+
+## P1 Fix Evidence (2026-07-14)
+
+Commit: `7f43af8dd791907c7f814ad2ae437ed8fab6631b` (`fix: align material lifecycle and serialize capacity`)
+
+- RED: `node --test lib/projectPoolWorkflow.test.cjs` produced 2 expected failures: the V3 material-status validation helper was absent and the migration had no target-meeting `FOR UPDATE` lock.
+- Focused GREEN: `node --test lib/projectPoolWorkflow.test.cjs` completed with 11 tests, 11 pass, 0 fail.
+- Full suite: `pnpm test` completed with 31 tests, 31 pass, 0 fail.
+- Build: `pnpm build` completed successfully.
+- `git diff --check` completed without whitespace errors before the fix commit.
