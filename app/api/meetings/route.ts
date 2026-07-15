@@ -9,7 +9,7 @@ export const dynamic = 'force-dynamic';
 
 function assignmentRound(status: string) {
   if (['ready_r2', 'r2_recheck_ready'].includes(status)) return 2;
-  if (['ready_r1', 'r1_recheck_ready'].includes(status)) return 1;
+  if (['draft', 'materials_pending', 'ready_r1', 'r1_recheck_ready'].includes(status)) return 1;
   return null;
 }
 

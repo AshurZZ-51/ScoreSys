@@ -18,7 +18,9 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
     });
     if (error) throw error;
     if (!data?.length) return NextResponse.json({ error: '项目不存在' }, { status: 404 });
-    return NextResponse.json({ success: true, project: data[0] });
+    const { data: project, error: projectError } = await supabaseAdmin.from('project_pool').select('*').eq('id', params.id).single();
+    if (projectError) throw projectError;
+    return NextResponse.json({ success: true, project });
   } catch (err: any) {
     return NextResponse.json({ error: `调整项目状态失败: ${err.message}` }, { status: 500 });
   }

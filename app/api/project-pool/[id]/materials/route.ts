@@ -27,11 +27,11 @@ export async function PATCH(request: NextRequest, { params }: { params: { id: st
     const derived = getMaterialStatus(materials || []);
     const { data: current, error: currentError } = await supabaseAdmin.from('project_pool').select('status').eq('id', params.id).single();
     if (currentError) throw currentError;
-    const { error: projectError } = await supabaseAdmin.from('project_pool').update({ material_status: derived.value, updated_at: now }).eq('id', params.id);
+    const { data: project, error: projectError } = await supabaseAdmin.from('project_pool').update({ material_status: derived.value, updated_at: now }).eq('id', params.id).select().single();
     if (projectError) throw projectError;
     const { error: historyError } = await supabaseAdmin.from('project_status_history').insert({ project_id: params.id, event_type: 'material_checked', from_status: current.status, to_status: current.status, operator_code: session.code, note: `${item_key}: ${status}${note ? `；${note}` : ''}` });
     if (historyError) throw historyError;
-    return NextResponse.json({ success: true, material_status: derived.value, status: current.status, missing: derived.missing });
+    return NextResponse.json({ success: true, project, materials: materials || [], material_status: derived.value, status: current.status, missing: derived.missing });
   } catch (err: any) {
     return NextResponse.json({ error: `保存资料检查失败: ${err.message}` }, { status: 500 });
   }

@@ -51,7 +51,7 @@ export default function ProjectDrawer({ project, onDismiss, onSaved }: { project
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || '保存资料状态失败');
       setFeedback('资料状态已保存。');
-      await onSaved({ ...project, project_materials: nextMaterials, material_status: data.material_status });
+      await onSaved({ ...project, ...(data.project || {}), project_materials: data.materials || nextMaterials, material_status: data.material_status });
     } catch (error: any) { setMaterials(priorMaterials); setFeedback(error.message || '保存资料状态失败'); } finally { setBusy(false); }
   };
 
@@ -81,7 +81,7 @@ export default function ProjectDrawer({ project, onDismiss, onSaved }: { project
 
   return <div style={styles.overlay} onMouseDown={(event) => { if (event.target !== event.currentTarget) return; onDismiss(); }}>
     <aside aria-label="项目详情" style={styles.drawer}>
-      <div style={styles.actions}><button type="button" style={styles.secondary} onClick={onDismiss}>关闭</button><button type="button" style={styles.danger} disabled={busy} onClick={archive}>归档项目</button></div>
+      <div style={styles.actions}><button type="button" style={styles.secondary} onClick={onDismiss}>关闭</button>{project.status === 'initiation' && <button type="button" style={styles.secondary} onClick={() => window.open(`/report?projectId=${encodeURIComponent(project.id)}`, '_blank', 'noopener,noreferrer')}>项目报告</button>}<button type="button" style={styles.danger} disabled={busy} onClick={archive}>归档项目</button></div>
       <h2 style={styles.heading}>{project.name}</h2>
       {feedback && <div role="status" style={styles.feedback}>{feedback}</div>}
       <section style={styles.panel}><h3 style={styles.sectionHeading}>项目详情</h3><input aria-label="项目名称" style={styles.input} value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} /><input aria-label="提报人" style={styles.input} value={form.submitter} onChange={(event) => setForm({ ...form, submitter: event.target.value })} /><textarea aria-label="项目说明" style={styles.input} rows={3} value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} /><button type="button" style={styles.primary} disabled={busy} onClick={saveProject}>保存项目详情</button></section>

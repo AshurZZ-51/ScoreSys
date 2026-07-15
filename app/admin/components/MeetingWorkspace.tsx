@@ -4,30 +4,39 @@ import { useEffect, useMemo, useState } from 'react';
 import { reorderMeetingAssignments } from '@/lib/adminLifecycle';
 
 type Item = Record<string, any>;
-const readyStatuses = ['ready_r1', 'r1_recheck_ready', 'ready_r2', 'r2_recheck_ready'];
+const schedulableStatuses = ['draft', 'materials_pending', 'ready_r1', 'r1_recheck_ready', 'ready_r2', 'r2_recheck_ready'];
 
-export default function MeetingWorkspace({ meeting, projects, source = 'meetings', onBack, onRefresh, onNotice }: {
-  meeting: Item; projects: Item[]; source?: 'meetings' | 'reports'; onBack: (source: 'meetings' | 'reports') => void; onRefresh: () => Promise<void> | void; onNotice: (message: string) => void;
+export default function MeetingWorkspace({ meeting, projects, source = 'meetings', onBack, onRefresh, onMeetingSaved, onNotice }: {
+  meeting: Item; projects: Item[]; source?: 'meetings' | 'reports'; onBack: (source: 'meetings' | 'reports') => void; onRefresh: () => Promise<void> | void; onMeetingSaved?: (meeting: Item) => void; onNotice: (message: string) => void;
 }) {
   const [tab, setTab] = useState<'settings' | 'arrange' | 'summary'>('settings');
   const [assignments, setAssignments] = useState<Item[]>([]);
   const [summary, setSummary] = useState<Item | null>(null);
   const [selected, setSelected] = useState<string[]>([]);
+  const [poolProjects, setPoolProjects] = useState<Item[]>(projects);
   const [form, setForm] = useState({ name: meeting.name || '', meeting_date: meeting.meeting_date || '', deadline: meeting.deadline ? String(meeting.deadline).slice(0, 16) : '', notes: meeting.notes || '' });
 
   const load = async () => {
-    const [projectResponse, summaryResponse] = await Promise.all([fetch(`/api/projects?meetingId=${meeting.id}&role=admin`, { cache: 'no-store' }), fetch(`/api/summary?meetingId=${meeting.id}&_=${Date.now()}`, { cache: 'no-store' })]);
-    const projectData = await projectResponse.json(); const summaryData = await summaryResponse.json();
+    const [projectResponse, summaryResponse, poolResponse] = await Promise.all([fetch(`/api/projects?meetingId=${meeting.id}&role=admin`, { cache: 'no-store' }), fetch(`/api/summary?meetingId=${meeting.id}&_=${Date.now()}`, { cache: 'no-store' }), fetch('/api/project-pool?scope=pending', { cache: 'no-store' })]);
+    const projectData = await projectResponse.json(); const summaryData = await summaryResponse.json(); const poolData = await poolResponse.json();
     if (projectResponse.ok) setAssignments((projectData.projects || []).sort((left: Item, right: Item) => Number(left.seq_no) - Number(right.seq_no)));
     if (summaryResponse.ok) setSummary(summaryData);
+    if (poolResponse.ok) setPoolProjects(poolData.projects || []);
   };
   useEffect(() => { load(); }, [meeting.id]);
-  const eligible = useMemo(() => projects.filter((project) => readyStatuses.includes(project.status) && !(project.projects || []).some((assignment: Item) => assignment.meeting_id === meeting.id)), [projects, meeting.id]);
+  useEffect(() => { setPoolProjects(projects); }, [projects]);
+  const eligible = useMemo(() => poolProjects.filter((project) => schedulableStatuses.includes(project.status) && !(project.projects || []).some((assignment: Item) => assignment.meeting_id === meeting.id)), [poolProjects, meeting.id]);
   const summaryProjects = useMemo(() => [...(summary?.projects || [])].filter((project: Item) => project.name && project.submitter).sort((left: Item, right: Item) => Number(right.totalScore || 0) - Number(left.totalScore || 0)), [summary]);
 
   const saveSettings = async () => {
     const response = await fetch('/api/meetings', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: meeting.id, ...form }) });
-    const data = await response.json(); onNotice(response.ok ? '评审会设置已保存。' : data.error || '保存失败'); if (response.ok) await onRefresh();
+    const data = await response.json(); onNotice(response.ok ? '评审会设置已保存。' : data.error || '保存失败');
+    if (response.ok) {
+      const saved = data.meeting || { ...meeting, ...form };
+      setForm({ name: saved.name || '', meeting_date: saved.meeting_date || '', deadline: saved.deadline ? String(saved.deadline).slice(0, 16) : '', notes: saved.notes || '' });
+      onMeetingSaved?.(saved);
+      await onRefresh();
+    }
   };
   const saveOrder = async (next: Item[]) => {
     setAssignments(next);
@@ -38,7 +47,7 @@ export default function MeetingWorkspace({ meeting, projects, source = 'meetings
   };
   const drop = (event: React.DragEvent, targetId: string) => { event.preventDefault(); const sourceId = event.dataTransfer.getData('text/plain'); if (sourceId && sourceId !== targetId) saveOrder(reorderMeetingAssignments(assignments, sourceId, targetId)); };
   const addSelected = async () => {
-    for (const project of projects.filter((item) => selected.includes(item.id))) {
+    for (const project of eligible.filter((item) => selected.includes(item.id))) {
       const round_no = project.status.includes('r2') ? 2 : 1;
       const response = await fetch('/api/meeting-assignments', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ meeting_id: meeting.id, pool_project_id: project.id, round_no }) });
       const data = await response.json(); if (!response.ok) { onNotice(data.error || '加入评审会失败'); break; }

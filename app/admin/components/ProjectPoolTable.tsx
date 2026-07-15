@@ -6,7 +6,7 @@ import { getMaterialProgress, projectStatusLabel } from '@/lib/projectPoolWorkfl
 type Project = Record<string, any>;
 type Meeting = Record<string, any>;
 
-const READY_STATUSES = new Set(['ready_r1', 'r1_recheck_ready', 'ready_r2', 'r2_recheck_ready']);
+const SCHEDULABLE_STATUSES = new Set(['draft', 'materials_pending', 'ready_r1', 'r1_recheck_ready', 'ready_r2', 'r2_recheck_ready']);
 const STATUS_OPTIONS = ['materials_pending', 'ready_r1', 'r1_recheck_ready', 'ready_r2', 'r2_recheck_ready', 'initiation', 'rejected'];
 
 function adminCode() {
@@ -43,7 +43,7 @@ export default function ProjectPoolTable({ projects, meetings, scope, month, onR
 
   const activeMeetings = useMemo(() => meetings.filter((meeting) => meeting.status === 'active'), [meetings]);
   const selectedProjects = useMemo(() => projects.filter((project) => selected.includes(project.id)), [projects, selected]);
-  const canSchedule = selectedProjects.length > 0 && selectedProjects.every((project) => READY_STATUSES.has(project.status));
+  const canSchedule = selectedProjects.length > 0 && selectedProjects.every((project) => SCHEDULABLE_STATUSES.has(project.status));
   const allSelected = projects.length > 0 && selected.length === projects.length;
 
   const toggle = (id: string) => setSelected((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id]);
@@ -65,7 +65,7 @@ export default function ProjectPoolTable({ projects, meetings, scope, month, onR
   const assign = async (ids = selected, targetMeetingId = meetingId) => {
     const chosen = projects.filter((project) => ids.includes(project.id));
     if (!targetMeetingId || !chosen.length) return;
-    if (!chosen.every((project) => READY_STATUSES.has(project.status))) { setFeedback('只有待安排状态的项目可以加入评审会。'); return; }
+    if (!chosen.every((project) => SCHEDULABLE_STATUSES.has(project.status))) { setFeedback('只有尚未进入评审会或终态的项目可以加入评审会。'); return; }
     const rounds = chosen.map(roundFor).filter((round, index, values) => values.indexOf(round) === index);
     if (rounds.length !== 1) { setFeedback('请按评审轮次分别安排项目。'); return; }
     setBusy(true);
@@ -106,7 +106,7 @@ export default function ProjectPoolTable({ projects, meetings, scope, month, onR
       <button type="button" style={styles.danger} disabled={busy || !selected.length} onClick={archive}>批量归档</button>
     </div>
     <div style={styles.tableWrap}><table style={styles.table}><thead><tr><th style={styles.cell}><input aria-label="全选项目" type="checkbox" checked={allSelected} onChange={() => setSelected(allSelected ? [] : projects.map((project) => project.id))} /></th>{['项目', '提报人', '资料检查', '项目状态', 'Walker 评审历史', '安排'].map((label) => <th key={label} style={styles.cell}>{label}</th>)}</tr></thead><tbody>
-      {projects.map((project) => <tr key={project.id}><td style={styles.cell}><input aria-label={`选择${project.name}`} type="checkbox" checked={selected.includes(project.id)} onChange={() => toggle(project.id)} /></td><td style={styles.cell}><button type="button" style={styles.link} onClick={() => onOpenProject(project)}>{project.name}</button></td><td style={styles.cell}>{project.submitter}</td><td style={styles.cell}>{materialText(project)}</td><td style={styles.cell}>{projectStatusLabel(project.status)}</td><td style={styles.cell}>{project.completed_review_count ?? 0} 次</td><td style={styles.cell}>{READY_STATUSES.has(project.status) ? <select aria-label={`安排${project.name}入会`} defaultValue="" onChange={(event) => event.target.value && assign([project.id], event.target.value)} style={styles.select}><option value="">安排入会</option>{activeMeetings.map((meeting) => <option key={meeting.id} value={meeting.id}>{meeting.name}</option>)}</select> : '-'}</td></tr>)}
+      {projects.map((project) => <tr key={project.id}><td style={styles.cell}><input aria-label={`选择${project.name}`} type="checkbox" checked={selected.includes(project.id)} onChange={() => toggle(project.id)} /></td><td style={styles.cell}><button type="button" style={styles.link} onClick={() => onOpenProject(project)}>{project.name}</button></td><td style={styles.cell}>{project.submitter}</td><td style={styles.cell}>{materialText(project)}</td><td style={styles.cell}>{projectStatusLabel(project.status)}</td><td style={styles.cell}>{project.completed_review_count ?? 0} 次</td><td style={styles.cell}>{SCHEDULABLE_STATUSES.has(project.status) ? <select aria-label={`安排${project.name}入会`} defaultValue="" onChange={(event) => event.target.value && assign([project.id], event.target.value)} style={styles.select}><option value="">安排入会</option>{activeMeetings.map((meeting) => <option key={meeting.id} value={meeting.id}>{meeting.name}</option>)}</select> : '-'}</td></tr>)}
       {!projects.length && <tr><td colSpan={7} style={styles.empty}>暂无项目</td></tr>}
     </tbody></table></div>
   </>;
