@@ -91,11 +91,21 @@ export async function POST(request: NextRequest) {
         if (historyError) throw historyError;
         selectedProjects.push(project);
       }
-      for (const project of selectedProjects) {
-        const { error } = await supabaseAdmin.rpc('assign_pool_project_to_meeting', {
-          p_project_id: project.id, p_meeting_id: meeting.id, p_round_no: assignmentRound(project.status), p_operator_code: session.code
-        });
-        if (error) throw error;
+      for (let index = 0; index < selectedProjects.length; index += 1) {
+        const project = selectedProjects[index];
+        const roundNo = assignmentRound(project.status);
+        const attemptNo = String(project.status).includes('recheck') ? 2 : 1;
+        const { data: assignment, error: assignmentError } = await supabaseAdmin.from('projects').insert({
+          meeting_id: meeting.id, seq_no: index + 1, name: project.name, submitter: project.submitter, description: project.description || '',
+          problems: [], actions: [], is_template: false, pool_project_id: project.id, round_no: roundNo, attempt_no: attemptNo,
+          scoring_version: 'two_round_v2', assignment_status: 'scheduled'
+        }).select().single();
+        if (assignmentError) throw assignmentError;
+        const nextStatus = roundNo === 1 ? 'scheduled_r1' : 'scheduled_r2';
+        const { error: updateError } = await supabaseAdmin.from('project_pool').update({ status: nextStatus, current_round: roundNo, current_attempt: attemptNo, updated_at: new Date().toISOString() }).eq('id', project.id);
+        if (updateError) { await supabaseAdmin.from('projects').delete().eq('id', assignment.id); throw updateError; }
+        const { error: historyError } = await supabaseAdmin.from('project_status_history').insert({ project_id: project.id, meeting_project_id: assignment.id, meeting_id: meeting.id, event_type: 'meeting_scheduled', from_status: project.status, to_status: nextStatus, operator_code: session.code });
+        if (historyError) throw historyError;
       }
     } else {
       const { error } = await supabaseAdmin.from('projects').insert(createTemplateProjects(meeting.id));

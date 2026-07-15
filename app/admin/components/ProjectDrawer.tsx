@@ -23,7 +23,8 @@ export default function ProjectDrawer({ project, onDismiss, onSaved }: { project
   const [feedback, setFeedback] = useState('');
   const [busy, setBusy] = useState(false);
 
-  useEffect(() => { setForm({ name: project.name || '', submitter: project.submitter || '', description: project.description || '' }); setMaterials(project.project_materials || []); setManualStatus(project.status || 'materials_pending'); setManualNote(''); setFeedback(''); }, [project]);
+  // A list refresh replaces the project object after every save. Only reset local controls when another project is opened.
+  useEffect(() => { setForm({ name: project.name || '', submitter: project.submitter || '', description: project.description || '' }); setMaterials(project.project_materials || []); setManualStatus(project.status || 'materials_pending'); setManualNote(''); setFeedback(''); }, [project.id]);
 
   const materialByKey = useMemo(() => new Map(materials.map((item) => [item.item_key, item])), [materials]);
   const materialProgress = getMaterialProgress(materials);

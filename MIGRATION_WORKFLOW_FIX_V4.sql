@@ -1,52 +1,9 @@
--- ScoreSys admin lifecycle migration v3.
--- Run manually in Supabase SQL Editor after reviewing the existing schema.
+-- ScoreSys workflow repair v4.
+-- Run this once in Supabase SQL Editor after MIGRATION_ADMIN_LIFECYCLE_V3.sql.
+-- It aligns persisted workflow rules with the admin UI:
+-- 1) material status does not block first-round scheduling;
+-- 2) manual status changes no longer fail on an ambiguous SQL output column.
 
-ALTER TABLE project_materials DROP CONSTRAINT IF EXISTS project_materials_status_check;
-
-UPDATE project_materials
-  SET status = 'submitted'
-  WHERE status = 'approved';
-
-UPDATE project_materials
-  SET status = 'needs_completion'
-  WHERE status = 'needs_revision';
-
-ALTER TABLE project_materials
-  ADD CONSTRAINT project_materials_status_check
-  CHECK (status IN ('missing', 'needs_completion', 'submitted', 'exempt'));
-
-CREATE TABLE IF NOT EXISTS project_deletion_requests (
-  project_id UUID PRIMARY KEY REFERENCES project_pool(id) ON DELETE CASCADE,
-  requested_by TEXT NOT NULL,
-  requested_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  purge_after TIMESTAMPTZ NOT NULL,
-  restored_at TIMESTAMPTZ,
-  restored_by TEXT
-);
-
-CREATE TABLE IF NOT EXISTS report_snapshots (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  scope_type TEXT NOT NULL CHECK (scope_type IN ('meeting', 'project')),
-  scope_id UUID NOT NULL,
-  report_type TEXT NOT NULL CHECK (report_type IN ('round_1', 'round_2', 'initiation')),
-  version INTEGER NOT NULL,
-  payload JSONB NOT NULL,
-  generated_by TEXT NOT NULL,
-  generated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
-CREATE UNIQUE INDEX IF NOT EXISTS report_snapshots_scope_version_key
-  ON report_snapshots(scope_type, scope_id, report_type, version);
-
-CREATE TABLE IF NOT EXISTS account_audit_logs (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  actor_code TEXT NOT NULL,
-  target_code TEXT NOT NULL,
-  action TEXT NOT NULL,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
--- A project status mutation and its history row must commit together.
 CREATE OR REPLACE FUNCTION apply_project_pool_mutations(
   p_project_ids UUID[],
   p_action TEXT,
@@ -65,21 +22,21 @@ DECLARE
   found_count INTEGER;
 BEGIN
   IF coalesce(array_length(p_project_ids, 1), 0) = 0 THEN
-    RAISE EXCEPTION '至少需要一个项目';
+    RAISE EXCEPTION 'At least one project is required';
   END IF;
   IF p_action NOT IN ('status', 'archive') THEN
-    RAISE EXCEPTION '无效项目操作';
+    RAISE EXCEPTION 'Invalid project operation';
   END IF;
-  IF p_action = 'status' AND coalesce(trim(p_status), '') = '' THEN
-    RAISE EXCEPTION '状态不能为空';
+  IF p_action = 'status' AND p_status NOT IN ('draft', 'materials_pending', 'ready_r1', 'r1_recheck_ready', 'ready_r2', 'r2_recheck_ready', 'initiation', 'rejected') THEN
+    RAISE EXCEPTION 'Invalid project status';
   END IF;
   IF coalesce(trim(p_operator_code), '') = '' THEN
-    RAISE EXCEPTION '操作人不能为空';
+    RAISE EXCEPTION 'Operator is required';
   END IF;
 
   SELECT count(*) INTO found_count FROM project_pool WHERE id = ANY(p_project_ids);
   IF found_count <> cardinality(p_project_ids) THEN
-    RAISE EXCEPTION '部分项目不存在';
+    RAISE EXCEPTION 'Some projects do not exist';
   END IF;
 
   RETURN QUERY
@@ -105,9 +62,9 @@ BEGIN
     RETURNING pool.id AS project_id, pool.status, pool.latest_verdict, pool.archived_at, locked.from_status
   ), audit AS (
     INSERT INTO project_status_history(project_id, event_type, from_status, to_status, operator_code, note)
-    SELECT project_id,
+    SELECT updated.project_id,
       CASE WHEN p_action = 'archive' THEN 'project_archived' ELSE 'admin_adjustment' END,
-      from_status,
+      updated.from_status,
       CASE WHEN p_action = 'archive' THEN 'archived' ELSE updated.status END,
       p_operator_code,
       coalesce(p_note, '')
@@ -117,49 +74,6 @@ BEGIN
   SELECT updated.project_id, updated.status, updated.latest_verdict, updated.archived_at
   FROM updated
   INNER JOIN audit USING (project_id);
-END;
-$$;
-
--- Lock each due purge request and its project row before deleting dependent data.
--- SKIP LOCKED lets a concurrent restore win without a partial purge.
-CREATE OR REPLACE FUNCTION purge_due_project_deletions()
-RETURNS TABLE (project_id UUID)
-LANGUAGE plpgsql
-AS $$
-DECLARE
-  due_record RECORD;
-BEGIN
-  FOR due_record IN
-    SELECT deletion_request.project_id, deletion_request.purge_after, deletion_request.restored_at
-    FROM project_deletion_requests AS deletion_request
-    INNER JOIN project_pool AS pool_row ON pool_row.id = deletion_request.project_id
-    WHERE deletion_request.restored_at IS NULL
-      AND deletion_request.purge_after <= now()
-    FOR UPDATE OF deletion_request, pool_row SKIP LOCKED
-  LOOP
-    -- The locks remain held through the recheck and all dependent deletes.
-    IF due_record.restored_at IS NULL AND due_record.purge_after <= now() THEN
-    DELETE FROM scores
-    USING projects AS assignment
-    WHERE scores.project_id = assignment.id
-        AND assignment.pool_project_id = due_record.project_id;
-
-    DELETE FROM projects
-    WHERE projects.pool_project_id = due_record.project_id;
-
-    DELETE FROM report_snapshots
-    WHERE report_snapshots.scope_type = 'project'
-        AND report_snapshots.scope_id = due_record.project_id;
-
-    DELETE FROM project_pool
-    WHERE project_pool.id = due_record.project_id;
-
-    IF FOUND THEN
-      project_id := due_record.project_id;
-      RETURN NEXT;
-    END IF;
-    END IF;
-  END LOOP;
 END;
 $$;
 
@@ -179,16 +93,16 @@ DECLARE
   new_project projects;
 BEGIN
   SELECT * INTO pool_row FROM project_pool WHERE id = p_project_id AND archived_at IS NULL FOR UPDATE;
-  IF NOT FOUND THEN RAISE EXCEPTION '项目不存在或已归档'; END IF;
+  IF NOT FOUND THEN RAISE EXCEPTION 'Project does not exist or is archived'; END IF;
   IF p_round_no = 1 AND pool_row.status IN ('draft', 'materials_pending', 'ready_r1') THEN attempt := 1;
   ELSIF p_round_no = 1 AND pool_row.status = 'r1_recheck_ready' THEN attempt := 2;
   ELSIF p_round_no = 2 AND pool_row.status = 'ready_r2' THEN attempt := 1;
   ELSIF p_round_no = 2 AND pool_row.status = 'r2_recheck_ready' THEN attempt := 2;
-  ELSE RAISE EXCEPTION '项目当前状态与评审轮次不匹配'; END IF;
+  ELSE RAISE EXCEPTION 'Project status does not match review round'; END IF;
   PERFORM 1 FROM meetings WHERE id = p_meeting_id FOR UPDATE;
-  IF NOT FOUND THEN RAISE EXCEPTION '评审会不存在'; END IF;
+  IF NOT FOUND THEN RAISE EXCEPTION 'Meeting does not exist'; END IF;
   SELECT count(*) INTO assignment_count FROM projects WHERE meeting_id = p_meeting_id AND pool_project_id IS NOT NULL;
-  IF assignment_count >= 12 THEN RAISE EXCEPTION '评审会已满（最多 12 个项目）'; END IF;
+  IF assignment_count >= 12 THEN RAISE EXCEPTION 'Meeting is full (maximum 12 projects)'; END IF;
   SELECT coalesce(max(seq_no), 0) + 1 INTO seq FROM projects WHERE meeting_id = p_meeting_id;
   INSERT INTO projects (meeting_id, seq_no, name, submitter, description, problems, actions, is_template, pool_project_id, round_no, attempt_no, scoring_version, assignment_status)
   VALUES (p_meeting_id, seq, pool_row.name, pool_row.submitter, pool_row.description, '{}', '{}', false, p_project_id, p_round_no, attempt, 'two_round_v2', 'scheduled')

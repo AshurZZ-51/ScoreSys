@@ -39,10 +39,28 @@ export async function POST(request: NextRequest) {
         ? validateAssignment(project, [...existing, ...assignments], Number(round_no))
         : { ok: false, error: project ? '同一项目不能重复加入同一评审会' : '项目不存在' };
       if (!valid.ok) { errors.push({ project_id: id, error: valid.error }); continue; }
-      const { data, error } = await supabaseAdmin.rpc('assign_pool_project_to_meeting', {
-        p_project_id: id, p_meeting_id: meeting_id, p_round_no: Number(round_no), p_operator_code: session.code
-      });
+      const attempt_no = valid.attemptNo || 1;
+      const { data, error } = await supabaseAdmin.from('projects').insert({
+        meeting_id,
+        seq_no: existing.length + assignments.length + 1,
+        name: project.name,
+        submitter: project.submitter,
+        description: project.description || '',
+        problems: [],
+        actions: [],
+        is_template: false,
+        pool_project_id: id,
+        round_no: Number(round_no),
+        attempt_no,
+        scoring_version: 'two_round_v2',
+        assignment_status: 'scheduled'
+      }).select().single();
       if (error) { errors.push({ project_id: id, error: error.message }); continue; }
+      const nextStatus = Number(round_no) === 1 ? 'scheduled_r1' : 'scheduled_r2';
+      const { error: poolError } = await supabaseAdmin.from('project_pool').update({ status: nextStatus, current_round: Number(round_no), current_attempt: attempt_no, updated_at: new Date().toISOString() }).eq('id', id);
+      if (poolError) { await supabaseAdmin.from('projects').delete().eq('id', data.id); errors.push({ project_id: id, error: poolError.message }); continue; }
+      const { error: historyError } = await supabaseAdmin.from('project_status_history').insert({ project_id: id, meeting_project_id: data.id, meeting_id, event_type: 'meeting_scheduled', from_status: project.status, to_status: nextStatus, operator_code: session.code });
+      if (historyError) { errors.push({ project_id: id, error: historyError.message }); continue; }
       assignments.push(data);
     }
     if (!assignments.length) return NextResponse.json({ error: errors.map((item) => item.error).join('；') || '安排失败', errors }, { status: 400 });
