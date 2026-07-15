@@ -32,6 +32,7 @@ export default function LoginPage() {
 
       // 保存登录信息到localStorage
       localStorage.setItem('reviewer', JSON.stringify(data.reviewer));
+      sessionStorage.setItem('scoresys_session_token', data.session_token);
 
       // 根据角色跳转
       if (data.reviewer.is_admin) {

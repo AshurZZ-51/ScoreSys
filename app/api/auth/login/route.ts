@@ -44,8 +44,10 @@ export async function POST(request: NextRequest) {
       .eq('reviewer_code', reviewer.code)
       .order('max_score', { ascending: false });
 
+    const sessionToken = createReviewerSession(reviewer);
     const response = NextResponse.json({
       success: true,
+      session_token: sessionToken,
       reviewer: {
         code: reviewer.code,
         name: reviewer.name,
@@ -54,7 +56,7 @@ export async function POST(request: NextRequest) {
         dimensions: dims || []
       }
     });
-    const cookie = adminSessionCookie(createReviewerSession(reviewer));
+    const cookie = adminSessionCookie(sessionToken);
     response.cookies.set(cookie.name, cookie.value, cookie.options);
     return response;
   } catch (err: any) {

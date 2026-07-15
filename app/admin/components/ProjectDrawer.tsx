@@ -13,6 +13,10 @@ const MATERIAL_STATUS_OPTIONS = [
 const PROJECT_STATUS_OPTIONS = ['materials_pending', 'ready_r1', 'r1_recheck_ready', 'ready_r2', 'r2_recheck_ready', 'initiation', 'rejected'];
 
 function adminCode() { try { return JSON.parse(localStorage.getItem('reviewer') || '{}').code || ''; } catch { return ''; } }
+function adminRequestHeaders(json = false) {
+  const token = typeof window === 'undefined' ? '' : sessionStorage.getItem('scoresys_session_token') || '';
+  return { ...(json ? { 'Content-Type': 'application/json' } : {}), ...(token ? { Authorization: `Bearer ${token}` } : {}) };
+}
 function assignmentStatusLabel(status: string) { return ({ scheduled: '待评审', scoring: '评分中', completed: '已完成' } as Record<string, string>)[status] || status || '-'; }
 
 export default function ProjectDrawer({ project, onDismiss, onSaved }: { project: Project; onDismiss: () => void; onSaved: (project?: Project) => Promise<void> | void; }) {
@@ -23,8 +27,24 @@ export default function ProjectDrawer({ project, onDismiss, onSaved }: { project
   const [feedback, setFeedback] = useState('');
   const [busy, setBusy] = useState(false);
 
-  // A list refresh replaces the project object after every save. Only reset local controls when another project is opened.
-  useEffect(() => { setForm({ name: project.name || '', submitter: project.submitter || '', description: project.description || '' }); setMaterials(project.project_materials || []); setManualStatus(project.status || 'materials_pending'); setManualNote(''); setFeedback(''); }, [project.id]);
+  // Read the detail record on every open so the drawer never falls back to a stale list-row snapshot.
+  useEffect(() => {
+    let cancelled = false;
+    const applyProject = (nextProject: Project) => {
+      if (cancelled) return;
+      setForm({ name: nextProject.name || '', submitter: nextProject.submitter || '', description: nextProject.description || '' });
+      setMaterials(nextProject.project_materials || []);
+      setManualStatus(nextProject.status || 'materials_pending');
+      setManualNote('');
+      setFeedback('');
+    };
+    applyProject(project);
+    fetch(`/api/project-pool/${project.id}/history`, { cache: 'no-store' })
+      .then(async (response) => response.ok ? response.json() : null)
+      .then((data) => data?.project && applyProject(data.project))
+      .catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [project.id]);
 
   const materialByKey = useMemo(() => new Map(materials.map((item) => [item.item_key, item])), [materials]);
   const materialProgress = getMaterialProgress(materials);
@@ -33,7 +53,7 @@ export default function ProjectDrawer({ project, onDismiss, onSaved }: { project
   const saveProject = async () => {
     setBusy(true);
     try {
-      const response = await fetch('/api/project-pool', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: project.id, ...form, operator_code: adminCode() }) });
+      const response = await fetch('/api/project-pool', { method: 'PATCH', headers: adminRequestHeaders(true), body: JSON.stringify({ id: project.id, ...form, operator_code: adminCode() }) });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || '保存项目详情失败');
       setFeedback('项目详情已保存。');
@@ -48,7 +68,7 @@ export default function ProjectDrawer({ project, onDismiss, onSaved }: { project
     setMaterials(nextMaterials);
     setBusy(true);
     try {
-      const response = await fetch(`/api/project-pool/${project.id}/materials`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ item_key: itemKey, status, operator_code: adminCode() }) });
+      const response = await fetch(`/api/project-pool/${project.id}/materials`, { method: 'PATCH', headers: adminRequestHeaders(true), body: JSON.stringify({ item_key: itemKey, status, operator_code: adminCode() }) });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || '保存资料状态失败');
       setFeedback('资料状态已保存。');
@@ -59,7 +79,7 @@ export default function ProjectDrawer({ project, onDismiss, onSaved }: { project
   const changeStatus = async () => {
     setBusy(true);
     try {
-      const response = await fetch(`/api/project-pool/${project.id}/status`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: manualStatus, note: manualNote, confirmed: true }) });
+      const response = await fetch(`/api/project-pool/${project.id}/status`, { method: 'POST', headers: adminRequestHeaders(true), body: JSON.stringify({ status: manualStatus, note: manualNote, confirmed: true }) });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || '调整项目状态失败');
       setFeedback('项目状态已更新。');
@@ -71,7 +91,7 @@ export default function ProjectDrawer({ project, onDismiss, onSaved }: { project
     if (!window.confirm(`归档“${project.name}”？历史评审记录会保留。`)) return;
     setBusy(true);
     try {
-      const response = await fetch(`/api/project-pool?id=${encodeURIComponent(project.id)}&operator_code=${encodeURIComponent(adminCode())}`, { method: 'DELETE' });
+      const response = await fetch(`/api/project-pool?id=${encodeURIComponent(project.id)}&operator_code=${encodeURIComponent(adminCode())}`, { method: 'DELETE', headers: adminRequestHeaders() });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || '归档项目失败');
       setFeedback('项目已归档。');

@@ -54,6 +54,11 @@ type FeedbackTone = 'saving' | 'success' | 'error';
 const materialStatusLabels: Record<string, string> = { missing: '缺失', needs_completion: '待完善', submitted: '已提交', exempt: '豁免' };
 const materialStatusColors: Record<string, string> = { missing: '#b42318', needs_completion: '#b45309', submitted: '#047857', exempt: '#475569' };
 
+function scoreRequestHeaders() {
+  const token = typeof window === 'undefined' ? '' : sessionStorage.getItem('scoresys_session_token') || '';
+  return { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) };
+}
+
 interface SaveFeedback {
   tone: FeedbackTone;
   text: string;
@@ -219,7 +224,7 @@ export default function ScoringPage() {
     try {
       const res = await fetch('/api/scores', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: scoreRequestHeaders(),
         body: JSON.stringify({
           meeting_id: activeMeeting.id,
           project_id: activeProject.id,
@@ -257,7 +262,7 @@ export default function ScoringPage() {
     try {
       const res = await fetch('/api/scores', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: scoreRequestHeaders(),
         body: JSON.stringify({
           meeting_id: activeMeeting.id,
           project_id: projectId,
@@ -383,12 +388,12 @@ export default function ScoringPage() {
       const [problemsRes, actionsRes] = await Promise.all([
         fetch('/api/scores', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: scoreRequestHeaders(),
           body: JSON.stringify({ ...payloadBase, dim_name: specialScoreKey(roundId, '__problems__'), comment: problemsText || null })
         }),
         fetch('/api/scores', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: scoreRequestHeaders(),
           body: JSON.stringify({ ...payloadBase, dim_name: specialScoreKey(roundId, '__actions__'), comment: actionsText || null })
         })
       ]);
