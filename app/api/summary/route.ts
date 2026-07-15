@@ -206,7 +206,10 @@ export async function GET(request: NextRequest) {
       const currentRound = project.scoring_version === 'two_round_v2' && project.round_no
         ? `r${project.round_no}`
         : latestSpecialComment('__current_round__') || defaultRoundForStatus(derivedStatus);
-      const currentRoundSummary = roundSummaries[currentRound] || roundSummaries.r1;
+      const hasCurrentRoundScores = projectScores.some(
+        (score: any) => parseScoreKey(score.dim_name)?.roundId === currentRound
+      );
+      const currentRoundSummary = hasCurrentRoundScores ? roundSummaries[currentRound] : null;
 
       projectScores.forEach((s: any) => {
         if (stripRoundPrefix(s.dim_name) === '__verdict__') return;
