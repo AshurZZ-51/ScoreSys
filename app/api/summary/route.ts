@@ -238,6 +238,10 @@ export async function GET(request: NextRequest) {
       });
 
       const computed = currentRoundSummary || computeProjectScore(normalScores, bonusScore);
+      const legacyProblemSummary = latestSpecialComment('__admin_problems__')
+        || reviewerProblems.flatMap((item) => item.problems).join('\n');
+      const legacyActionSummary = latestSpecialComment('__admin_actions__')
+        || reviewerActions.flatMap((item) => item.actions).join('\n');
 
       return {
         ...project,
@@ -257,8 +261,8 @@ export async function GET(request: NextRequest) {
         completionRate: currentRoundSummary?.completionRate || 0,
         reviewerProblems: currentRoundSummary?.reviewerProblems || reviewerProblems,
         reviewerActions: currentRoundSummary?.reviewerActions || reviewerActions,
-        problemSummary: currentRoundSummary?.problemSummary || '',
-        actionSummary: currentRoundSummary?.actionSummary || '',
+        problemSummary: currentRoundSummary?.problemSummary || legacyProblemSummary,
+        actionSummary: currentRoundSummary?.actionSummary || legacyActionSummary,
         walkerVerdict: currentRoundSummary?.verdict || verdict,
         verdict: currentRoundSummary?.verdict || verdict
       };
