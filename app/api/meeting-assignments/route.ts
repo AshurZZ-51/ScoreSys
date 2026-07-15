@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isProjectPoolV2Enabled, supabaseAdmin } from '@/lib/supabase';
-import { validateAssignment } from '@/lib/projectPoolWorkflow';
+import { assignmentRoundForStatus, validateAssignment } from '@/lib/projectPoolWorkflow';
 import { requireAdminSession } from '@/lib/adminSession';
 
 export const dynamic = 'force-dynamic';
@@ -12,13 +12,13 @@ function unavailable() {
 export async function POST(request: NextRequest) {
   if (!isProjectPoolV2Enabled()) return unavailable();
   try {
-    const { meeting_id, pool_project_id, pool_project_ids, round_no } = await request.json();
+    const { meeting_id, pool_project_id, pool_project_ids } = await request.json();
     const session = requireAdminSession(request);
     if (!session) return NextResponse.json({ error: '仅管理员可以安排评审会' }, { status: 403 });
     const ids = Array.isArray(pool_project_ids)
       ? Array.from(new Set(pool_project_ids.filter((id) => typeof id === 'string' && id)))
       : [pool_project_id].filter(Boolean);
-    if (!meeting_id || !ids.length || ![1, 2].includes(Number(round_no))) return NextResponse.json({ error: '评审会、项目和轮次必填' }, { status: 400 });
+    if (!meeting_id || !ids.length) return NextResponse.json({ error: '评审会和项目必填' }, { status: 400 });
     const [projectsResult, assignmentsResult, meetingResult] = await Promise.all([
       supabaseAdmin.from('project_pool').select('*').in('id', ids),
       supabaseAdmin.from('projects').select('id, pool_project_id').eq('meeting_id', meeting_id).not('pool_project_id', 'is', null),
@@ -35,8 +35,9 @@ export async function POST(request: NextRequest) {
     const errors: any[] = [];
     for (const id of ids) {
       const project = byId.get(id);
+      const projectRound = assignmentRoundForStatus(project?.status);
       const valid = project && !existing.some((item: any) => item.pool_project_id === id)
-        ? validateAssignment(project, [...existing, ...assignments], Number(round_no))
+        ? validateAssignment(project, [...existing, ...assignments], projectRound)
         : { ok: false, error: project ? '同一项目不能重复加入同一评审会' : '项目不存在' };
       if (!valid.ok) { errors.push({ project_id: id, error: valid.error }); continue; }
       const attempt_no = valid.attemptNo || 1;
@@ -50,14 +51,14 @@ export async function POST(request: NextRequest) {
         actions: [],
         is_template: false,
         pool_project_id: id,
-        round_no: Number(round_no),
+        round_no: projectRound,
         attempt_no,
         scoring_version: 'two_round_v2',
         assignment_status: 'scheduled'
       }).select().single();
       if (error) { errors.push({ project_id: id, error: error.message }); continue; }
-      const nextStatus = Number(round_no) === 1 ? 'scheduled_r1' : 'scheduled_r2';
-      const { error: poolError } = await supabaseAdmin.from('project_pool').update({ status: nextStatus, current_round: Number(round_no), current_attempt: attempt_no, updated_at: new Date().toISOString() }).eq('id', id);
+      const nextStatus = projectRound === 1 ? 'scheduled_r1' : 'scheduled_r2';
+      const { error: poolError } = await supabaseAdmin.from('project_pool').update({ status: nextStatus, current_round: projectRound, current_attempt: attempt_no, updated_at: new Date().toISOString() }).eq('id', id);
       if (poolError) { await supabaseAdmin.from('projects').delete().eq('id', data.id); errors.push({ project_id: id, error: poolError.message }); continue; }
       const { error: historyError } = await supabaseAdmin.from('project_status_history').insert({ project_id: id, meeting_project_id: data.id, meeting_id, event_type: 'meeting_scheduled', from_status: project.status, to_status: nextStatus, operator_code: session.code });
       if (historyError) { errors.push({ project_id: id, error: historyError.message }); continue; }

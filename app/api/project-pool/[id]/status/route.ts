@@ -5,13 +5,6 @@ import { requireAdminSession } from '@/lib/adminSession';
 export const dynamic = 'force-dynamic';
 const VALID_STATUSES = new Set(['draft', 'materials_pending', 'ready_r1', 'r1_recheck_ready', 'ready_r2', 'r2_recheck_ready', 'initiation', 'rejected']);
 
-function nextVerdict(status: string, previous: string | null) {
-  if (status === 'rejected') return 'rejected';
-  if (['initiation', 'ready_r2'].includes(status)) return 'approved';
-  if (status.includes('recheck')) return 'recheck';
-  return previous;
-}
-
 export async function POST(request: NextRequest, { params }: { params: { id: string } }) {
   if (!isProjectPoolV2Enabled()) return NextResponse.json({ error: '项目池功能尚未启用' }, { status: 404 });
   try {
@@ -24,7 +17,7 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
     if (currentError || !current) return NextResponse.json({ error: '项目不存在' }, { status: 404 });
     const { data: project, error: projectError } = await supabaseAdmin.from('project_pool').update({
       status,
-      latest_verdict: nextVerdict(status, current.latest_verdict),
+      latest_verdict: current.latest_verdict,
       updated_at: new Date().toISOString()
     }).eq('id', params.id).select().single();
     if (projectError) throw projectError;

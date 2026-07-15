@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { isProjectPoolV2Enabled, supabaseAdmin } from '@/lib/supabase';
 import { transitionForVerdict } from '@/lib/projectPoolWorkflow';
 import { getScoreMax, isValidScoreValue, parseScoreKey } from '@/lib/scoringRules';
-import { requireReviewerSession } from '@/lib/adminSession';
+import { isSameReviewerCode, requireReviewerSession } from '@/lib/adminSession';
 import {
   ADMIN_TRACKING_SPECIAL_DIMENSIONS,
   getRoundFromDimName,
@@ -46,7 +46,7 @@ export async function POST(request: NextRequest) {
     const { meeting_id, project_id, reviewer_code, dim_name, score, comment } = body;
 
     const session = requireReviewerSession(request);
-    if (!session || String(reviewer_code || '').trim().toLowerCase() !== session.code) {
+    if (!session || !isSameReviewerCode(reviewer_code, session.code)) {
       return NextResponse.json({ error: '登录身份与评分人不一致' }, { status: 403 });
     }
 

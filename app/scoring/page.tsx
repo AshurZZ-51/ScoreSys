@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import { SCORING_DIMENSIONS, computeRoundBaseScoreFromScoreMap, roundScoreKey, specialScoreKey } from '@/lib/scoringRules';
 import { ROUND_LABELS, ROUND_TITLES, VERDICT_OPTIONS, getReviewStatus } from '@/lib/reviewWorkflow';
 import { createSaveFeedback } from '@/lib/saveFeedback';
-import { getMaterialProgress } from '@/lib/projectPoolWorkflow';
+import { getMaterialProgress, MATERIAL_ITEMS } from '@/lib/projectPoolWorkflow';
 
 interface Reviewer {
   code: string;
@@ -29,6 +29,7 @@ interface Project {
   materialStatus?: string;
   pool_project_id?: string;
   materialProgress?: { approved: number; total: number; complete: boolean };
+  materialItems?: { item_key: string; status: string }[];
   roundSummaries?: Record<string, any>;
 }
 
@@ -49,6 +50,9 @@ interface Score {
 }
 
 type FeedbackTone = 'saving' | 'success' | 'error';
+
+const materialStatusLabels: Record<string, string> = { missing: '缺失', needs_completion: '待完善', submitted: '已提交', exempt: '豁免' };
+const materialStatusColors: Record<string, string> = { missing: '#b42318', needs_completion: '#b45309', submitted: '#047857', exempt: '#475569' };
 
 interface SaveFeedback {
   tone: FeedbackTone;
@@ -126,7 +130,7 @@ export default function ScoringPage() {
         try {
           const materialResponse = await fetch(`/api/project-pool/${project.pool_project_id}/materials`, { cache: 'no-store' });
           const materialData = await materialResponse.json();
-          return materialResponse.ok ? { ...project, materialProgress: getMaterialProgress(materialData.materials || []) } : project;
+          return materialResponse.ok ? { ...project, materialProgress: getMaterialProgress(materialData.materials || []), materialItems: materialData.materials || [] } : project;
         } catch {
           return project;
         }
@@ -510,6 +514,8 @@ export default function ScoringPage() {
               </div>
 
               {activeMeeting?.deadline && <div style={{ background: '#fef3c7', border: '1px solid #fde68a', color: '#92400e', padding: '10px 16px', borderRadius: 8, fontSize: 13, marginBottom: 20 }}>打分截止日期：{activeMeeting.deadline}</div>}
+
+              {activeProject.pool_project_id && <section style={{ background: '#fff', border: '1px solid #d9e1ec', borderRadius: 8, padding: 14, marginBottom: 20 }}><div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 10 }}><strong style={{ fontSize: 14 }}>项目资料检查</strong><span style={{ fontSize: 12, color: activeProject.materialProgress?.complete ? '#047857' : '#b45309' }}>{activeProject.materialProgress?.complete ? '资料齐全' : `待补充 ${activeProject.materialProgress?.approved || 0}/${activeProject.materialProgress?.total || 5}`}</span></div><div style={{ overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}><thead><tr><th style={{ textAlign: 'left', padding: '7px 6px', color: '#64748b' }}>资料项</th><th style={{ textAlign: 'left', padding: '7px 6px', color: '#64748b' }}>要求</th><th style={{ textAlign: 'left', padding: '7px 6px', color: '#64748b' }}>状态</th></tr></thead><tbody>{MATERIAL_ITEMS.map((item: any) => { const status = activeProject.materialItems?.find((material) => material.item_key === item.item_key)?.status || 'missing'; return <tr key={item.item_key}><td style={{ padding: '7px 6px', borderTop: '1px solid #edf2f7' }}>{item.label}</td><td style={{ padding: '7px 6px', borderTop: '1px solid #edf2f7', color: item.required ? '#b45309' : '#64748b' }}>{item.required ? '必填' : '选填'}</td><td style={{ padding: '7px 6px', borderTop: '1px solid #edf2f7', color: materialStatusColors[status] || '#475569', fontWeight: 700 }}>{materialStatusLabels[status] || status}</td></tr>; })}</tbody></table></div></section>}
 
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: 16, marginBottom: 24 }}>
                 {reviewerRules.map((rule: any) => {

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isProjectPoolV2Enabled, supabaseAdmin } from '@/lib/supabase';
 import { createMaterialRows, getMaterialProgress, makeMatchKey, normalizeProjectPart } from '@/lib/projectPoolWorkflow';
-import { countCompletedReviews } from '@/lib/adminLifecycle';
+import { countCompletedReviews, hasCompletedReview, isPendingReviewProject } from '@/lib/adminLifecycle';
 import { requireAdminSession } from '@/lib/adminSession';
 
 export const dynamic = 'force-dynamic';
@@ -39,8 +39,6 @@ export async function GET(request: NextRequest) {
     if (scope === 'active' || scope === 'pending' || scope === 'reviewed') query = query.is('archived_at', null);
     else query = query.not('archived_at', 'is', null);
     if (monthRange) query = query.gte('created_at', monthRange.start).lt('created_at', monthRange.end);
-    if (scope === 'pending') query = query.in('status', ['draft', 'materials_pending', 'ready_r1', 'r1_recheck_ready', 'ready_r2', 'r2_recheck_ready']);
-    if (scope === 'reviewed') query = query.not('latest_verdict', 'is', null);
     const { data, error } = await query;
     if (error) throw error;
     const now = new Date();
@@ -59,7 +57,8 @@ export async function GET(request: NextRequest) {
         material_progress: getMaterialProgress(project.project_materials || []),
         completed_review_count: countCompletedReviews(project.projects || [])
       }));
-    return NextResponse.json({ projects }, { headers: { 'Cache-Control': 'no-store' } });
+    const scopedProjects = scope === 'pending' ? projects.filter(isPendingReviewProject) : scope === 'reviewed' ? projects.filter(hasCompletedReview) : projects;
+    return NextResponse.json({ projects: scopedProjects }, { headers: { 'Cache-Control': 'no-store' } });
   } catch (err: any) {
     return NextResponse.json({ error: `获取项目池失败: ${err.message}` }, { status: 500 });
   }

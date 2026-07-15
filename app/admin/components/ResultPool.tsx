@@ -1,14 +1,15 @@
 'use client';
 
 import { projectStatusLabel } from '@/lib/projectPoolWorkflow';
+import { hasCompletedReview, isPendingReviewProject } from '@/lib/adminLifecycle';
 
 type Item = Record<string, any>;
 
 const sections = [
-  { key: 'approved', label: '通过/已通过', matches: (project: Item) => project.latest_verdict === 'approved', open: true },
-  { key: 'recheck', label: '待复评', matches: (project: Item) => project.latest_verdict === 'recheck', open: false },
-  { key: 'rejected', label: '已驳回', matches: (project: Item) => project.latest_verdict === 'rejected', open: false },
-  { key: 'history', label: '历史/待整理', matches: (project: Item) => (project.projects || []).length > 0 && !project.latest_verdict, open: false }
+  { key: 'approved', label: '通过/已通过', matches: (project: Item) => hasCompletedReview(project) && project.latest_verdict === 'approved', open: true },
+  { key: 'recheck', label: '待复评', matches: (project: Item) => hasCompletedReview(project) && project.latest_verdict === 'recheck', open: false },
+  { key: 'rejected', label: '已驳回', matches: (project: Item) => hasCompletedReview(project) && project.latest_verdict === 'rejected', open: false },
+  { key: 'pending', label: '待整理', matches: (project: Item) => isPendingReviewProject(project) && !hasCompletedReview(project), open: false }
 ];
 
 export default function ResultPool({ projects, onOpenProject }: { projects: Item[]; onOpenProject: (project: Item) => void }) {
