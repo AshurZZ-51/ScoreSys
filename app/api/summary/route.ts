@@ -88,13 +88,6 @@ export async function GET(request: NextRequest) {
       reviewerCount: reviewerDims.filter((rd: any) => normalizeDimensionName(rd.dim_name) === rule.name).length
     }));
 
-    const uniqueReviewerDims = Array.from(new Map(
-      reviewerDims.map((rd: any) => [`${rd.reviewer_code}:${normalizeDimensionName(rd.dim_name)}`, {
-        ...rd,
-        dim_name: normalizeDimensionName(rd.dim_name)
-      }])
-    ).values());
-
     const nonAdminReviewers = reviewers.filter((reviewer: any) => !reviewer.is_admin);
     const expectedByRound: Record<string, number> = {};
     REVIEW_ROUNDS.forEach((round: any) => {
@@ -103,12 +96,14 @@ export async function GET(request: NextRequest) {
       }, 0);
     });
 
-    const expectedByReviewer: Record<string, number> = {};
-    uniqueReviewerDims.forEach((rd: any) => {
-      expectedByReviewer[rd.reviewer_code] = (expectedByReviewer[rd.reviewer_code] || 0) + expectedInputCountForDimension(rd.dim_name);
-    });
-
-    const filledProjectCount = projects.filter((p: any) => p.name && p.submitter).length;
+    const expectedInputsPerReviewer = projects.reduce((total: number, project: any) => {
+      if (!project.name || !project.submitter) return total;
+      const round = project.scoring_version === 'two_round_v2' && project.round_no
+        ? ROUND_BY_ID[`r${project.round_no}`]
+        : null;
+      if (!round) return total;
+      return total + round.dimensions.reduce((sum: number, dimensionName: string) => sum + expectedInputCountForDimension(dimensionName), 0);
+    }, 0);
 
     const projectsWithScores = projects.map((project: any) => {
       const projectScores = scores.filter((s: any) => s.project_id === project.id);
@@ -281,7 +276,7 @@ export async function GET(request: NextRequest) {
         scoresGiven: rNormalScores.length,
         projectsScored,
         totalGiven: rNormalScores.reduce((sum: number, s: any) => sum + Number(s.score), 0),
-        expectedScores: (expectedByReviewer[r.code] || 0) * filledProjectCount,
+        expectedScores: r.is_admin ? 0 : expectedInputsPerReviewer,
         dimensions,
         dimMaxTotal: dimensions.reduce((sum: number, d: string) => {
           const rule = SCORING_DIMENSIONS.find((x: any) => x.name === d);
