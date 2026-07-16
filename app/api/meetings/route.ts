@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isProjectPoolV2Enabled, supabaseAdmin } from '@/lib/supabase';
-import { createMaterialRows, makeMatchKey, normalizeProjectPart } from '@/lib/projectPoolWorkflow';
+import { createMaterialRows, makeMatchKey, MEETING_ASSIGNMENT_PROJECT_FIELDS, normalizeProjectPart } from '@/lib/projectPoolWorkflow';
 import { PROJECT_SLOT_COUNT, createTemplateProjects } from '@/lib/projectSlots';
 import { sortMeetingsForAdmin } from '@/lib/adminLifecycle';
 import { requireAdminSession } from '@/lib/adminSession';
@@ -50,7 +50,7 @@ export async function POST(request: NextRequest) {
     const v2 = isProjectPoolV2Enabled();
     let selectedProjects: any[] = [];
     if (v2 && poolIds.length) {
-      const { data, error } = await supabaseAdmin.from('project_pool').select('id, status, archived_at').in('id', poolIds);
+      const { data, error } = await supabaseAdmin.from('project_pool').select(MEETING_ASSIGNMENT_PROJECT_FIELDS).in('id', poolIds);
       if (error) throw error;
       if ((data || []).length !== poolIds.length || (data || []).some((project: any) => project.archived_at || !assignmentRound(project.status))) {
         return NextResponse.json({ error: '所选项目不存在、已归档或暂不可安排' }, { status: 400 });

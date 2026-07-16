@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import { SCORING_DIMENSIONS, computeRoundBaseScoreFromScoreMap, roundScoreKey, specialScoreKey } from '@/lib/scoringRules';
 import { ROUND_LABELS, ROUND_TITLES, VERDICT_OPTIONS, getReviewStatus } from '@/lib/reviewWorkflow';
 import { createSaveFeedback } from '@/lib/saveFeedback';
-import { getMaterialProgress, MATERIAL_ITEMS } from '@/lib/projectPoolWorkflow';
+import { getMaterialProgress, getReviewableMeetingProjects, MATERIAL_ITEMS } from '@/lib/projectPoolWorkflow';
 
 interface Reviewer {
   code: string;
@@ -125,11 +125,7 @@ export default function ScoringPage() {
     try {
       const res = await fetch(`/api/summary?meetingId=${meetingId}`, { cache: 'no-store' });
       const data = await res.json();
-      const nextProjects = (data.projects || []).filter((project: Project) => (
-        project.name
-        && project.submitter
-        && !['cancelled', 'initiation', 'r1_rejected', 'r2_rejected', 'rejected'].includes(project.reviewStatus || '')
-      ));
+      const nextProjects = getReviewableMeetingProjects(data.projects || []) as Project[];
       const projectsWithMaterialProgress = await Promise.all(nextProjects.map(async (project: Project) => {
         if (!project.pool_project_id) return project;
         try {
