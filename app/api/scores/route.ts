@@ -77,7 +77,8 @@ export async function POST(request: NextRequest) {
       .eq('meeting_id', meeting_id)
       .maybeSingle();
     if (!assignment) return NextResponse.json({ error: '评审项目不存在' }, { status: 404 });
-    const isV2Assignment = isProjectPoolV2Enabled() && assignment.scoring_version === 'two_round_v2';
+    const isV2Assignment = isProjectPoolV2Enabled() && ['two_round_v2', 'two_round_v3'].includes(assignment.scoring_version);
+    const scoringVersion = assignment.scoring_version === 'two_round_v3' ? 'two_round_v3' : 'two_round_v2';
 
     const { data: reviewerInfo } = await supabaseAdmin
       .from('reviewers')
@@ -86,7 +87,7 @@ export async function POST(request: NextRequest) {
       .single();
 
     const baseDimName = stripRoundPrefix(dim_name);
-    const parsedScore = parseScoreKey(dim_name);
+    const parsedScore = parseScoreKey(dim_name, scoringVersion);
 
     if (isV2Assignment && parsedScore?.roundId !== `r${assignment.round_no}` && !baseDimName.startsWith('__')) {
       return NextResponse.json({ error: '该项目不属于当前评分轮次' }, { status: 400 });
@@ -129,14 +130,14 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    const maxScore = getScoreMax(dim_name);
+    const maxScore = getScoreMax(dim_name, scoringVersion);
     if (maxScore === null) {
       return NextResponse.json({ error: '未知评分项' }, { status: 400 });
     }
 
     const scoreNum = Number(score);
-    if (!isValidScoreValue(dim_name, scoreNum)) {
-      const parsed = parseScoreKey(dim_name);
+    if (!isValidScoreValue(dim_name, scoreNum, scoringVersion)) {
+      const parsed = parseScoreKey(dim_name, scoringVersion);
       const hint = parsed?.rule?.type === 'level' && !parsed.legacy
         ? `必须选择 ${parsed.rule.levels.join('/')} 档位`
         : `分数必须在 0-${maxScore} 之间`;

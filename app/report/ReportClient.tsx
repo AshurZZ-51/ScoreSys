@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import RoundOneReport from './components/RoundOneReport';
 import RoundTwoReport from './components/RoundTwoReport';
 import InitiationProjectReport from './components/InitiationProjectReport';
+import { buildMeetingReportPayload } from '@/lib/reportSnapshots';
 
 type Snapshot = { id: string; version: number; payload: Record<string, any>; generated_at: string };
 const reportTypes = [{ value: 'round_1', label: '第一轮评审报告' }, { value: 'round_2', label: '第二轮评审报告' }];
@@ -26,7 +27,7 @@ export default function ReportClient() {
     if (snapshotResponse.ok) { setSnapshots(snapshotData.snapshots || []); setSnapshotId((current) => current || snapshotData.snapshots?.[0]?.id || ''); }
   };
   useEffect(() => { setSnapshotId(''); load(); }, [meetingId, projectId, reportType]);
-  const liveReport = useMemo(() => ({ meeting: summary?.meeting, reviewers: summary?.reviewers || [], projects: (summary?.projects || []).filter((project: any) => ['approved', 'recheck', 'rejected'].includes(project.walkerVerdict)).filter((project: any) => Number(project.round_no || 1) === (reportType === 'round_1' ? 1 : 2)).sort((left: any, right: any) => Number(right.totalScore || 0) - Number(left.totalScore || 0)).map((project: any, index: number) => ({ ...project, rank: index + 1, verdict: project.walkerVerdict })) }), [summary, reportType]);
+  const liveReport = useMemo(() => buildMeetingReportPayload(summary, summary?.meeting, reportType), [summary, reportType]);
   const selected = snapshots.find((snapshot) => snapshot.id === snapshotId); const report = selected?.payload || liveReport;
   const generate = async () => { const scopeType = projectId ? 'project' : 'meeting'; const scopeId = projectId || meetingId; const type = projectId ? 'initiation' : reportType; if (!scopeId) return; setBusy(true); setError(''); try { const response = await fetch('/api/reports', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ scope_type: scopeType, scope_id: scopeId, report_type: type, operator_code: 'ignored' }) }); const data = await response.json(); if (!response.ok) throw new Error(data.error || '生成失败'); setSnapshots((current) => [data.snapshot, ...current]); setSnapshotId(data.snapshot.id); } catch (reason: any) { setError(reason.message || '生成失败'); } finally { setBusy(false); } };
   const close = () => { if (params.get('fromAdmin') === 'true' && window.opener) { window.close(); return; } router.push('/admin'); };

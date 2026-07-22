@@ -9,6 +9,9 @@ import {
   computeProjectScore,
   computeRoundProjectScore,
   expectedInputCountForDimension,
+  expectedInputCountForRound,
+  getRoundDefinition,
+  getRoundScoringDimensions,
   isNormalScoringKey,
   normalizeDimensionName,
   parseScoreKey,
@@ -45,11 +48,12 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    const [meetingRes, projectsRes, scoresRes, reviewersRes, reviewerDimsRes] = await Promise.all([
+    const [meetingRes, projectsRes, scoresRes, reviewersRes, meetingReviewersRes, reviewerDimsRes] = await Promise.all([
       supabaseAdmin.from('meetings').select('id, name, meeting_date, deadline, status, notes').eq('id', meetingId).single(),
       supabaseAdmin.from('projects').select('id, meeting_id, seq_no, name, submitter, description, problems, actions, is_pending, pool_project_id, round_no, attempt_no, scoring_version, assignment_status').eq('meeting_id', meetingId).order('seq_no'),
       supabaseAdmin.from('scores').select('id, meeting_id, project_id, reviewer_code, dim_name, score, comment, updated_at').eq('meeting_id', meetingId),
       supabaseAdmin.from('reviewers').select('code, name, role, is_admin').order('code'),
+      supabaseAdmin.from('meeting_reviewers').select('reviewer_code, reviewer_name, reviewer_role').eq('meeting_id', meetingId),
       supabaseAdmin.from('reviewer_dims').select('reviewer_code, dim_name, max_score')
     ]);
 
@@ -64,7 +68,16 @@ export async function GET(request: NextRequest) {
     const projects = [...fetchedProjects, ...summaryMissingProjects]
       .sort((a: any, b: any) => Number(a.seq_no) - Number(b.seq_no));
     const scores = scoresRes.data || [];
-    const reviewers = reviewersRes.data || [];
+    const allReviewers = reviewersRes.data || [];
+    const meetingReviewers = meetingReviewersRes?.data || [];
+    const reviewers = meetingReviewers.length
+      ? meetingReviewers.map((snapshot: any) => ({
+        code: snapshot.reviewer_code,
+        name: snapshot.reviewer_name || allReviewers.find((reviewer: any) => reviewer.code === snapshot.reviewer_code)?.name || snapshot.reviewer_code,
+        role: snapshot.reviewer_role || allReviewers.find((reviewer: any) => reviewer.code === snapshot.reviewer_code)?.role || '',
+        is_admin: false
+      }))
+      : allReviewers;
     const reviewerDims = reviewerDimsRes.data || [];
 
     const reviewerDimNames: Record<string, string[]> = {};
@@ -89,25 +102,24 @@ export async function GET(request: NextRequest) {
     }));
 
     const nonAdminReviewers = reviewers.filter((reviewer: any) => !reviewer.is_admin);
-    const expectedByRound: Record<string, number> = {};
-    REVIEW_ROUNDS.forEach((round: any) => {
-      expectedByRound[round.id] = nonAdminReviewers.length * round.dimensions.reduce((sum: number, dimName: string) => {
-        return sum + expectedInputCountForDimension(dimName);
-      }, 0);
-    });
-
     const expectedInputsPerReviewer = projects.reduce((total: number, project: any) => {
       if (!project.name || !project.submitter) return total;
-      const round = project.scoring_version === 'two_round_v2' && project.round_no
-        ? ROUND_BY_ID[`r${project.round_no}`]
+      const scoringVersion = project.scoring_version === 'two_round_v3' ? 'two_round_v3' : 'two_round_v2';
+      const round = project.round_no
+        ? getRoundDefinition(`r${project.round_no}`, scoringVersion)
         : null;
       if (!round) return total;
-      return total + round.dimensions.reduce((sum: number, dimensionName: string) => sum + expectedInputCountForDimension(dimensionName), 0);
+      return total + expectedInputCountForRound(round.id, scoringVersion);
     }, 0);
+    const scoringVersionByProject = new Map(projects.map((project: any) => [
+      project.id,
+      project.scoring_version === 'two_round_v3' ? 'two_round_v3' : 'two_round_v2'
+    ]));
 
     const projectsWithScores = projects.map((project: any) => {
+      const scoringVersion = project.scoring_version === 'two_round_v3' ? 'two_round_v3' : 'two_round_v2';
       const projectScores = scores.filter((s: any) => s.project_id === project.id);
-      const normalScores = projectScores.filter((s: any) => isNormalScoringKey(s.dim_name));
+      const normalScores = projectScores.filter((s: any) => isNormalScoringKey(s.dim_name, scoringVersion));
       let bonusScore = 0;
       const bonusDetails: { reviewer: string; value: number; reason: string }[] = [];
       const reviewerProblems: { reviewer_code: string; reviewer_name: string; problems: string[] }[] = [];
@@ -118,7 +130,7 @@ export async function GET(request: NextRequest) {
         const items = projectScores
           .filter((s: any) => s.dim_name === dimName)
           .sort((a: any, b: any) => new Date(b.updated_at || 0).getTime() - new Date(a.updated_at || 0).getTime());
-        const adminItem = items.find((s: any) => reviewers.find((r: any) => r.code === s.reviewer_code)?.is_admin);
+        const adminItem = items.find((s: any) => allReviewers.find((r: any) => r.code === s.reviewer_code)?.is_admin);
         return (adminItem || items[0])?.comment || '';
       };
 
@@ -131,8 +143,10 @@ export async function GET(request: NextRequest) {
       };
 
       const roundSummaries: Record<string, any> = {};
-      REVIEW_ROUNDS.forEach((round: any) => {
-        const roundScores = projectScores.filter((s: any) => parseScoreKey(s.dim_name)?.roundId === round.id);
+      ['r1', 'r2'].forEach((roundId: string) => {
+        const round = getRoundDefinition(roundId, scoringVersion);
+        if (!round) return;
+        const roundScores = projectScores.filter((s: any) => parseScoreKey(s.dim_name, scoringVersion)?.roundId === round.id);
         const roundBonusDetails = projectScores
           .filter((s: any) => s.dim_name === specialScoreKey(round.id, '__bonus__'))
           .map((s: any) => ({ reviewer: s.reviewer_code, value: Number(s.score), reason: s.comment || '' }));
@@ -142,7 +156,7 @@ export async function GET(request: NextRequest) {
         const roundActions: { reviewer_code: string; reviewer_name: string; actions: string[] }[] = [];
         projectScores.forEach((s: any) => {
           if (s.dim_name === specialScoreKey(round.id, '__problems__') && s.comment?.trim()) {
-            const rName = reviewers.find((r: any) => r.code === s.reviewer_code)?.name || s.reviewer_code;
+            const rName = allReviewers.find((r: any) => r.code === s.reviewer_code)?.name || s.reviewer_code;
             roundProblems.push({
               reviewer_code: s.reviewer_code,
               reviewer_name: rName,
@@ -150,7 +164,7 @@ export async function GET(request: NextRequest) {
             });
           }
           if (s.dim_name === specialScoreKey(round.id, '__actions__') && s.comment?.trim()) {
-            const rName = reviewers.find((r: any) => r.code === s.reviewer_code)?.name || s.reviewer_code;
+            const rName = allReviewers.find((r: any) => r.code === s.reviewer_code)?.name || s.reviewer_code;
             roundActions.push({
               reviewer_code: s.reviewer_code,
               reviewer_name: rName,
@@ -158,7 +172,7 @@ export async function GET(request: NextRequest) {
             });
           }
         });
-        const computed = computeRoundProjectScore(round.id, roundScores, roundBonusScore);
+        const computed = computeRoundProjectScore(round.id, roundScores, roundBonusScore, scoringVersion);
         const autoProblems = roundProblems.flatMap((item) => item.problems);
         const autoActions = roundActions.flatMap((item) => item.actions);
         const adminProblems = latestSpecialComment(specialScoreKey(round.id, '__admin_problems__'));
@@ -175,8 +189,8 @@ export async function GET(request: NextRequest) {
           actionSummary: adminActions || autoActions.join('\n'),
           problemSummaryEdited: Boolean(adminProblems),
           actionSummaryEdited: Boolean(adminActions),
-          completionRate: expectedByRound[round.id] > 0
-            ? Math.min(100, Math.round((roundScores.length / expectedByRound[round.id]) * 100))
+          completionRate: nonAdminReviewers.length * expectedInputCountForRound(round.id, scoringVersion) > 0
+            ? Math.min(100, Math.round((roundScores.length / (nonAdminReviewers.length * expectedInputCountForRound(round.id, scoringVersion))) * 100))
             : 0
         };
       });
@@ -198,11 +212,11 @@ export async function GET(request: NextRequest) {
           : r1Verdict === 'approved' ? 'r2_pending'
             : r1Verdict ? nextStatusForVerdict('r1', r1Verdict)
               : project.name && project.submitter ? 'r1_pending' : 'draft');
-      const currentRound = project.scoring_version === 'two_round_v2' && project.round_no
+      const currentRound = project.round_no
         ? `r${project.round_no}`
         : latestSpecialComment('__current_round__') || defaultRoundForStatus(derivedStatus);
       const hasCurrentRoundScores = projectScores.some(
-        (score: any) => parseScoreKey(score.dim_name)?.roundId === currentRound
+        (score: any) => parseScoreKey(score.dim_name, scoringVersion)?.roundId === currentRound
       );
       const currentRoundSummary = hasCurrentRoundScores ? roundSummaries[currentRound] : null;
 
@@ -214,7 +228,7 @@ export async function GET(request: NextRequest) {
           return;
         }
         if (s.dim_name === '__problems__' && s.comment?.trim()) {
-          const rName = reviewers.find((r: any) => r.code === s.reviewer_code)?.name || s.reviewer_code;
+          const rName = allReviewers.find((r: any) => r.code === s.reviewer_code)?.name || s.reviewer_code;
           reviewerProblems.push({
             reviewer_code: s.reviewer_code,
             reviewer_name: rName,
@@ -223,7 +237,7 @@ export async function GET(request: NextRequest) {
           return;
         }
         if (s.dim_name === '__actions__' && s.comment?.trim()) {
-          const rName = reviewers.find((r: any) => r.code === s.reviewer_code)?.name || s.reviewer_code;
+          const rName = allReviewers.find((r: any) => r.code === s.reviewer_code)?.name || s.reviewer_code;
           reviewerActions.push({
             reviewer_code: s.reviewer_code,
             reviewer_name: rName,
@@ -265,7 +279,10 @@ export async function GET(request: NextRequest) {
 
     const reviewerStats = reviewers.map((r: any) => {
       const rScores = scores.filter((s: any) => s.reviewer_code === r.code);
-      const rNormalScores = rScores.filter((s: any) => isNormalScoringKey(s.dim_name));
+      const rNormalScores = rScores.filter((s: any) => isNormalScoringKey(
+        s.dim_name,
+        scoringVersionByProject.get(s.project_id) || 'two_round_v2'
+      ));
       const projectsScored = new Set(rNormalScores.map((s: any) => s.project_id)).size;
       const dimensions = reviewerDimNames[r.code] || [];
       return {

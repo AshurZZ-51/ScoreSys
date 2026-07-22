@@ -98,7 +98,7 @@ export async function POST(request: NextRequest) {
         const { data: assignment, error: assignmentError } = await supabaseAdmin.from('projects').insert({
           meeting_id: meeting.id, seq_no: index + 1, name: project.name, submitter: project.submitter, description: project.description || '',
           problems: [], actions: [], is_template: false, pool_project_id: project.id, round_no: roundNo, attempt_no: attemptNo,
-          scoring_version: 'two_round_v2', assignment_status: 'scheduled'
+          scoring_version: roundNo === 2 ? 'two_round_v3' : 'two_round_v2', assignment_status: 'scheduled'
         }).select().single();
         if (assignmentError) throw assignmentError;
         const nextStatus = roundNo === 1 ? 'scheduled_r1' : 'scheduled_r2';

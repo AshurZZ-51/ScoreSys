@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { SCORING_DIMENSIONS, computeRoundBaseScoreFromScoreMap, roundScoreKey, specialScoreKey } from '@/lib/scoringRules';
+import { computeRoundBaseScoreFromScoreMap, getRoundDefinition, getRoundScoringDimensions, roundScoreKey, specialScoreKey } from '@/lib/scoringRules';
 import { ROUND_LABELS, ROUND_TITLES, VERDICT_OPTIONS, getReviewStatus } from '@/lib/reviewWorkflow';
 import { createSaveFeedback } from '@/lib/saveFeedback';
 import { getMaterialProgress, getReviewableMeetingProjects, MATERIAL_ITEMS } from '@/lib/projectPoolWorkflow';
@@ -87,11 +87,12 @@ export default function ScoringPage() {
 
   const isWalker = reviewer?.code?.toUpperCase() === 'W';
   const getActiveRound = (project = activeProject) => project?.round_no ? `r${project.round_no}` : project?.currentRound || 'r1';
+  const getScoringVersion = (project = activeProject) => project?.scoring_version === 'two_round_v3' ? 'two_round_v3' : 'two_round_v2';
   const roundFieldKey = (projectId: string, roundId: string) => `${projectId}:${roundId}`;
   const reviewerRules = useMemo(() => {
     const roundId = getActiveRound();
-    return SCORING_DIMENSIONS.filter((rule: any) => rule.roundId === roundId);
-  }, [activeProject?.currentRound, activeProject?.round_no]);
+    return getRoundScoringDimensions(roundId, getScoringVersion());
+  }, [activeProject?.currentRound, activeProject?.round_no, activeProject?.scoring_version]);
 
   useEffect(() => {
     const stored = localStorage.getItem('reviewer');
@@ -427,7 +428,7 @@ export default function ScoringPage() {
 
   const getProjectCompletion = (project: Project) => {
     const roundId = getActiveRound(project);
-    const rules = SCORING_DIMENSIONS.filter((rule: any) => rule.roundId === roundId);
+    const rules = getRoundScoringDimensions(roundId, getScoringVersion(project));
     const projectId = project.id;
     const current = scores[projectId] || {};
     const expected = rules.reduce((sum: number, rule: any) => sum + (rule.type === 'level' ? 1 : rule.items.length), 0);
@@ -439,7 +440,9 @@ export default function ScoringPage() {
     return Math.round((filled / expected) * 100);
   };
 
-  const getLocalWeightedBaseScore = (project: Project) => computeRoundBaseScoreFromScoreMap(getActiveRound(project), scores[project.id] || {});
+  const getLocalWeightedBaseScore = (project: Project) => computeRoundBaseScoreFromScoreMap(getActiveRound(project), scores[project.id] || {}, getScoringVersion(project));
+  const activeRoundDefinition = getRoundDefinition(getActiveRound(), getScoringVersion());
+  const isFiveDimensionRoundTwo = getActiveRound() === 'r2' && getScoringVersion() === 'two_round_v3';
 
   if (!reviewer) return <div style={{ padding: 40 }}>加载中...</div>;
 
@@ -504,14 +507,16 @@ export default function ScoringPage() {
                 <h1 style={{ margin: '0 0 8px', fontSize: 28, color: '#0f172a' }}>{activeProject.seq_no}. {activeProject.name}</h1>
                 <div style={{ fontSize: 14, color: '#64748b' }}>提报人：{activeProject.submitter}</div>
                 <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
-                  <span style={{ fontSize: 12, fontWeight: 800, color: '#1e40af', background: '#eff6ff', padding: '4px 10px', borderRadius: 999 }}>{ROUND_LABELS[getActiveRound() as keyof typeof ROUND_LABELS]} · {ROUND_TITLES[getActiveRound() as keyof typeof ROUND_TITLES]}</span>
+                  <span style={{ fontSize: 12, fontWeight: 800, color: '#1e40af', background: '#eff6ff', padding: '4px 10px', borderRadius: 999 }}>{ROUND_LABELS[getActiveRound() as keyof typeof ROUND_LABELS]} · {activeRoundDefinition?.title || ROUND_TITLES[getActiveRound() as keyof typeof ROUND_TITLES]}</span>
                   <span style={{ fontSize: 12, fontWeight: 800, color: getReviewStatus(activeProject.reviewStatus).color, background: getReviewStatus(activeProject.reviewStatus).bg, padding: '4px 10px', borderRadius: 999 }}>{getReviewStatus(activeProject.reviewStatus).label}</span>
                   {activeProject.pool_project_id && <span style={{ fontSize: 12, fontWeight: 800, color: activeProject.materialProgress?.complete ? '#047857' : '#b45309', background: activeProject.materialProgress?.complete ? '#ecfdf5' : '#fffbeb', padding: '4px 10px', borderRadius: 999 }}>{activeProject.materialProgress?.complete ? '资料齐全' : `待补充 ${activeProject.materialProgress?.approved || 0}/${activeProject.materialProgress?.total || 5}`}</span>}
                 </div>
               </div>
 
               <div style={{ background: '#eef2ff', border: '1px solid #c7d2fe', color: '#3730a3', padding: '12px 16px', borderRadius: 10, fontSize: 13, lineHeight: 1.7, marginBottom: 20 }}>
-                评分方法：当前轮次独立 100 分；打分型子项均为 0-10 分，五位评委取平均后计入大维度；创新性按 10/16/24/30/40 档位计入 40 分满分。
+                {isFiveDimensionRoundTwo
+                  ? '评分方法：第二轮五个维度独立汇总为 100 分。游戏性 30 分、创新性 20 分、项目规划 20 分、技术&美术 15 分、风险预估 15 分；打分型子项均为 0-10 分，创新性按 8/10/12/14/20 档位取全体评委中位数。'
+                  : '评分方法：当前轮次独立 100 分；打分型子项均为 0-10 分，五位评委取平均后计入大维度；创新性按当前轮次的档位取全体评委中位数。'}
               </div>
 
               {activeMeeting?.deadline && <div style={{ background: '#fef3c7', border: '1px solid #fde68a', color: '#92400e', padding: '10px 16px', borderRadius: 8, fontSize: 13, marginBottom: 20 }}>打分截止日期：{activeMeeting.deadline}</div>}
