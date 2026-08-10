@@ -182,20 +182,6 @@ export default function LoginPage() {
           </button>
         </form>
 
-        <div style={{
-          marginTop: '24px',
-          padding: '14px',
-          background: '#f8fafc',
-          borderRadius: '10px',
-          fontSize: '12px',
-          color: '#64748b',
-          lineHeight: '1.6'
-        }}>
-          <div style={{ fontWeight: '600', marginBottom: '6px', color: '#475569' }}>💡 账号说明</div>
-          评委首字母登录：W / N / S / J / G<br/>
-          默认密码：<strong>首字母+123</strong>（如 W → W123）<br/>
-          忘记密码请联系管理员
-        </div>
       </div>
     </div>
   );
