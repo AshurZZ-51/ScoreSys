@@ -48,7 +48,7 @@ export async function POST(request: NextRequest) {
       payload = buildMeetingReportPayload(summary, summary.meeting, reportType);
     } else {
       const [{ data: project, error: projectError }, { data: assignments, error: assignmentError }, { data: timeline, error: historyError }] = await Promise.all([
-        supabaseAdmin.from('project_pool').select('id, name, submitter, description, status').eq('id', scopeId).single(),
+        supabaseAdmin.from('project_pool').select('id, project_code, name, submitter, description, status, preliminary_rating, final_rating, initiation_announcement').eq('id', scopeId).single(),
         supabaseAdmin.from('projects').select('meeting_id').eq('pool_project_id', scopeId),
         supabaseAdmin.from('project_status_history').select('event_type, from_status, to_status, note, created_at').eq('project_id', scopeId).order('created_at')
       ]);

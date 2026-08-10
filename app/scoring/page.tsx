@@ -30,6 +30,8 @@ interface Project {
   pool_project_id?: string;
   materialProgress?: { approved: number; total: number; complete: boolean };
   materialItems?: { item_key: string; status: string }[];
+  preliminary_rating?: string;
+  final_rating?: string;
   roundSummaries?: Record<string, any>;
 }
 
@@ -87,7 +89,9 @@ export default function ScoringPage() {
 
   const isWalker = reviewer?.code?.toUpperCase() === 'W';
   const getActiveRound = (project = activeProject) => project?.round_no ? `r${project.round_no}` : project?.currentRound || 'r1';
-  const getScoringVersion = (project = activeProject) => project?.scoring_version === 'two_round_v3' ? 'two_round_v3' : 'two_round_v2';
+  const getScoringVersion = (project = activeProject) => ['two_round_v2', 'two_round_v3', 'two_round_v4'].includes(project?.scoring_version || '')
+    ? project?.scoring_version as 'two_round_v2' | 'two_round_v3' | 'two_round_v4'
+    : 'two_round_v2';
   const roundFieldKey = (projectId: string, roundId: string) => `${projectId}:${roundId}`;
   const reviewerRules = useMemo(() => {
     const roundId = getActiveRound();
@@ -130,9 +134,13 @@ export default function ScoringPage() {
       const projectsWithMaterialProgress = await Promise.all(nextProjects.map(async (project: Project) => {
         if (!project.pool_project_id) return project;
         try {
-          const materialResponse = await fetch(`/api/project-pool/${project.pool_project_id}/materials`, { cache: 'no-store' });
+          const [materialResponse, historyResponse] = await Promise.all([
+            fetch(`/api/project-pool/${project.pool_project_id}/materials`, { cache: 'no-store' }),
+            fetch(`/api/project-pool/${project.pool_project_id}/history`, { cache: 'no-store' })
+          ]);
           const materialData = await materialResponse.json();
-          return materialResponse.ok ? { ...project, materialProgress: getMaterialProgress(materialData.materials || []), materialItems: materialData.materials || [] } : project;
+          const historyData = await historyResponse.json();
+          return materialResponse.ok ? { ...project, materialProgress: getMaterialProgress(materialData.materials || []), materialItems: materialData.materials || [], preliminary_rating: historyData.project?.preliminary_rating || '', final_rating: historyData.project?.final_rating || '' } : project;
         } catch {
           return project;
         }
@@ -408,6 +416,18 @@ export default function ScoringPage() {
     }
   };
 
+  const saveWalkerRating = async (ratingType: 'preliminary' | 'final', rating: string) => {
+    if (!activeProject?.pool_project_id || !['S', 'A', 'B', 'C'].includes(rating)) return;
+    try {
+      const response = await fetch(`/api/project-pool/${activeProject.pool_project_id}/rating`, { method: 'POST', headers: scoreRequestHeaders(), body: JSON.stringify({ rating_type: ratingType, rating }) });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || '评级保存失败');
+      setProjects((current) => current.map((project) => project.id === activeProject.id ? { ...project, [`${ratingType}_rating`]: rating } : project));
+      setActiveProject((current) => current ? { ...current, [`${ratingType}_rating`]: rating } : current);
+      showSaveFeedback('success', ratingType === 'final' ? '最终评级' : '初步评级');
+    } catch (error: any) { showSaveFeedback('error', '项目评级', error.message || '请稍后重试'); }
+  };
+
   const persistTextField = (projectId: string, dimName: '__problems__' | '__actions__', comment: string, delay = 650) => {
     const roundId = getActiveRound();
     schedulePersistScore(projectId, specialScoreKey(roundId, dimName), 0, comment.trim() || null, delay);
@@ -442,7 +462,7 @@ export default function ScoringPage() {
 
   const getLocalWeightedBaseScore = (project: Project) => computeRoundBaseScoreFromScoreMap(getActiveRound(project), scores[project.id] || {}, getScoringVersion(project));
   const activeRoundDefinition = getRoundDefinition(getActiveRound(), getScoringVersion());
-  const isFiveDimensionRoundTwo = getActiveRound() === 'r2' && getScoringVersion() === 'two_round_v3';
+  const isV4RoundTwo = getActiveRound() === 'r2' && getScoringVersion() === 'two_round_v4';
 
   if (!reviewer) return <div style={{ padding: 40 }}>加载中...</div>;
 
@@ -509,19 +529,19 @@ export default function ScoringPage() {
                 <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
                   <span style={{ fontSize: 12, fontWeight: 800, color: '#1e40af', background: '#eff6ff', padding: '4px 10px', borderRadius: 999 }}>{ROUND_LABELS[getActiveRound() as keyof typeof ROUND_LABELS]} · {activeRoundDefinition?.title || ROUND_TITLES[getActiveRound() as keyof typeof ROUND_TITLES]}</span>
                   <span style={{ fontSize: 12, fontWeight: 800, color: getReviewStatus(activeProject.reviewStatus).color, background: getReviewStatus(activeProject.reviewStatus).bg, padding: '4px 10px', borderRadius: 999 }}>{getReviewStatus(activeProject.reviewStatus).label}</span>
-                  {activeProject.pool_project_id && <span style={{ fontSize: 12, fontWeight: 800, color: activeProject.materialProgress?.complete ? '#047857' : '#b45309', background: activeProject.materialProgress?.complete ? '#ecfdf5' : '#fffbeb', padding: '4px 10px', borderRadius: 999 }}>{activeProject.materialProgress?.complete ? '资料齐全' : `待补充 ${activeProject.materialProgress?.approved || 0}/${activeProject.materialProgress?.total || 5}`}</span>}
+                  {activeProject.pool_project_id && <span style={{ fontSize: 12, fontWeight: 800, color: activeProject.materialProgress?.complete ? '#047857' : '#b45309', background: activeProject.materialProgress?.complete ? '#ecfdf5' : '#fffbeb', padding: '4px 10px', borderRadius: 999 }}>{activeProject.materialProgress?.complete ? '资料齐全' : `待补充 ${activeProject.materialProgress?.approved || 0}/${activeProject.materialProgress?.total || 7}`}</span>}
                 </div>
               </div>
 
               <div style={{ background: '#eef2ff', border: '1px solid #c7d2fe', color: '#3730a3', padding: '12px 16px', borderRadius: 10, fontSize: 13, lineHeight: 1.7, marginBottom: 20 }}>
-                {isFiveDimensionRoundTwo
-                  ? '评分方法：第二轮五个维度独立汇总为 100 分。游戏性 30 分、创新性 20 分、项目规划 20 分、技术&美术 15 分、风险预估 15 分；打分型子项均为 0-10 分，创新性按 8/10/12/14/20 档位取全体评委中位数。'
-                  : '评分方法：当前轮次独立 100 分；打分型子项均为 0-10 分，五位评委取平均后计入大维度；创新性按当前轮次的档位取全体评委中位数。'}
+                {isV4RoundTwo
+                  ? '评分方法：第二轮六个维度独立汇总为 100 分。游戏性 25 分、创新性 20 分、项目规划 15 分、技术&美术 15 分、风险预估 15 分、造价与预算 10 分；打分型子项均为 0-10 分，创新性按 8/10/12/14/20 档位取全体评委中位数。'
+                  : '评分方法：当前轮次独立 100 分；打分型子项均为 0-10 分，所有评委取平均后计入大维度；创新性按当前轮次的档位取全体评委中位数。'}
               </div>
 
               {activeMeeting?.deadline && <div style={{ background: '#fef3c7', border: '1px solid #fde68a', color: '#92400e', padding: '10px 16px', borderRadius: 8, fontSize: 13, marginBottom: 20 }}>打分截止日期：{activeMeeting.deadline}</div>}
 
-              {activeProject.pool_project_id && <section style={{ background: '#fff', border: '1px solid #d9e1ec', borderRadius: 8, padding: 14, marginBottom: 20 }}><div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 10 }}><strong style={{ fontSize: 14 }}>项目资料检查</strong><span style={{ fontSize: 12, color: activeProject.materialProgress?.complete ? '#047857' : '#b45309' }}>{activeProject.materialProgress?.complete ? '资料齐全' : `待补充 ${activeProject.materialProgress?.approved || 0}/${activeProject.materialProgress?.total || 5}`}</span></div><div style={{ overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}><thead><tr><th style={{ textAlign: 'left', padding: '7px 6px', color: '#64748b' }}>资料项</th><th style={{ textAlign: 'left', padding: '7px 6px', color: '#64748b' }}>要求</th><th style={{ textAlign: 'left', padding: '7px 6px', color: '#64748b' }}>状态</th></tr></thead><tbody>{MATERIAL_ITEMS.map((item: any) => { const status = activeProject.materialItems?.find((material) => material.item_key === item.item_key)?.status || 'missing'; return <tr key={item.item_key}><td style={{ padding: '7px 6px', borderTop: '1px solid #edf2f7' }}>{item.label}</td><td style={{ padding: '7px 6px', borderTop: '1px solid #edf2f7', color: item.required ? '#b45309' : '#64748b' }}>{item.required ? '必填' : '选填'}</td><td style={{ padding: '7px 6px', borderTop: '1px solid #edf2f7', color: materialStatusColors[status] || '#475569', fontWeight: 700 }}>{materialStatusLabels[status] || status}</td></tr>; })}</tbody></table></div></section>}
+                {activeProject.pool_project_id && <section style={{ background: '#fff', border: '1px solid #d9e1ec', borderRadius: 8, padding: 14, marginBottom: 20 }}><div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 10 }}><strong style={{ fontSize: 14 }}>项目资料检查</strong><span style={{ fontSize: 12, color: activeProject.materialProgress?.complete ? '#047857' : '#b45309' }}>{activeProject.materialProgress?.complete ? '资料齐全' : `待补充 ${activeProject.materialProgress?.approved || 0}/${activeProject.materialProgress?.total || 7}`}</span></div><div style={{ overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}><thead><tr><th style={{ textAlign: 'left', padding: '7px 6px', color: '#64748b' }}>资料项</th><th style={{ textAlign: 'left', padding: '7px 6px', color: '#64748b' }}>要求</th><th style={{ textAlign: 'left', padding: '7px 6px', color: '#64748b' }}>状态</th></tr></thead><tbody>{MATERIAL_ITEMS.map((item: any) => { const status = activeProject.materialItems?.find((material) => material.item_key === item.item_key)?.status || 'missing'; return <tr key={item.item_key}><td style={{ padding: '7px 6px', borderTop: '1px solid #edf2f7' }}>{item.label}</td><td style={{ padding: '7px 6px', borderTop: '1px solid #edf2f7', color: item.required ? '#b45309' : '#64748b' }}>{item.required ? '必填' : '选填'}</td><td style={{ padding: '7px 6px', borderTop: '1px solid #edf2f7', color: materialStatusColors[status] || '#475569', fontWeight: 700 }}>{materialStatusLabels[status] || status}</td></tr>; })}</tbody></table></div></section>}
 
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: 16, marginBottom: 24 }}>
                 {reviewerRules.map((rule: any) => {
@@ -572,6 +592,15 @@ export default function ScoringPage() {
                   );
                 })}
               </div>
+
+              {isWalker && (
+                <section style={{ background: '#f5f3ff', border: '1.5px solid #8b5cf6', borderRadius: 12, padding: 20, marginBottom: 24 }}>
+                  <div style={{ fontSize: 16, fontWeight: 800, color: '#5b21b6', marginBottom: 12 }}>项目评级</div>
+                  <div style={{ display: 'grid', gap: 10, maxWidth: 360 }}>
+                    {(['preliminary', 'final'] as const).map((ratingType) => <label key={ratingType} style={{ display: 'grid', gridTemplateColumns: '90px 1fr', gap: 10, alignItems: 'center', fontSize: 13, fontWeight: 700 }}>{ratingType === 'final' ? '最终评级' : '初步评级'}<select value={activeProject[`${ratingType}_rating`] || ''} onChange={(event) => saveWalkerRating(ratingType, event.target.value)} style={{ padding: 9, border: '1px solid #c4b5fd', borderRadius: 8, background: '#fff' }}><option value="">待评级</option>{['S', 'A', 'B', 'C'].map((rating) => <option key={rating} value={rating}>{rating}</option>)}</select></label>)}
+                  </div>
+                </section>
+              )}
 
               {isWalker && (
                 <section style={{ background: '#fffbeb', border: '1.5px solid #f59e0b', borderRadius: 12, padding: 20, marginBottom: 24 }}>

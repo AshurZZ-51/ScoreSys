@@ -22,7 +22,7 @@ const readyStatuses = schedulableStatuses;
 const statusOptions = ['materials_pending', 'ready_r1', 'r1_recheck_ready', 'ready_r2', 'r2_recheck_ready', 'initiation', 'rejected'];
 const materialStatusOptions = [
   { value: 'missing', label: '缺失' },
-  { value: 'needs_completion', label: '待完成' },
+  { value: 'needs_completion', label: '待完善' },
   { value: 'submitted', label: '已提交' },
   { value: 'exempt', label: '豁免' }
 ];

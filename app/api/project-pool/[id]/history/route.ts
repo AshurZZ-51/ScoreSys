@@ -8,10 +8,11 @@ export const dynamic = 'force-dynamic';
 export async function GET(_: NextRequest, { params }: { params: { id: string } }) {
   if (!isProjectPoolV2Enabled()) return NextResponse.json({ error: '项目池功能尚未启用' }, { status: 404 });
   try {
-    const [project, history, assignments] = await Promise.all([
+    const [project, history, assignments, ratingHistory] = await Promise.all([
       supabaseAdmin.from('project_pool').select('*, project_materials(*)').eq('id', params.id).single(),
       supabaseAdmin.from('project_status_history').select('*').eq('project_id', params.id).order('created_at', { ascending: false }),
-      supabaseAdmin.from('projects').select('*, meetings(id, name, meeting_date, status), scores(reviewer_code, dim_name, score, comment, updated_at)').eq('pool_project_id', params.id).order('created_at')
+      supabaseAdmin.from('projects').select('*, meetings(id, name, meeting_date, status), scores(reviewer_code, dim_name, score, comment, updated_at)').eq('pool_project_id', params.id).order('created_at'),
+      supabaseAdmin.from('project_rating_history').select('*').eq('project_id', params.id).order('created_at', { ascending: false })
     ]);
     if (project.error) throw project.error;
     if (history.error) throw history.error;
@@ -23,7 +24,7 @@ export async function GET(_: NextRequest, { params }: { params: { id: string } }
       return { ...assignment, history_summary: isLegacy ? { ...computeLegacyProjectScore(scores), problems: feedback.problems, actions: feedback.actions } : null };
     });
     const completedReviews = enrichedAssignments.filter(isCompletedReview);
-    return NextResponse.json({ project: project.data, history: history.data || [], assignments: enrichedAssignments, completed_reviews: completedReviews });
+    return NextResponse.json({ project: { ...project.data, rating_history: ratingHistory.error ? [] : (ratingHistory.data || []) }, history: history.data || [], assignments: enrichedAssignments, completed_reviews: completedReviews });
   } catch (err: any) {
     return NextResponse.json({ error: `获取项目历史失败: ${err.message}` }, { status: 500 });
   }

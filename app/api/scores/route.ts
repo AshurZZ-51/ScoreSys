@@ -77,8 +77,10 @@ export async function POST(request: NextRequest) {
       .eq('meeting_id', meeting_id)
       .maybeSingle();
     if (!assignment) return NextResponse.json({ error: '评审项目不存在' }, { status: 404 });
-    const isV2Assignment = isProjectPoolV2Enabled() && ['two_round_v2', 'two_round_v3'].includes(assignment.scoring_version);
-    const scoringVersion = assignment.scoring_version === 'two_round_v3' ? 'two_round_v3' : 'two_round_v2';
+    const isV2Assignment = isProjectPoolV2Enabled() && ['two_round_v2', 'two_round_v3', 'two_round_v4'].includes(assignment.scoring_version);
+    const scoringVersion = ['two_round_v2', 'two_round_v3', 'two_round_v4'].includes(assignment.scoring_version)
+      ? assignment.scoring_version
+      : 'two_round_v2';
 
     const { data: reviewerInfo } = await supabaseAdmin
       .from('reviewers')

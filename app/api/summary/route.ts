@@ -28,6 +28,12 @@ export const revalidate = 0;
 
 const SPECIAL_DIMENSIONS = new Set(['__bonus__', '__problems__', '__actions__', '__verdict__']);
 
+function resolveAssignmentScoringVersion(value: unknown) {
+  return ['two_round_v2', 'two_round_v3', 'two_round_v4'].includes(String(value))
+    ? String(value)
+    : 'two_round_v2';
+}
+
 export async function GET(request: NextRequest) {
   try {
     if (!requireReviewerSession(request)) return NextResponse.json({ error: '请先登录' }, { status: 401 });
@@ -89,7 +95,10 @@ export async function GET(request: NextRequest) {
       }
     });
 
-    const dimConfig = SCORING_DIMENSIONS.map((rule: any) => ({
+    const configRules = projects.flatMap((project: any) => getRoundScoringDimensions(`r${Number(project.round_no || 1)}`, resolveAssignmentScoringVersion(project.scoring_version)));
+    const dimConfigRules = Array.from(new Map((configRules.length ? configRules : SCORING_DIMENSIONS).map((rule: any) => [rule.name, rule])).values());
+    const meetingDimensionNames = dimConfigRules.map((rule: any) => rule.name);
+    const dimConfig = dimConfigRules.map((rule: any) => ({
       name: rule.name,
       maxScore: rule.maxScore,
       type: rule.type,
@@ -98,13 +107,13 @@ export async function GET(request: NextRequest) {
       items: rule.items || [],
       levels: rule.levels || [],
       levelLabels: rule.levelLabels || {},
-      reviewerCount: reviewerDims.filter((rd: any) => normalizeDimensionName(rd.dim_name) === rule.name).length
+      reviewerCount: reviewers.filter((reviewer: any) => !reviewer.is_admin).length
     }));
 
     const nonAdminReviewers = reviewers.filter((reviewer: any) => !reviewer.is_admin);
     const expectedInputsPerReviewer = projects.reduce((total: number, project: any) => {
       if (!project.name || !project.submitter) return total;
-      const scoringVersion = project.scoring_version === 'two_round_v3' ? 'two_round_v3' : 'two_round_v2';
+      const scoringVersion = resolveAssignmentScoringVersion(project.scoring_version);
       const round = project.round_no
         ? getRoundDefinition(`r${project.round_no}`, scoringVersion)
         : null;
@@ -113,11 +122,11 @@ export async function GET(request: NextRequest) {
     }, 0);
     const scoringVersionByProject = new Map(projects.map((project: any) => [
       project.id,
-      project.scoring_version === 'two_round_v3' ? 'two_round_v3' : 'two_round_v2'
+      resolveAssignmentScoringVersion(project.scoring_version)
     ]));
 
     const projectsWithScores = projects.map((project: any) => {
-      const scoringVersion = project.scoring_version === 'two_round_v3' ? 'two_round_v3' : 'two_round_v2';
+      const scoringVersion = resolveAssignmentScoringVersion(project.scoring_version);
       const projectScores = scores.filter((s: any) => s.project_id === project.id);
       const normalScores = projectScores.filter((s: any) => isNormalScoringKey(s.dim_name, scoringVersion));
       let bonusScore = 0;
@@ -284,7 +293,7 @@ export async function GET(request: NextRequest) {
         scoringVersionByProject.get(s.project_id) || 'two_round_v2'
       ));
       const projectsScored = new Set(rNormalScores.map((s: any) => s.project_id)).size;
-      const dimensions = reviewerDimNames[r.code] || [];
+      const dimensions = r.is_admin ? [] : meetingDimensionNames;
       return {
         code: r.code,
         name: r.name,
@@ -296,7 +305,7 @@ export async function GET(request: NextRequest) {
         expectedScores: r.is_admin ? 0 : expectedInputsPerReviewer,
         dimensions,
         dimMaxTotal: dimensions.reduce((sum: number, d: string) => {
-          const rule = SCORING_DIMENSIONS.find((x: any) => x.name === d);
+          const rule = dimConfigRules.find((x: any) => x.name === d);
           return sum + (rule?.maxScore || 0);
         }, 0)
       };
