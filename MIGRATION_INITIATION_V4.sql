@@ -96,6 +96,38 @@ CROSS JOIN (VALUES
 WHERE reviewer.code IN ('o', 'si')
 ON CONFLICT (reviewer_code, dim_name) DO NOTHING;
 
+CREATE OR REPLACE FUNCTION apply_project_rating(
+  p_project_id UUID,
+  p_rating_type TEXT,
+  p_rating TEXT,
+  p_operator_code TEXT
+) RETURNS project_pool
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  current_row project_pool;
+  updated_row project_pool;
+  old_rating TEXT;
+BEGIN
+  IF p_rating_type NOT IN ('preliminary', 'final') THEN RAISE EXCEPTION '无效评级类型'; END IF;
+  IF p_rating NOT IN ('S', 'A', 'B', 'C') THEN RAISE EXCEPTION '评级必须为 S/A/B/C'; END IF;
+  SELECT * INTO current_row FROM project_pool WHERE id = p_project_id FOR UPDATE;
+  IF NOT FOUND THEN RAISE EXCEPTION '项目不存在'; END IF;
+  old_rating := CASE WHEN p_rating_type = 'final' THEN current_row.final_rating ELSE current_row.preliminary_rating END;
+
+  IF p_rating_type = 'final' THEN
+    UPDATE project_pool SET final_rating = p_rating, rating_updated_at = now(), rating_updated_by = p_operator_code, updated_at = now() WHERE id = p_project_id;
+  ELSE
+    UPDATE project_pool SET preliminary_rating = p_rating, rating_updated_at = now(), rating_updated_by = p_operator_code, updated_at = now() WHERE id = p_project_id;
+  END IF;
+
+  INSERT INTO project_rating_history(project_id, rating_type, from_rating, to_rating, operator_code)
+  VALUES (p_project_id, p_rating_type, old_rating, p_rating, p_operator_code);
+  SELECT * INTO updated_row FROM project_pool WHERE id = p_project_id;
+  RETURN updated_row;
+END;
+$$;
+
 -- New assignments use two_round_v4 for round two. Existing assignments are untouched.
 CREATE OR REPLACE FUNCTION assign_pool_project_to_meeting(
   p_project_id UUID,

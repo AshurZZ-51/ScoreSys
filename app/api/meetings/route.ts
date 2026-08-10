@@ -60,7 +60,7 @@ export async function POST(request: NextRequest) {
 
     const { data: meeting, error: meetingError } = await supabaseAdmin.from('meetings').insert({
       name: String(name).trim(), meeting_date, deadline: deadline || null, notes: String(notes || '').trim(), status: 'active',
-      workflow_version: v2 ? 'two_round_v2' : 'legacy_v1'
+      workflow_version: v2 ? 'project_pool_v4' : 'legacy_v1'
     }).select().single();
     if (meetingError) throw meetingError;
     meetingId = meeting.id;

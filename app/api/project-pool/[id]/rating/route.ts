@@ -22,26 +22,14 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
       return NextResponse.json({ error: '只有管理员或 Walker 可以修改项目评级' }, { status: 403 });
     }
 
-    const { data: current, error: currentError } = await supabaseAdmin.from('project_pool').select('id, preliminary_rating, final_rating').eq('id', params.id).single();
-    if (currentError) throw currentError;
-    const column = ratingType === 'final' ? 'final_rating' : 'preliminary_rating';
-    const fromRating = current[column];
-    const { data: project, error: updateError } = await supabaseAdmin.from('project_pool').update({
-      [column]: rating,
-      rating_updated_at: new Date().toISOString(),
-      rating_updated_by: session.code,
-      updated_at: new Date().toISOString()
-    }).eq('id', params.id).select().single();
-    if (updateError) throw updateError;
-
-    const { error: historyError } = await supabaseAdmin.from('project_rating_history').insert({
-      project_id: params.id,
-      rating_type: ratingType,
-      from_rating: fromRating || null,
-      to_rating: rating,
-      operator_code: session.code
+    const { data: rawProject, error } = await supabaseAdmin.rpc('apply_project_rating', {
+      p_project_id: params.id,
+      p_rating_type: ratingType,
+      p_rating: rating,
+      p_operator_code: session.code
     });
-    if (historyError) throw historyError;
+    if (error) throw error;
+    const project = Array.isArray(rawProject) ? rawProject[0] : rawProject;
     return NextResponse.json({ success: true, project });
   } catch (err: any) {
     return NextResponse.json({ error: `保存项目评级失败: ${err.message}` }, { status: 500 });

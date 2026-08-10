@@ -76,6 +76,7 @@ export async function GET(request: NextRequest) {
     const scores = scoresRes.data || [];
     const allReviewers = reviewersRes.data || [];
     const meetingReviewers = meetingReviewersRes?.data || [];
+    const scoredReviewerCodes = new Set(scores.filter((score: any) => score.reviewer_code).map((score: any) => String(score.reviewer_code).toLowerCase()));
     const reviewers = meetingReviewers.length
       ? meetingReviewers.map((snapshot: any) => ({
         code: snapshot.reviewer_code,
@@ -83,7 +84,9 @@ export async function GET(request: NextRequest) {
         role: snapshot.reviewer_role || allReviewers.find((reviewer: any) => reviewer.code === snapshot.reviewer_code)?.role || '',
         is_admin: false
       }))
-      : allReviewers;
+      : allReviewers.filter((reviewer: any) => reviewer.is_admin
+        || scoredReviewerCodes.has(String(reviewer.code).toLowerCase())
+        || !['o', 'si'].includes(String(reviewer.code).toLowerCase()));
     const reviewerDims = reviewerDimsRes.data || [];
 
     const reviewerDimNames: Record<string, string[]> = {};

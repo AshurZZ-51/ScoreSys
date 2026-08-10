@@ -29,6 +29,18 @@ export async function POST(request: NextRequest) {
     if (meetingResult.error || !meetingResult.data || meetingResult.data.deleted_at || ['archived', 'locked'].includes(meetingResult.data.status)) {
       return NextResponse.json({ error: '评审会不存在、已归档或已锁定' }, { status: 403 });
     }
+    const { data: allReviewers, error: allReviewersError } = await supabaseAdmin.from('reviewers').select('code, name, role').eq('is_admin', false);
+    if (allReviewersError) throw allReviewersError;
+    const { data: snapshotReviewers, error: snapshotError } = await supabaseAdmin.from('meeting_reviewers').select('reviewer_code').eq('meeting_id', meeting_id);
+    if (snapshotError) throw snapshotError;
+    const snapshotCodes = new Set((snapshotReviewers || []).map((item: any) => String(item.reviewer_code).toLowerCase()));
+    const missingReviewers = (allReviewers || []).filter((reviewer: any) => !snapshotCodes.has(String(reviewer.code).toLowerCase()));
+    if (missingReviewers.length) {
+      const { error: insertSnapshotError } = await supabaseAdmin.from('meeting_reviewers').insert(missingReviewers.map((reviewer: any) => ({
+        meeting_id, reviewer_code: reviewer.code, reviewer_name: reviewer.name || '', reviewer_role: reviewer.role || ''
+      })));
+      if (insertSnapshotError) throw insertSnapshotError;
+    }
     const byId = new Map((projectsResult.data || []).map((project: any) => [project.id, project]));
     const existing = assignmentsResult.data || [];
     const assignments: any[] = [];
