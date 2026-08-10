@@ -54,9 +54,12 @@ CROSS JOIN (VALUES
   ('operations_metrics', true),
   ('virtual_team', true)
 ) AS item(item_key, required)
-ON CONFLICT (project_id, item_key) DO UPDATE
-SET required = EXCLUDED.required,
-    updated_at = now();
+WHERE NOT EXISTS (
+  SELECT 1
+  FROM project_materials AS existing
+  WHERE existing.project_id = pool.id
+    AND existing.item_key = item.item_key
+);
 
 -- Existing rows keep their own completion status. Only missing metadata is filled.
 UPDATE project_materials
@@ -76,14 +79,33 @@ SET material_status = CASE WHEN EXISTS (
 updated_at = now();
 
 -- New reviewer accounts. Initial passwords are ollie123 and simon123; reset them after first login.
+UPDATE reviewers
+SET name = 'Ollie',
+    role = '运营评委',
+    is_admin = false
+WHERE lower(code) = 'o';
+
 INSERT INTO reviewers (code, name, role, is_admin, password_hash)
-VALUES
-  ('o', 'Ollie', '运营评委', false, 'ollie123'),
-  ('si', 'Simon', '商务评委', false, 'simon123')
-ON CONFLICT (code) DO UPDATE
-SET name = EXCLUDED.name,
-    role = EXCLUDED.role,
-    is_admin = false;
+SELECT 'o', 'Ollie', '运营评委', false, 'ollie123'
+WHERE NOT EXISTS (
+  SELECT 1
+  FROM reviewers
+  WHERE lower(code) = 'o'
+);
+
+UPDATE reviewers
+SET name = 'Simon',
+    role = '商务评委',
+    is_admin = false
+WHERE lower(code) = 'si';
+
+INSERT INTO reviewers (code, name, role, is_admin, password_hash)
+SELECT 'si', 'Simon', '商务评委', false, 'simon123'
+WHERE NOT EXISTS (
+  SELECT 1
+  FROM reviewers
+  WHERE lower(code) = 'si'
+);
 
 -- The new round uses meeting snapshots rather than reviewer_dims to grant every non-admin reviewer
 -- all dimensions. These rows keep the accounts usable in older views that still read reviewer_dims.
@@ -93,8 +115,13 @@ FROM reviewers AS reviewer
 CROSS JOIN (VALUES
   ('游戏性'), ('创新性'), ('项目规划'), ('技术&美术'), ('风险预估'), ('造价与预算')
 ) AS dimension(name)
-WHERE reviewer.code IN ('o', 'si')
-ON CONFLICT (reviewer_code, dim_name) DO NOTHING;
+WHERE lower(reviewer.code) IN ('o', 'si')
+  AND NOT EXISTS (
+    SELECT 1
+    FROM reviewer_dims AS existing
+    WHERE existing.reviewer_code = reviewer.code
+      AND existing.dim_name = dimension.name
+  );
 
 CREATE OR REPLACE FUNCTION apply_project_rating(
   p_project_id UUID,
