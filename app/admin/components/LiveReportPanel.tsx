@@ -90,15 +90,15 @@ export default function LiveReportPanel({ meeting }: { meeting: Item }) {
         <Stat label="驳回" value={stats.rejected} tone="#b42318" />
         <Stat label="待 Walker 结论" value={stats.pending} tone="#475569" />
       </div>
-      <div style={styles.tableWrap}><table style={styles.table}><thead><tr>{['排名', '项目', '本轮总分', '完成度', 'Walker 结论', '问题与行动'].map((label) => <th key={label} style={styles.cell}>{label}</th>)}</tr></thead><tbody>
+      <div style={styles.tableWrap}><table style={styles.table}><thead><tr>{['排名', '项目', '本轮总分', '各维度平均分', '完成度', 'Walker 结论', '盲评参考', '问题与行动'].map((label) => <th key={label} style={styles.cell}>{label}</th>)}</tr></thead><tbody>
         {projects.map((project: Item, index: number) => {
           const round = project.roundSummaries?.[project.currentRound];
           const problems = round?.problemSummary || project.problemSummary || '-';
           const actions = round?.actionSummary || project.actionSummary || '';
           const verdict = project.walkerVerdict || project.verdict;
-          return <tr key={project.id}><td style={styles.cell}>{index + 1}</td><td style={styles.cell}><strong>{project.name}</strong><div style={styles.subtle}>{project.submitter} · 第 {project.round_no || roundNo} 轮</div></td><td style={styles.cell}>{Number(project.totalScore || 0).toFixed(1)} / 100</td><td style={styles.cell}>{project.completionRate || 0}%</td><td style={styles.cell}>{verdictLabels[verdict] || '待 Walker 结论'}</td><td style={styles.cell}><div>{problems}</div>{actions && <div style={styles.subtle}>行动：{actions}</div>}</td></tr>;
+          return <tr key={project.id}><td style={styles.cell}>{index + 1}</td><td style={styles.cell}><strong>{project.name}</strong><div style={styles.subtle}>{project.submitter} · 第 {project.round_no || roundNo} 轮</div></td><td style={styles.cell}>{Number(project.totalScore || 0).toFixed(1)} / 100</td><td style={styles.cell}>{renderDimensionAverages(project.dimensionAverages || round?.dimensionAverages)}</td><td style={styles.cell}>{project.completionRate || 0}%</td><td style={styles.cell}>{verdictLabels[verdict] || '待 Walker 结论'}</td><td style={styles.cell}>{renderBlindStats(round)}</td><td style={styles.cell}><div>{problems}</div>{actions && <div style={styles.subtle}>行动：{actions}</div>}</td></tr>;
         })}
-        {!projects.length && <tr><td colSpan={6} style={styles.empty}>本场评审会尚未形成可汇总的评审数据。</td></tr>}
+        {!projects.length && <tr><td colSpan={8} style={styles.empty}>本场评审会尚未形成可汇总的评审数据。</td></tr>}
       </tbody></table></div>
       <div style={styles.snapshot}><div><strong>快照报告</strong><p style={styles.help}>生成后会保存当前第 {roundNo} 轮的报告版本，并打开可打印报告。</p>{snapshot && <p style={styles.version}>已生成快照 v{snapshot.version}</p>}</div><button type="button" style={styles.primary} disabled={creatingSnapshot} onClick={createSnapshot}>{creatingSnapshot ? '生成中...' : '生成快照并打开打印报告'}</button></div>
     </>}
@@ -109,6 +109,18 @@ function Stat({ label, value, tone }: { label: string; value: number; tone: stri
   return <div style={styles.stat}><span style={styles.subtle}>{label}</span><strong style={{ color: tone, fontSize: 24 }}>{value}</strong></div>;
 }
 
+function renderDimensionAverages(items: Item[] = []) {
+  if (!items.length) return <span style={styles.subtle}>暂无</span>;
+  return <div style={styles.dimensionList}>{items.map((item) => <span key={item.name}><strong>{item.name}</strong> {Number(item.averageScore ?? item.score ?? 0).toFixed(1)}/{Number(item.maxScore ?? item.max ?? 0).toFixed(0)} <small>({Number(item.percentage ?? 0).toFixed(0)}%)</small></span>)}</div>;
+}
+
+function renderBlindStats(round: Item) {
+  const rating = round?.blindRatingStats;
+  const verdict = round?.blindVerdictStats;
+  if (!rating?.submittedCount && !verdict?.submittedCount) return <span style={styles.subtle}>暂无</span>;
+  return <div style={styles.dimensionList}><span>{rating?.submittedCount ? `评级 ${rating.counts?.S || 0}/${rating.counts?.A || 0}/${rating.counts?.B || 0}/${rating.counts?.C || 0}` : '暂无评级'}</span><span>{verdict?.submittedCount ? `结论 ${verdict.counts?.approved || 0}/${verdict.counts?.recheck || 0}/${verdict.counts?.rejected || 0}` : '暂无结论'}</span></div>;
+}
+
 const styles: Record<string, React.CSSProperties> = {
-  section: { marginTop: 20 }, heading: { display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'flex-start', marginBottom: 14 }, title: { margin: 0, fontSize: 18 }, help: { margin: '5px 0 0', color: '#64748b', fontSize: 13 }, round: { padding: '5px 8px', background: '#f0fdfa', color: '#0f766e', borderRadius: 4, fontSize: 13, fontWeight: 700 }, error: { color: '#b42318', margin: '0 0 12px' }, stats: { display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 10, marginBottom: 14 }, stat: { display: 'grid', gap: 5, padding: 12, border: '1px solid #d9e1ec', borderRadius: 6, background: '#fbfdff' }, tableWrap: { overflowX: 'auto', border: '1px solid #d9e1ec', borderRadius: 6 }, table: { width: '100%', borderCollapse: 'collapse', fontSize: 14 }, cell: { padding: '11px 12px', textAlign: 'left', verticalAlign: 'top', borderBottom: '1px solid #e7edf5' }, subtle: { color: '#64748b', fontSize: 13, marginTop: 4 }, empty: { padding: 20, textAlign: 'center', color: '#64748b' }, snapshot: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 16, flexWrap: 'wrap', padding: 16, marginTop: 14, border: '1px solid #d9e1ec', borderRadius: 6, background: '#fbfdff' }, primary: { background: '#0f766e', color: '#fff', border: '1px solid #0f766e', padding: '8px 12px', borderRadius: 5, cursor: 'pointer' }, version: { margin: '6px 0 0', color: '#0f766e', fontSize: 13, fontWeight: 700 }
+  section: { marginTop: 20 }, heading: { display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'flex-start', marginBottom: 14 }, title: { margin: 0, fontSize: 18 }, help: { margin: '5px 0 0', color: '#64748b', fontSize: 13 }, round: { padding: '5px 8px', background: '#f0fdfa', color: '#0f766e', borderRadius: 4, fontSize: 13, fontWeight: 700 }, error: { color: '#b42318', margin: '0 0 12px' }, stats: { display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 10, marginBottom: 14 }, stat: { display: 'grid', gap: 5, padding: 12, border: '1px solid #d9e1ec', borderRadius: 6, background: '#fbfdff' }, tableWrap: { overflowX: 'auto', border: '1px solid #d9e1ec', borderRadius: 6 }, table: { width: '100%', borderCollapse: 'collapse', fontSize: 14 }, cell: { padding: '11px 12px', textAlign: 'left', verticalAlign: 'top', borderBottom: '1px solid #e7edf5' }, subtle: { color: '#64748b', fontSize: 13, marginTop: 4 }, dimensionList: { display: 'grid', gap: 4, minWidth: 180, fontSize: 12 }, empty: { padding: 20, textAlign: 'center', color: '#64748b' }, snapshot: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 16, flexWrap: 'wrap', padding: 16, marginTop: 14, border: '1px solid #d9e1ec', borderRadius: 6, background: '#fbfdff' }, primary: { background: '#0f766e', color: '#fff', border: '1px solid #0f766e', padding: '8px 12px', borderRadius: 5, cursor: 'pointer' }, version: { margin: '6px 0 0', color: '#0f766e', fontSize: 13, fontWeight: 700 }
 };

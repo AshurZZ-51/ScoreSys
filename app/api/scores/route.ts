@@ -9,6 +9,7 @@ import {
   nextStatusForVerdict,
   stripRoundPrefix
 } from '@/lib/reviewWorkflow';
+import { shouldAdvanceProjectWorkflow } from '@/lib/reviewerBlindReview';
 
 export const dynamic = 'force-dynamic';
 
@@ -104,10 +105,9 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ error: '只有 Walker 可以使用加分项' }, { status: 403 });
       }
     } else if (baseDimName === '__verdict__') {
-      if (reviewer_code.toUpperCase() !== 'W' && !reviewerInfo?.is_admin) {
-        return NextResponse.json({ error: '只有 Walker 或管理员可以设置评审结论' }, { status: 403 });
+      if (reviewerInfo?.is_admin) {
+        return NextResponse.json({ error: '管理员不能填写个人评审结论' }, { status: 403 });
       }
-      if (isV2Assignment && reviewer_code.toUpperCase() !== 'W') return NextResponse.json({ error: '新版评审结论只能由 Walker 给出' }, { status: 403 });
     } else if (baseDimName === '__problems__' || baseDimName === '__actions__') {
       // Text-only review fields reuse the score table.
     } else if (ADMIN_TRACKING_SPECIAL_DIMENSIONS.has(baseDimName)) {
@@ -162,7 +162,7 @@ export async function POST(request: NextRequest) {
 
     if (error) throw error;
 
-    if (baseDimName === '__verdict__' && comment && isV2Assignment) {
+    if (baseDimName === '__verdict__' && comment && isV2Assignment && shouldAdvanceProjectWorkflow(reviewer_code)) {
       const transition = transitionForVerdict(Number(assignment.round_no), Number(assignment.attempt_no), comment);
       if (!transition.ok) return NextResponse.json({ error: transition.error }, { status: 400 });
       const nextAssignmentStatus = 'completed';
@@ -178,7 +178,7 @@ export async function POST(request: NextRequest) {
         event_type: 'walker_verdict', to_status: transition.status, operator_code: reviewer_code, note: comment
       });
       if (historyError) throw historyError;
-    } else if (baseDimName === '__verdict__' && comment) {
+    } else if (baseDimName === '__verdict__' && comment && !isV2Assignment) {
       const verdictRound = getRoundFromDimName(dim_name);
       if (verdictRound) {
         const nextStatus = nextStatusForVerdict(verdictRound, comment);

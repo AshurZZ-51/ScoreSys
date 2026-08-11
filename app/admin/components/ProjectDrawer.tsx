@@ -72,7 +72,9 @@ export default function ProjectDrawer({ project, onDismiss, onSaved }: { project
   const saveMaterial = async (itemKey: string, status: string) => {
     if (!MATERIAL_STATUS_OPTIONS.some((option) => option.value === status)) return;
     const priorMaterials = materials;
-    const nextMaterials = materials.map((item) => item.item_key === itemKey ? { ...item, status } : item);
+    const nextMaterials = materials.some((item) => item.item_key === itemKey)
+      ? materials.map((item) => item.item_key === itemKey ? { ...item, status } : item)
+      : [...materials, { project_id: project.id, item_key: itemKey, status }];
     setMaterials(nextMaterials);
     setBusy(true);
     try {

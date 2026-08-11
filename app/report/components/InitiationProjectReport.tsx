@@ -5,10 +5,17 @@ const score = (value: unknown) => Number(value || 0).toFixed(1);
 const dateTime = (value: unknown) => value ? String(value).replace('T', ' ').slice(0, 16) : '-';
 
 function dimensionRows(item: Report) {
+  if (item.dimensionAverages?.length) return item.dimensionAverages.map((value: any) => ({
+    name: value.name,
+    score: Number(value.averageScore || 0),
+    max: Number(value.maxScore || 0),
+    percentage: Number(value.percentage || 0)
+  }));
   return Object.entries(item.dimTotals || {}).map(([name, value]: [string, any]) => ({
     name,
     score: Number(value?.score || 0),
-    max: Number(value?.maxScore || value?.max || 0)
+    max: Number(value?.maxScore || value?.max || 0),
+    percentage: Number(value?.percentage || 0)
   }));
 }
 
@@ -24,7 +31,7 @@ export default function InitiationProjectReport({ report }: { report: Report }) 
 
     <section><h2 style={styles.h2}>评审决策总览</h2><div style={styles.tableWrap}><table style={styles.table}><thead><tr><th>轮次 / 次数</th><th>评审会与时间</th><th>评分与排名</th><th>完成度</th><th>Walker 结论</th><th>参与评委</th></tr></thead><tbody>{history.map((item: Report) => <tr key={item.id || `${item.round_no}-${item.attempt_no}`}><td>第 {item.round_no} 轮<br/><small>第 {item.attempt_no || 1} 次</small></td><td><strong>{item.meeting?.name || '-'}</strong><br/><small>{dateTime(item.meeting?.meeting_date)} · 截止 {dateTime(item.meeting?.deadline)}</small></td><td>{score(item.totalScore)} / {item.totalMaxScore || 100}<br/><small>{item.rank ? `本场第 ${item.rank} 名` : '排名以当场汇总为准'}</small></td><td>{item.completionRate || 0}%</td><td><strong>{verdictLabel(item.verdict)}</strong></td><td>{item.reviewerCount || 0} 人</td></tr>)}{!history.length && <tr><td colSpan={6} style={styles.empty}>暂无 Walker 已确认结论的评审记录。</td></tr>}</tbody></table></div></section>
 
-    <section><h2 style={styles.h2}>单维度评分对比</h2><div style={styles.dimensionGrid}>{history.map((item: Report) => <div style={styles.dimensionCard} key={`dimensions-${item.id || item.round_no}`}><h3 style={styles.h3}>第 {item.round_no} 轮 / 第 {item.attempt_no || 1} 次</h3>{dimensionRows(item).map((dimension) => <div key={dimension.name} style={styles.dimension}><div style={styles.dimensionLine}><span>{dimension.name}</span><strong>{score(dimension.score)} / {dimension.max || '-'}</strong></div><div style={styles.track}><i style={{ ...styles.bar, width: `${dimension.max ? Math.min(100, dimension.score / dimension.max * 100) : 0}%` }} /></div></div>)}{!dimensionRows(item).length && <p style={styles.muted}>本轮没有可用的维度汇总。</p>}</div>)}</div></section>
+    <section><h2 style={styles.h2}>单维度平均分对比</h2><div style={styles.dimensionGrid}>{history.map((item: Report) => <div style={styles.dimensionCard} key={`dimensions-${item.id || item.round_no}`}><h3 style={styles.h3}>第 {item.round_no} 轮 / 第 {item.attempt_no || 1} 次</h3>{dimensionRows(item).map((dimension) => <div key={dimension.name} style={styles.dimension}><div style={styles.dimensionLine}><span>{dimension.name}</span><strong>{score(dimension.score)} / {dimension.max || '-'} ({dimension.percentage.toFixed(0)}%)</strong></div><div style={styles.track}><i style={{ ...styles.bar, width: `${dimension.max ? Math.min(100, dimension.score / dimension.max * 100) : 0}%` }} /></div></div>)}{!dimensionRows(item).length && <p style={styles.muted}>本轮没有可用的维度汇总。</p>}</div>)}</div></section>
 
     <section><h2 style={styles.h2}>问题与行动闭环</h2><div style={styles.issueGrid}>{history.map((item: Report) => <div style={styles.issueCard} key={`issues-${item.id || item.round_no}`}><h3 style={styles.h3}>第 {item.round_no} 轮 / {item.meeting?.name || '评审会'}</h3><div><strong>主要问题</strong><p>{item.problemSummary || '无'}</p></div><div><strong>改进行动</strong><p>{item.actionSummary || '无'}</p></div></div>)}</div></section>
 

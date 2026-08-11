@@ -22,6 +22,7 @@ import {
   nextStatusForVerdict,
   stripRoundPrefix
 } from '@/lib/reviewWorkflow';
+import { buildBlindChoiceStats, buildDimensionAverages } from '@/lib/reviewerBlindReview';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -54,13 +55,14 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    const [meetingRes, projectsRes, scoresRes, reviewersRes, meetingReviewersRes, reviewerDimsRes] = await Promise.all([
+    const [meetingRes, projectsRes, scoresRes, reviewersRes, meetingReviewersRes, reviewerDimsRes, reviewerRatingsRes] = await Promise.all([
       supabaseAdmin.from('meetings').select('id, name, meeting_date, deadline, status, notes').eq('id', meetingId).single(),
       supabaseAdmin.from('projects').select('id, meeting_id, seq_no, name, submitter, description, problems, actions, is_pending, pool_project_id, round_no, attempt_no, scoring_version, assignment_status').eq('meeting_id', meetingId).order('seq_no'),
       supabaseAdmin.from('scores').select('id, meeting_id, project_id, reviewer_code, dim_name, score, comment, updated_at').eq('meeting_id', meetingId),
       supabaseAdmin.from('reviewers').select('code, name, role, is_admin').order('code'),
       supabaseAdmin.from('meeting_reviewers').select('reviewer_code, reviewer_name, reviewer_role').eq('meeting_id', meetingId),
-      supabaseAdmin.from('reviewer_dims').select('reviewer_code, dim_name, max_score')
+      supabaseAdmin.from('reviewer_dims').select('reviewer_code, dim_name, max_score'),
+      supabaseAdmin.from('project_reviewer_ratings').select('meeting_id, project_id, reviewer_code, round_no, attempt_no, rating, updated_at').eq('meeting_id', meetingId)
     ]);
 
     if (meetingRes.error) throw meetingRes.error;
@@ -74,6 +76,7 @@ export async function GET(request: NextRequest) {
     const projects = [...fetchedProjects, ...summaryMissingProjects]
       .sort((a: any, b: any) => Number(a.seq_no) - Number(b.seq_no));
     const scores = scoresRes.data || [];
+    const reviewerRatings = reviewerRatingsRes?.error ? [] : (reviewerRatingsRes?.data || []);
     const allReviewers = reviewersRes.data || [];
     const meetingReviewers = meetingReviewersRes?.data || [];
     const scoredReviewerCodes = new Set(scores.filter((score: any) => score.reviewer_code).map((score: any) => String(score.reviewer_code).toLowerCase()));
@@ -114,6 +117,8 @@ export async function GET(request: NextRequest) {
     }));
 
     const nonAdminReviewers = reviewers.filter((reviewer: any) => !reviewer.is_admin);
+    const nonAdminReviewerCodes = nonAdminReviewers.map((reviewer: any) => reviewer.code);
+    const blindReviewerCodes = nonAdminReviewerCodes.filter((code: string) => code.toUpperCase() !== 'W');
     const expectedInputsPerReviewer = projects.reduce((total: number, project: any) => {
       if (!project.name || !project.submitter) return total;
       const scoringVersion = resolveAssignmentScoringVersion(project.scoring_version);
@@ -164,6 +169,23 @@ export async function GET(request: NextRequest) {
           .map((s: any) => ({ reviewer: s.reviewer_code, value: Number(s.score), reason: s.comment || '' }));
         const roundBonusScore = roundBonusDetails.reduce((sum: number, item: any) => sum + item.value, 0);
         const roundVerdict = getRoundVerdict(round.id);
+        const roundDimensionAverages = buildDimensionAverages({
+          rules: getRoundScoringDimensions(round.id, scoringVersion),
+          scores: roundScores,
+          reviewerCodes: nonAdminReviewerCodes
+        });
+        const roundNo = Number(round.id.slice(1));
+        const attemptNo = Number(project.attempt_no || 1);
+        const roundBlindVerdictScores = projectScores.filter((score: any) => (
+          score.dim_name === specialScoreKey(round.id, '__verdict__')
+          && blindReviewerCodes.some((code: string) => code.toLowerCase() === String(score.reviewer_code || '').toLowerCase())
+        ));
+        const roundBlindRatings = reviewerRatings.filter((rating: any) => (
+          rating.project_id === project.id
+          && Number(rating.round_no) === roundNo
+          && Number(rating.attempt_no || 1) === attemptNo
+          && blindReviewerCodes.some((code: string) => code.toLowerCase() === String(rating.reviewer_code || '').toLowerCase())
+        ));
         const roundProblems: { reviewer_code: string; reviewer_name: string; problems: string[] }[] = [];
         const roundActions: { reviewer_code: string; reviewer_name: string; actions: string[] }[] = [];
         projectScores.forEach((s: any) => {
@@ -193,6 +215,16 @@ export async function GET(request: NextRequest) {
           ...computed,
           label: round.label,
           title: round.title,
+          dimensionAverages: roundDimensionAverages,
+          blindRatingStats: buildBlindChoiceStats(
+            roundBlindRatings.map((rating: any) => rating.rating),
+            blindReviewerCodes.length,
+            ['S', 'A', 'B', 'C']
+          ),
+          blindVerdictStats: buildBlindChoiceStats(
+            roundBlindVerdictScores.map((score: any) => score.comment),
+            blindReviewerCodes.length
+          ),
           bonusDetails: roundBonusDetails,
           verdict: roundVerdict,
           reviewerProblems: roundProblems,
@@ -274,6 +306,7 @@ export async function GET(request: NextRequest) {
         materialChecker,
         roundSummaries,
         dimTotals: currentRoundSummary?.dimTotals || computed.dimTotals,
+        dimensionAverages: currentRoundSummary?.dimensionAverages || [],
         baseScore: currentRoundSummary?.baseScore ?? computed.baseScore,
         bonusScore: currentRoundSummary?.bonusScore ?? computed.bonusScore,
         bonusDetails: currentRoundSummary?.bonusDetails || bonusDetails,

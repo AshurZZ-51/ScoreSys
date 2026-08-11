@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isProjectPoolV2Enabled, supabaseAdmin } from '@/lib/supabase';
-import { getMaterialStatus, isMaterialStatus } from '@/lib/projectPoolWorkflow';
+import { getMaterialStatus, isMaterialStatus, MATERIAL_ITEMS } from '@/lib/projectPoolWorkflow';
 import { requireAdminSession } from '@/lib/adminSession';
 
 export const dynamic = 'force-dynamic';
@@ -19,9 +19,29 @@ export async function PATCH(request: NextRequest, { params }: { params: { id: st
     const session = requireAdminSession(request);
     if (!session) return NextResponse.json({ error: '只有管理员可以检查资料' }, { status: 403 });
     if (!isMaterialStatus(status)) return NextResponse.json({ error: '无效资料状态' }, { status: 400 });
+    const materialDefinition = MATERIAL_ITEMS.find((item) => item.item_key === item_key);
+    if (!materialDefinition) return NextResponse.json({ error: '无效资料项' }, { status: 400 });
     const now = new Date().toISOString();
-    const { error } = await supabaseAdmin.from('project_materials').update({ status, note, checked_by: session.code, checked_at: now, updated_at: now }).eq('project_id', params.id).eq('item_key', item_key);
-    if (error) throw error;
+    const { data: existingMaterial, error: existingError } = await supabaseAdmin
+      .from('project_materials')
+      .select('id')
+      .eq('project_id', params.id)
+      .eq('item_key', item_key)
+      .maybeSingle();
+    if (existingError) throw existingError;
+    const materialPayload = { status, note, checked_by: session.code, checked_at: now, updated_at: now };
+    if (existingMaterial?.id) {
+      const { error } = await supabaseAdmin.from('project_materials').update(materialPayload).eq('id', existingMaterial.id);
+      if (error) throw error;
+    } else {
+      const { error } = await supabaseAdmin.from('project_materials').insert({
+        project_id: params.id,
+        item_key,
+        required: materialDefinition.required,
+        ...materialPayload
+      });
+      if (error) throw error;
+    }
     const { data: materials, error: readError } = await supabaseAdmin.from('project_materials').select('*').eq('project_id', params.id);
     if (readError) throw readError;
     const derived = getMaterialStatus(materials || []);
