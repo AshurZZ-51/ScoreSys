@@ -6,6 +6,7 @@ import { computeRoundBaseScoreFromScoreMap, getRoundDefinition, getRoundScoringD
 import { ROUND_TITLES, VERDICT_OPTIONS } from '@/lib/reviewWorkflow';
 import { createSaveFeedback } from '@/lib/saveFeedback';
 import { getMaterialProgress, getReviewableMeetingProjects, MATERIAL_ITEMS } from '@/lib/projectPoolWorkflow';
+import { canEditFinalRating } from '@/lib/projectDetailWorkflow';
 
 interface Reviewer {
   code: string;
@@ -90,7 +91,7 @@ export default function ScoringPage() {
   const saveVersions = useRef<Record<string, number>>({});
   const feedbackTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const isWalker = reviewer?.code?.toUpperCase() === 'W';
+  const isWalker = canEditFinalRating(reviewer?.code);
   const getActiveRound = (project = activeProject) => project?.round_no ? `r${project.round_no}` : project?.currentRound || 'r1';
   const getScoringVersion = (project = activeProject) => ['two_round_v2', 'two_round_v3', 'two_round_v4'].includes(project?.scoring_version || '')
     ? project?.scoring_version as 'two_round_v2' | 'two_round_v3' | 'two_round_v4'
@@ -429,7 +430,7 @@ export default function ScoringPage() {
   };
 
   const saveWalkerRating = async (ratingType: 'preliminary' | 'final', rating: string) => {
-    if (!activeProject?.pool_project_id || !['S', 'A', 'B', 'C'].includes(rating)) return;
+    if (ratingType !== 'final' || !canEditFinalRating(reviewer?.code) || !activeProject?.pool_project_id || !['S', 'A', 'B', 'C'].includes(rating)) return;
     try {
       const response = await fetch(`/api/project-pool/${activeProject.pool_project_id}/rating`, { method: 'POST', headers: scoreRequestHeaders(), body: JSON.stringify({ rating_type: ratingType, rating }) });
       const data = await response.json();

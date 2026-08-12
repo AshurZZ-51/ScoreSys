@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { MATERIAL_ITEMS, getMaterialProgress, projectStatusLabel } from '@/lib/projectPoolWorkflow';
 import { buildInitiationAnnouncement, PROJECT_RATING_OPTIONS } from '@/lib/initiationWorkflow';
+import { mergeProjectMaterials } from '@/lib/projectDetailWorkflow';
 
 type Project = Record<string, any>;
 const MATERIAL_STATUS_OPTIONS = [
@@ -47,9 +48,16 @@ export default function ProjectDrawer({ project, onDismiss, onSaved }: { project
       setFeedback('');
     };
     applyProject(project);
-    fetch(`/api/project-pool/${project.id}/history`, { cache: 'no-store' })
-      .then(async (response) => response.ok ? response.json() : null)
-      .then((data) => data?.project && applyProject(data.project))
+    Promise.all([
+      fetch(`/api/project-pool/${project.id}/history`, { cache: 'no-store' }),
+      fetch(`/api/project-pool/${project.id}/materials`, { cache: 'no-store' })
+    ])
+      .then(async ([historyResponse, materialsResponse]) => {
+        const historyData = historyResponse.ok ? await historyResponse.json() : null;
+        const materialsData = materialsResponse.ok ? await materialsResponse.json() : null;
+        if (historyData?.project) applyProject(mergeProjectMaterials(historyData.project, materialsData?.materials));
+        else if (materialsData && Array.isArray(materialsData.materials)) applyProject(mergeProjectMaterials(project, materialsData.materials));
+      })
       .catch(() => undefined);
     return () => { cancelled = true; };
   }, [project.id]);

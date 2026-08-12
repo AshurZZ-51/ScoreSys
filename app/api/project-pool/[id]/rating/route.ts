@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { isProjectPoolV2Enabled, supabaseAdmin } from '@/lib/supabase';
 import { requireReviewerSession } from '@/lib/adminSession';
 import { isValidProjectRating } from '@/lib/initiationWorkflow';
+import { canEditFinalRating } from '@/lib/projectDetailWorkflow';
 
 export const dynamic = 'force-dynamic';
 
@@ -18,7 +19,10 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
 
     const { data: reviewer, error: reviewerError } = await supabaseAdmin.from('reviewers').select('code, is_admin').ilike('code', session.code).single();
     if (reviewerError) throw reviewerError;
-    if (!reviewer?.is_admin && String(reviewer.code).toUpperCase() !== 'W') {
+    if (ratingType === 'final' && !reviewer?.is_admin && !canEditFinalRating(reviewer.code)) {
+      return NextResponse.json({ error: '只有管理员或 Walker 可以修改最终评级' }, { status: 403 });
+    }
+    if (ratingType === 'preliminary' && !reviewer?.is_admin && !canEditFinalRating(reviewer.code)) {
       return NextResponse.json({ error: '只有管理员或 Walker 可以修改项目评级' }, { status: 403 });
     }
 
