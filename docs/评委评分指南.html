@@ -1,0 +1,372 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="ScoreSys 立项评审评分指南">
+  <title>ScoreSys · 评委评分指南</title>
+  <style>
+    :root {
+      --ink: #172033;
+      --muted: #64748b;
+      --line: #dce3ec;
+      --paper: #ffffff;
+      --canvas: #f4f7fb;
+      --blue: #2563eb;
+      --blue-soft: #eaf2ff;
+      --green: #15803d;
+      --green-soft: #eaf8ef;
+      --amber: #a16207;
+      --amber-soft: #fff7dd;
+      --red: #b42318;
+      --red-soft: #fff0ee;
+      --purple: #6d28d9;
+      --purple-soft: #f2edff;
+      --shadow: 0 12px 30px rgba(30, 52, 82, .08);
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--canvas);
+      font-family: "Segoe UI", "Microsoft YaHei", Arial, sans-serif;
+      line-height: 1.7;
+    }
+    a { color: var(--blue); }
+    .page { max-width: 1180px; margin: 0 auto; padding: 28px 20px 60px; }
+    .hero {
+      padding: 34px 38px;
+      color: #fff;
+      background: #172554;
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+    }
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 12px;
+      color: #bfdbfe;
+      font-size: 13px;
+      font-weight: 800;
+      letter-spacing: .08em;
+    }
+    .eyebrow::before { content: ""; width: 24px; height: 2px; background: #60a5fa; }
+    h1, h2, h3 { line-height: 1.25; }
+    h1 { margin: 0; font-size: clamp(28px, 5vw, 48px); letter-spacing: 0; }
+    .hero p { max-width: 760px; margin: 16px 0 0; color: #dbeafe; font-size: 16px; }
+    .hero-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 22px; }
+    .button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 40px;
+      padding: 8px 14px;
+      border: 1px solid #93c5fd;
+      border-radius: 6px;
+      color: #172554;
+      background: #dbeafe;
+      font: inherit;
+      font-weight: 800;
+      text-decoration: none;
+      cursor: pointer;
+    }
+    .button.secondary { color: #dbeafe; background: transparent; border-color: #64748b; }
+    .layout { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 22px; margin-top: 22px; align-items: start; }
+    .toc {
+      position: sticky;
+      top: 18px;
+      padding: 16px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--paper);
+      box-shadow: 0 5px 18px rgba(30, 52, 82, .04);
+    }
+    .toc strong { display: block; margin-bottom: 8px; font-size: 14px; }
+    .toc a { display: block; padding: 5px 0; color: var(--muted); font-size: 13px; text-decoration: none; }
+    .toc a:hover { color: var(--blue); }
+    main { min-width: 0; }
+    section {
+      scroll-margin-top: 20px;
+      margin-bottom: 22px;
+      padding: 26px 28px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--paper);
+      box-shadow: 0 5px 18px rgba(30, 52, 82, .04);
+    }
+    section h2 { margin: 0 0 16px; font-size: 24px; }
+    section h3 { margin: 24px 0 8px; font-size: 17px; }
+    section h3:first-of-type { margin-top: 8px; }
+    p { margin: 8px 0; }
+    .lead { color: var(--muted); }
+    .notice { padding: 12px 14px; border-left: 4px solid var(--blue); background: var(--blue-soft); }
+    .notice.amber { border-left-color: var(--amber); background: var(--amber-soft); }
+    .notice.green { border-left-color: var(--green); background: var(--green-soft); }
+    .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+    .mini-card { padding: 15px; border: 1px solid var(--line); border-radius: 6px; background: #fbfdff; }
+    .mini-card strong { display: block; margin-bottom: 4px; }
+    .tag-row { display: flex; flex-wrap: wrap; gap: 8px; margin: 14px 0; }
+    .tag { display: inline-flex; padding: 3px 9px; border-radius: 999px; font-size: 12px; font-weight: 800; }
+    .tag.blue { color: #1d4ed8; background: var(--blue-soft); }
+    .tag.green { color: var(--green); background: var(--green-soft); }
+    .tag.amber { color: var(--amber); background: var(--amber-soft); }
+    .tag.red { color: var(--red); background: var(--red-soft); }
+    .tag.purple { color: var(--purple); background: var(--purple-soft); }
+    table { width: 100%; margin: 12px 0; border-collapse: collapse; font-size: 14px; }
+    th, td { padding: 10px 11px; border: 1px solid var(--line); text-align: left; vertical-align: top; }
+    th { color: #334155; background: #f1f5f9; font-weight: 800; }
+    tr:nth-child(even) td { background: #fcfdff; }
+    .formula {
+      margin: 12px 0;
+      padding: 12px 14px;
+      border: 1px solid #c7d2fe;
+      border-radius: 6px;
+      color: #312e81;
+      background: #eef2ff;
+      font-family: Consolas, "Courier New", monospace;
+      font-size: 14px;
+      overflow-x: auto;
+    }
+    ol, ul { padding-left: 22px; }
+    li { margin: 4px 0; }
+    .footer { color: var(--muted); text-align: center; font-size: 13px; }
+    .muted { color: var(--muted); }
+    @media (max-width: 800px) {
+      .page { padding: 14px 12px 36px; }
+      .hero { padding: 25px 22px; }
+      .layout { display: block; }
+      .toc { position: static; margin-bottom: 14px; }
+      .toc a { display: inline-block; margin-right: 12px; }
+      section { padding: 21px 18px; }
+      .grid { grid-template-columns: 1fr; }
+      table { display: block; overflow-x: auto; white-space: normal; }
+      th, td { min-width: 120px; }
+    }
+    @media print {
+      body { background: #fff; }
+      .page { max-width: none; padding: 0; }
+      .hero { color: #000; background: #fff; border: 2px solid #172554; box-shadow: none; }
+      .hero p, .eyebrow { color: #334155; }
+      .hero-actions, .toc { display: none; }
+      .layout { display: block; margin-top: 0; }
+      section { break-inside: avoid; box-shadow: none; }
+      a { color: #000; text-decoration: none; }
+      .footer { margin-top: 20px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <header class="hero">
+      <div class="eyebrow">SCORESYS · REVIEWER GUIDE</div>
+      <h1>立项评审评分指南</h1>
+      <p>给评委的操作说明：了解两轮评审流程、分数换算、盲评参考和 Walker 专属结论。每个项目的轮次和次数以评分页面显示为准。</p>
+      <div class="tag-row">
+        <span class="tag blue">两轮评审</span>
+        <span class="tag green">基础总分 100</span>
+        <span class="tag amber">个人评级为盲评参考</span>
+      </div>
+      <div class="hero-actions">
+        <a class="button" href="https://scoresys.vercel.app" target="_blank" rel="noreferrer">打开评分系统</a>
+        <button class="button secondary" type="button" onclick="window.print()">打印 / 保存 PDF</button>
+      </div>
+    </header>
+
+    <div class="layout">
+      <nav class="toc" aria-label="目录">
+        <strong>快速导航</strong>
+        <a href="#start">1. 登录与开始</a>
+        <a href="#process">2. 两轮流程</a>
+        <a href="#round-one">3. 第一轮</a>
+        <a href="#round-two">4. 第二轮</a>
+        <a href="#permissions">5. 可填写内容</a>
+        <a href="#save">6. 保存与修改</a>
+        <a href="#blind">7. 盲评与汇总</a>
+        <a href="#tips">8. 评分建议</a>
+        <a href="#troubleshooting">9. 异常处理</a>
+      </nav>
+
+      <main>
+        <section id="start">
+          <h2>1. 登录与开始评分</h2>
+          <ol>
+            <li>打开 <a href="https://scoresys.vercel.app" target="_blank" rel="noreferrer">https://scoresys.vercel.app</a>。</li>
+            <li>使用管理员发放的账号和密码登录。系统不会要求额外的 Vercel 网络验证。</li>
+            <li>登录后进入评委评分页面。</li>
+            <li>选择当前评审会和项目，进入右侧评分区域。</li>
+          </ol>
+          <div class="notice green"><strong>项目顶部信息：</strong>评审阶段、评审次数、资料齐全进度都会显示在项目顶部。评审会本身不区分轮次，轮次由项目 assignment 决定。</div>
+        </section>
+
+        <section id="process">
+          <h2>2. 两轮评审流程</h2>
+          <div class="grid">
+            <div class="mini-card">
+              <span class="tag blue">第一轮 · 创意阶段</span>
+              <p>评价游戏性和创新性。Walker 在本轮末选择通过、重评或驳回。</p>
+            </div>
+            <div class="mini-card">
+              <span class="tag green">第二轮 · 立项阶段</span>
+              <p>对项目进行综合评估。Walker 再次选择通过、重评或驳回。</p>
+            </div>
+          </div>
+          <table>
+            <thead><tr><th>Walker 结论</th><th>第一轮后续</th><th>第二轮后续</th></tr></thead>
+            <tbody>
+              <tr><td>通过</td><td>进入第二轮，管理员安排下一场评审会</td><td>进入立项流程</td></tr>
+              <tr><td>重评</td><td>留在本轮，获得 1 次重评机会</td><td>留在本轮，获得 1 次重评机会</td></tr>
+              <tr><td>驳回</td><td>项目立项取消</td><td>项目立项取消</td></tr>
+            </tbody>
+          </table>
+          <div class="notice amber">每一轮最多重评 1 次。第二次评审只能选择“通过”或“驳回”，不能再次选择“重评”。</div>
+        </section>
+
+        <section id="round-one">
+          <h2>3. 第一轮：游戏性 / 创新性</h2>
+          <p class="lead">第一轮基础总分为 100 分，所有会议评委参与当前轮次的全部维度。</p>
+          <table>
+            <thead><tr><th>维度</th><th>满分</th><th>评分方式</th></tr></thead>
+            <tbody>
+              <tr><td>游戏性</td><td>60</td><td>4 个子项分别打 0-10 分，先求平均分，再乘以 6。</td></tr>
+              <tr><td>创新性</td><td>40</td><td>直接选择档位，系统按所有有效选择取中位数。</td></tr>
+            </tbody>
+          </table>
+          <h3>游戏性子项</h3>
+          <div class="tag-row"><span class="tag blue">核心玩法</span><span class="tag blue">体感适配性</span><span class="tag blue">可复玩性</span><span class="tag blue">年龄适配度</span></div>
+          <div class="formula">游戏性得分 = 4 个子项平均分 × 6</div>
+          <h3>创新性档位</h3>
+          <table>
+            <thead><tr><th>档位</th><th>分值</th><th>参考含义</th></tr></thead>
+            <tbody>
+              <tr><td>L1</td><td>10</td><td>平台已有，基本为完全复制</td></tr>
+              <tr><td>L2</td><td>16</td><td>已有体感标杆</td></tr>
+              <tr><td>L3</td><td>24</td><td>类似已有标杆</td></tr>
+              <tr><td>L4</td><td>30</td><td>部分原创</td></tr>
+              <tr><td>L5</td><td>40</td><td>完全原创，全自研独创</td></tr>
+            </tbody>
+          </table>
+          <div class="formula">第一轮基础总分 = 游戏性得分 + 创新性得分</div>
+        </section>
+
+        <section id="round-two">
+          <h2>4. 第二轮：立项综合评估</h2>
+          <p class="lead">当前新建第二轮采用 V4 六维规则，基础总分为 100 分。</p>
+          <table>
+            <thead><tr><th>维度</th><th>满分</th><th>评分方式</th></tr></thead>
+            <tbody>
+              <tr><td>游戏性</td><td>25</td><td>4 个子项平均分 × 2.5</td></tr>
+              <tr><td>创新性</td><td>20</td><td>直接选择档位，系统取中位数</td></tr>
+              <tr><td>项目规划</td><td>15</td><td>4 个子项平均分 × 1.5</td></tr>
+              <tr><td>技术&美术</td><td>15</td><td>2 个子项平均分 × 1.5</td></tr>
+              <tr><td>风险预估</td><td>15</td><td>4 个子项平均分 × 1.5</td></tr>
+              <tr><td>造价与预算</td><td>10</td><td>3 个子项平均分 × 1</td></tr>
+            </tbody>
+          </table>
+          <h3>第二轮子项</h3>
+          <div class="grid">
+            <div class="mini-card"><strong>游戏性</strong><span class="muted">核心玩法、体感适配性、可复玩性、年龄适配度</span></div>
+            <div class="mini-card"><strong>项目规划</strong><span class="muted">项目里程碑、文档完善程度、风险难点分析、外包方案合理度</span></div>
+            <div class="mini-card"><strong>技术&美术</strong><span class="muted">技术方案评审、美术方案评审</span></div>
+            <div class="mini-card"><strong>风险预估</strong><span class="muted">延期风险、方向风险、资源风险、政策版权风险</span></div>
+            <div class="mini-card"><strong>造价与预算</strong><span class="muted">预算合理性、成本控制、投入产出预期</span></div>
+          </div>
+          <h3>第二轮创新性档位</h3>
+          <table>
+            <thead><tr><th>档位</th><th>分值</th><th>参考含义</th></tr></thead>
+            <tbody>
+              <tr><td>L1</td><td>8</td><td>平台已有，基本为完全复制</td></tr>
+              <tr><td>L2</td><td>10</td><td>已有体感标杆</td></tr>
+              <tr><td>L3</td><td>12</td><td>类似已有标杆</td></tr>
+              <tr><td>L4</td><td>14</td><td>部分原创</td></tr>
+              <tr><td>L5</td><td>20</td><td>完全原创，全自研独创</td></tr>
+            </tbody>
+          </table>
+          <div class="formula">第二轮基础总分 = 六个维度换算分之和</div>
+        </section>
+
+        <section id="permissions">
+          <h2>5. 评委可以填写的内容</h2>
+          <div class="grid">
+            <div class="mini-card">
+              <strong>所有评委</strong>
+              <ul>
+                <li>当前轮次的全部评分和子项。</li>
+                <li>个人项目评级：S / A / B / C。</li>
+                <li>个人结论：通过 / 重评 / 驳回。</li>
+                <li>存在问题和改进行动。</li>
+              </ul>
+            </div>
+            <div class="mini-card">
+              <strong>只有 Walker</strong>
+              <ul>
+                <li>本轮加分：额外 0-5 分及原因。</li>
+                <li>Walker 最终评审结论。</li>
+                <li>项目最终评级：S / A / B / C。</li>
+              </ul>
+            </div>
+          </div>
+          <div class="notice">普通评委的个人评级和个人结论属于盲评参考，会在后台和报告中统计，但不会替代 Walker 最终结论，也不会推动项目状态流转。</div>
+          <p>Walker 加分单独记录，不改变本轮基础分 100 分的满分口径，报告中会区分基础分和加分。</p>
+        </section>
+
+        <section id="save">
+          <h2>6. 保存与修改</h2>
+          <ol>
+            <li>数字评分可以输入 <code>0</code>，也可以先清空再输入新分数。</li>
+            <li>数字评分通常在失焦后保存；滑块和创新性档位选择会触发保存。</li>
+            <li>问题和改进行动填写后点击保存评审意见；输入过程中系统也会尝试保存。</li>
+            <li>个人评级、个人结论和 Walker 加分保存后，会显示保存中、成功或失败提示。</li>
+            <li>看到“保存成功”后再切换项目，避免网络较慢时产生误判。</li>
+            <li>截止日期前可以反复修改自己的分数和意见。</li>
+            <li>Walker 提交结论后，其他评委仍可继续完成或修改本场项目的评分。</li>
+          </ol>
+        </section>
+
+        <section id="blind">
+          <h2>7. 盲评与汇总逻辑</h2>
+          <ul>
+            <li>个人评级统计为 S/A/B/C 数量和比例。</li>
+            <li>个人结论统计为通过/重评/驳回数量和比例。</li>
+            <li>普通维度先汇总所有评委的平均分，再按维度系数换算。</li>
+            <li>创新性按所有有效档位取中位数，不是简单平均。</li>
+            <li>Walker 最终结论是项目状态流转和项目评审历史的依据。</li>
+            <li>Walker 加分不计入基础分完成度和基础满分，只作为额外分展示。</li>
+          </ul>
+        </section>
+
+        <section id="tips">
+          <h2>8. 评分建议</h2>
+          <ul>
+            <li>先完整阅读项目资料，再开始打分。</li>
+            <li>以当前轮次的评估目标为准，不要用第一轮标准替代第二轮标准。</li>
+            <li>分数较低时，在“存在问题”中写清具体原因。</li>
+            <li>改进行动尽量写清动作、目标或验收标准。</li>
+            <li>创新性请使用档位选择，不要把档位当成普通数字分数输入。</li>
+            <li>发现项目内容、评审轮次或资料明显不正确时，先联系管理员。</li>
+          </ul>
+        </section>
+
+        <section id="troubleshooting">
+          <h2>9. 异常处理</h2>
+          <table>
+            <thead><tr><th>现象</th><th>处理方式</th></tr></thead>
+            <tbody>
+              <tr><td>页面打不开</td><td>刷新页面，确认网络后重新打开正式地址。</td></tr>
+              <tr><td>登录失败</td><td>确认账号密码，仍失败时联系管理员检查账号状态。</td></tr>
+              <tr><td>保存提示失败</td><td>不要连续快速点击，等待后重试；仍失败时截图反馈项目名和操作项。</td></tr>
+              <tr><td>项目列表为空</td><td>确认管理员已将项目加入当前评审会，并确认登录账号正确。</td></tr>
+              <tr><td>评分框出现旧值</td><td>刷新页面后重新读取，不要直接提交未确认的旧值。</td></tr>
+              <tr><td>看不到最终评级</td><td>普通评委不显示最终评级属于正常权限设计；Walker 请联系管理员处理。</td></tr>
+            </tbody>
+          </table>
+          <div class="notice amber"><strong>联系管理员时请提供：</strong>评委账号、项目名称、评审会名称、轮次和次数、具体操作、页面提示或截图。</div>
+        </section>
+      </main>
+    </div>
+    <p class="footer">ScoreSys · 立项评审评分指南 · 可直接打印或保存为 PDF</p>
+  </div>
+</body>
+</html>
