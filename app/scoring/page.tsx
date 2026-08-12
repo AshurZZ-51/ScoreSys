@@ -671,7 +671,7 @@ export default function ScoringPage() {
                         </button>
                       );
                     })}
-                    <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, marginLeft: 6, paddingLeft: 12, borderLeft: '1px solid #ddd6fe', fontSize: 13, fontWeight: 800, color: '#5b21b6' }}>最终评级<select aria-label="最终评级" value={activeProject.final_rating || ''} onChange={(event) => saveWalkerRating('final', event.target.value)} style={{ padding: 9, border: '1px solid #c4b5fd', borderRadius: 8, background: '#fff' }}><option value="">待评级</option>{['S', 'A', 'B', 'C'].map((rating) => <option key={rating} value={rating}>{rating}</option>)}</select></label>
+                    {isWalker && (<label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, marginLeft: 6, paddingLeft: 12, borderLeft: '1px solid #ddd6fe', fontSize: 13, fontWeight: 800, color: '#5b21b6' }}>最终评级<select aria-label="最终评级" value={activeProject.final_rating || ''} onChange={(event) => saveWalkerRating('final', event.target.value)} style={{ padding: 9, border: '1px solid #c4b5fd', borderRadius: 8, background: '#fff' }}><option value="">待评级</option>{['S', 'A', 'B', 'C'].map((rating) => <option key={rating} value={rating}>{rating}</option>)}</select></label>)}
                   </div>
                 </section>
             </>
