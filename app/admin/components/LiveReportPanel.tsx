@@ -72,7 +72,7 @@ export default function LiveReportPanel({ meeting }: { meeting: Item }) {
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || '生成报告快照失败');
       setSnapshot(data.snapshot);
-      window.open(`/report?meetingId=${encodeURIComponent(meeting.id)}&fromAdmin=true`, '_blank', 'noopener,noreferrer');
+      window.open(`/report?meetingId=${encodeURIComponent(meeting.id)}&reportType=${encodeURIComponent(reportType)}&fromAdmin=true`, '_blank', 'noopener,noreferrer');
     } catch (reason: any) {
       setError(reason.message || '生成报告快照失败');
     } finally {
@@ -118,7 +118,7 @@ function renderBlindStats(round: Item) {
   const rating = round?.blindRatingStats;
   const verdict = round?.blindVerdictStats;
   if (!rating?.submittedCount && !verdict?.submittedCount) return <span style={styles.subtle}>暂无</span>;
-  return <div style={styles.dimensionList}><span>{rating?.submittedCount ? `评级 ${rating.counts?.S || 0}/${rating.counts?.A || 0}/${rating.counts?.B || 0}/${rating.counts?.C || 0}` : '暂无评级'}</span><span>{verdict?.submittedCount ? `结论 ${verdict.counts?.approved || 0}/${verdict.counts?.recheck || 0}/${verdict.counts?.rejected || 0}` : '暂无结论'}</span></div>;
+  return <div style={styles.dimensionList}><span>{rating?.submittedCount ? `评级 S ${rating.counts?.S || 0} (${rating.percentages?.S || 0}%) · A ${rating.counts?.A || 0} (${rating.percentages?.A || 0}%) · B ${rating.counts?.B || 0} (${rating.percentages?.B || 0}%) · C ${rating.counts?.C || 0} (${rating.percentages?.C || 0}%)` : '暂无评级'}</span><span>{verdict?.submittedCount ? `结论 通过 ${verdict.counts?.approved || 0} (${verdict.percentages?.approved || 0}%) · 重评 ${verdict.counts?.recheck || 0} (${verdict.percentages?.recheck || 0}%) · 驳回 ${verdict.counts?.rejected || 0} (${verdict.percentages?.rejected || 0}%)` : '暂无结论'}</span></div>;
 }
 
 const styles: Record<string, React.CSSProperties> = {

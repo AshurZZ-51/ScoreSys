@@ -5,14 +5,14 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import RoundOneReport from './components/RoundOneReport';
 import RoundTwoReport from './components/RoundTwoReport';
 import InitiationProjectReport from './components/InitiationProjectReport';
-import { buildMeetingReportPayload } from '@/lib/reportSnapshots';
+import { buildMeetingReportPayload, resolveReportType } from '@/lib/reportSnapshots';
 
 type Snapshot = { id: string; version: number; payload: Record<string, any>; generated_at: string };
 const reportTypes = [{ value: 'round_1', label: '第一轮评审报告' }, { value: 'round_2', label: '第二轮评审报告' }];
 
 export default function ReportClient() {
   const router = useRouter(); const params = useSearchParams(); const meetingId = params.get('meetingId'); const projectId = params.get('projectId');
-  const [summary, setSummary] = useState<any>(null); const [reportType, setReportType] = useState('round_1'); const [snapshots, setSnapshots] = useState<Snapshot[]>([]); const [snapshotId, setSnapshotId] = useState(''); const [busy, setBusy] = useState(false); const [error, setError] = useState('');
+  const [summary, setSummary] = useState<any>(null); const [reportType, setReportType] = useState(() => resolveReportType(params.get('reportType'))); const [snapshots, setSnapshots] = useState<Snapshot[]>([]); const [snapshotId, setSnapshotId] = useState(''); const [busy, setBusy] = useState(false); const [error, setError] = useState('');
   const load = async () => {
     if (!meetingId && !projectId) return;
     if (projectId) {

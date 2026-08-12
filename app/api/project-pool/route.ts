@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isProjectPoolV2Enabled, supabaseAdmin } from '@/lib/supabase';
-import { createMaterialRows, getMaterialProgress, makeMatchKey, normalizeProjectPart } from '@/lib/projectPoolWorkflow';
+import { createMaterialRows, getMaterialProgress, getMaterialStatus, makeMatchKey, normalizeProjectPart } from '@/lib/projectPoolWorkflow';
 import { countCompletedReviews, hasCompletedReview, isPendingReviewProject } from '@/lib/adminLifecycle';
 import { requireAdminSession } from '@/lib/adminSession';
 
@@ -67,7 +67,7 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   if (!isProjectPoolV2Enabled()) return unavailable();
   try {
-    const { name, submitter, description = '' } = await request.json();
+    const { name, submitter, description = '', material_statuses: materialStatuses = {} } = await request.json();
     const session = requireAdminSession(request);
     if (!session) return NextResponse.json({ error: '只有管理员可以创建项目' }, { status: 403 });
     if (!String(name || '').trim() || !String(submitter || '').trim()) return NextResponse.json({ error: '项目名称和提报人必填' }, { status: 400 });
@@ -78,12 +78,16 @@ export async function POST(request: NextRequest) {
       match_key: matchKey, status: 'materials_pending', material_status: 'incomplete'
     }).select().single();
     if (error) throw error;
-    const materials = createMaterialRows(project.id);
+    const checkedAt = new Date().toISOString();
+    const materials = createMaterialRows(project.id, materialStatuses, session.code, checkedAt);
     const { error: materialsError } = await supabaseAdmin.from('project_materials').insert(materials);
     if (materialsError) throw materialsError;
-    const { error: historyError } = await supabaseAdmin.from('project_status_history').insert({ project_id: project.id, event_type: 'project_created', to_status: 'materials_pending', operator_code: session.code, note: '创建待评审项目' });
+    const materialStatus = getMaterialStatus(materials).value;
+    const { data: savedProject, error: projectStatusError } = await supabaseAdmin.from('project_pool').update({ material_status: materialStatus, updated_at: checkedAt }).eq('id', project.id).select().single();
+    if (projectStatusError) throw projectStatusError;
+    const { error: historyError } = await supabaseAdmin.from('project_status_history').insert({ project_id: project.id, event_type: 'project_created', to_status: 'materials_pending', operator_code: session.code, note: Object.keys(materialStatuses || {}).length ? '创建项目并完成初始资料检查' : '创建待评审项目' });
     if (historyError) throw historyError;
-    return NextResponse.json({ success: true, project });
+    return NextResponse.json({ success: true, project: savedProject, materials });
   } catch (err: any) {
     return NextResponse.json({ error: `创建项目失败: ${err.message}` }, { status: 500 });
   }

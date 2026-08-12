@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { computeRoundBaseScoreFromScoreMap, getRoundDefinition, getRoundScoringDimensions, roundScoreKey, specialScoreKey } from '@/lib/scoringRules';
-import { ROUND_TITLES, VERDICT_OPTIONS, getReviewStatus } from '@/lib/reviewWorkflow';
+import { ROUND_TITLES, VERDICT_OPTIONS } from '@/lib/reviewWorkflow';
 import { createSaveFeedback } from '@/lib/saveFeedback';
 import { getMaterialProgress, getReviewableMeetingProjects, MATERIAL_ITEMS } from '@/lib/projectPoolWorkflow';
 
@@ -533,7 +533,6 @@ export default function ScoringPage() {
           {loading ? <div style={{ padding: 20, color: '#94a3b8' }}>加载中...</div> : projects.map((project) => {
             const completion = getProjectCompletion(project);
             const active = activeProject?.id === project.id;
-            const status = getReviewStatus(project.reviewStatus);
             const roundId = getActiveRound(project);
             const roundBadge = ROUND_BADGES[roundId] || ROUND_BADGES.r1;
             const attemptBadge = ATTEMPT_BADGES[Number(project.attempt_no) === 2 ? 2 : 1];
@@ -544,7 +543,6 @@ export default function ScoringPage() {
                 <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 8 }}>
                   <span style={{ fontSize: 11, fontWeight: 800, color: roundBadge.color, background: roundBadge.bg, padding: '2px 8px', borderRadius: 999 }}>{roundBadge.label}</span>
                   <span style={{ fontSize: 11, fontWeight: 800, color: attemptBadge.color, background: attemptBadge.bg, padding: '2px 8px', borderRadius: 999 }}>{attemptBadge.label}</span>
-                  <span style={{ fontSize: 11, fontWeight: 800, color: status.color, background: status.bg, padding: '2px 8px', borderRadius: 999 }}>{status.label}</span>
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   <div style={{ flex: 1, height: 5, background: '#e2e8f0', borderRadius: 3, overflow: 'hidden' }}><div style={{ width: `${completion}%`, height: '100%', background: completion === 100 ? '#10b981' : '#3b82f6' }} /></div>
@@ -565,7 +563,6 @@ export default function ScoringPage() {
                 <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
                   <span style={{ fontSize: 12, fontWeight: 800, color: (ROUND_BADGES[getActiveRound()] || ROUND_BADGES.r1).color, background: (ROUND_BADGES[getActiveRound()] || ROUND_BADGES.r1).bg, padding: '4px 10px', borderRadius: 999 }}>{(ROUND_BADGES[getActiveRound()] || ROUND_BADGES.r1).label} · {activeRoundDefinition?.title || ROUND_TITLES[getActiveRound() as keyof typeof ROUND_TITLES]}</span>
                   <span style={{ fontSize: 12, fontWeight: 800, color: (ATTEMPT_BADGES[Number(activeProject.attempt_no) === 2 ? 2 : 1]).color, background: (ATTEMPT_BADGES[Number(activeProject.attempt_no) === 2 ? 2 : 1]).bg, padding: '4px 10px', borderRadius: 999 }}>{(ATTEMPT_BADGES[Number(activeProject.attempt_no) === 2 ? 2 : 1]).label}</span>
-                  <span style={{ fontSize: 12, fontWeight: 800, color: getReviewStatus(activeProject.reviewStatus).color, background: getReviewStatus(activeProject.reviewStatus).bg, padding: '4px 10px', borderRadius: 999 }}>{getReviewStatus(activeProject.reviewStatus).label}</span>
                   {activeProject.pool_project_id && <span style={{ fontSize: 12, fontWeight: 800, color: activeProject.materialProgress?.complete ? '#047857' : '#b45309', background: activeProject.materialProgress?.complete ? '#ecfdf5' : '#fffbeb', padding: '4px 10px', borderRadius: 999 }}>{activeProject.materialProgress?.complete ? '资料齐全' : `待补充 ${activeProject.materialProgress?.approved || 0}/${activeProject.materialProgress?.total || 7}`}</span>}
                 </div>
               </div>
@@ -642,15 +639,6 @@ export default function ScoringPage() {
               </section>
 
               {isWalker && (
-                <section style={{ background: '#f5f3ff', border: '1.5px solid #8b5cf6', borderRadius: 12, padding: 20, marginBottom: 24 }}>
-                  <div style={{ fontSize: 16, fontWeight: 800, color: '#5b21b6', marginBottom: 12 }}>项目评级</div>
-                  <div style={{ display: 'grid', gap: 10, maxWidth: 360 }}>
-                    {(['preliminary', 'final'] as const).map((ratingType) => <label key={ratingType} style={{ display: 'grid', gridTemplateColumns: '90px 1fr', gap: 10, alignItems: 'center', fontSize: 13, fontWeight: 700 }}>{ratingType === 'final' ? '最终评级' : '初步评级'}<select value={activeProject[`${ratingType}_rating`] || ''} onChange={(event) => saveWalkerRating(ratingType, event.target.value)} style={{ padding: 9, border: '1px solid #c4b5fd', borderRadius: 8, background: '#fff' }}><option value="">待评级</option>{['S', 'A', 'B', 'C'].map((rating) => <option key={rating} value={rating}>{rating}</option>)}</select></label>)}
-                  </div>
-                </section>
-              )}
-
-              {isWalker && (
                 <section style={{ background: '#fffbeb', border: '1.5px solid #f59e0b', borderRadius: 12, padding: 20, marginBottom: 24 }}>
                   <div style={{ fontSize: 16, fontWeight: 800, color: '#92400e', marginBottom: 12 }}>Walker 本轮加分项</div>
                   <textarea value={bonusReason[roundFieldKey(activeProject.id, getActiveRound())] || ''} onChange={(event) => setBonusReason((prev) => ({ ...prev, [roundFieldKey(activeProject.id, getActiveRound())]: event.target.value }))} placeholder="填写本轮加分原因" rows={2} style={{ width: '100%', boxSizing: 'border-box', padding: 10, border: '1px solid #fbbf24', borderRadius: 8, marginBottom: 10 }} />
@@ -673,7 +661,7 @@ export default function ScoringPage() {
               <section style={{ background: 'white', borderRadius: 12, padding: 20, border: isWalker ? '1.5px solid #8b5cf6' : '1px solid #e2e8f0', marginTop: 24 }}>
                   <div style={{ fontSize: 16, fontWeight: 800, color: isWalker ? '#5b21b6' : '#334155', marginBottom: 6 }}>{isWalker ? 'Walker 最终评审结论' : '本轮个人评审结论（盲评参考）'}</div>
                   {!isWalker && <div style={{ fontSize: 12, color: '#64748b', marginBottom: 12 }}>所有评委均可填写，Walker 的结论才会推动项目状态流转。</div>}
-                  <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                  <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
                     {VERDICT_OPTIONS.filter((option) => !(activeProject.attempt_no === 2 && option.value === 'recheck')).map((option) => {
                       const selected = projectVerdicts[roundFieldKey(activeProject.id, getActiveRound())] === option.value;
                       return (
@@ -682,6 +670,7 @@ export default function ScoringPage() {
                         </button>
                       );
                     })}
+                    <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, marginLeft: 6, paddingLeft: 12, borderLeft: '1px solid #ddd6fe', fontSize: 13, fontWeight: 800, color: '#5b21b6' }}>最终评级<select aria-label="最终评级" value={activeProject.final_rating || ''} onChange={(event) => saveWalkerRating('final', event.target.value)} style={{ padding: 9, border: '1px solid #c4b5fd', borderRadius: 8, background: '#fff' }}><option value="">待评级</option>{['S', 'A', 'B', 'C'].map((rating) => <option key={rating} value={rating}>{rating}</option>)}</select></label>
                   </div>
                 </section>
             </>
