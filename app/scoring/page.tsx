@@ -1,0 +1,699 @@
+'use client';
+
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { useRouter } from 'next/navigation';
+import { computeRoundBaseScoreFromScoreMap, getRoundDefinition, getRoundScoringDimensions, roundScoreKey, specialScoreKey } from '@/lib/scoringRules';
+import { ROUND_TITLES, VERDICT_OPTIONS } from '@/lib/reviewWorkflow';
+import { createSaveFeedback } from '@/lib/saveFeedback';
+import { getMaterialProgress, getReviewableMeetingProjects, MATERIAL_ITEMS } from '@/lib/projectPoolWorkflow';
+import { canEditFinalRating } from '@/lib/projectDetailWorkflow';
+
+interface Reviewer {
+  code: string;
+  name: string;
+  role: string;
+  is_admin: boolean;
+  dimensions: { dim_name: string; max_score: number }[];
+}
+
+interface Project {
+  id: string;
+  seq_no: number;
+  name: string;
+  submitter: string;
+  description?: string;
+  round_no?: number;
+  attempt_no?: number;
+  scoring_version?: string;
+  currentRound?: string;
+  reviewStatus?: string;
+  materialStatus?: string;
+  pool_project_id?: string;
+  materialProgress?: { approved: number; total: number; complete: boolean };
+  materialItems?: { item_key: string; status: string }[];
+  preliminary_rating?: string;
+  final_rating?: string;
+  roundSummaries?: Record<string, any>;
+}
+
+interface Meeting {
+  id: string;
+  name: string;
+  meeting_date: string;
+  deadline: string | null;
+  status: string;
+  is_current?: boolean;
+}
+
+interface Score {
+  project_id: string;
+  dim_name: string;
+  score: number;
+  comment?: string;
+}
+
+type FeedbackTone = 'saving' | 'success' | 'error';
+
+const materialStatusLabels: Record<string, string> = { missing: '缺失', needs_completion: '待完善', submitted: '已提交', exempt: '豁免' };
+const materialStatusColors: Record<string, string> = { missing: '#b42318', needs_completion: '#b45309', submitted: '#047857', exempt: '#475569' };
+const ROUND_BADGES: Record<string, { label: string; color: string; bg: string }> = { r1: { label: '创意阶段', color: '#2563eb', bg: '#dbeafe' }, r2: { label: '立项阶段', color: '#15803d', bg: '#dcfce7' } };
+const ATTEMPT_BADGES: Record<number, { label: string; color: string; bg: string }> = { 1: { label: '第一次', color: '#a16207', bg: '#fef3c7' }, 2: { label: '第二次', color: '#b91c1c', bg: '#fee2e2' } };
+
+function scoreRequestHeaders() {
+  const token = typeof window === 'undefined' ? '' : sessionStorage.getItem('scoresys_session_token') || '';
+  return { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) };
+}
+
+interface SaveFeedback {
+  tone: FeedbackTone;
+  text: string;
+}
+
+export default function ScoringPage() {
+  const router = useRouter();
+  const [reviewer, setReviewer] = useState<Reviewer | null>(null);
+  const [meetings, setMeetings] = useState<Meeting[]>([]);
+  const [activeMeeting, setActiveMeeting] = useState<Meeting | null>(null);
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [activeProject, setActiveProject] = useState<Project | null>(null);
+  const [scores, setScores] = useState<Record<string, Record<string, number>>>({});
+  const [scoreDrafts, setScoreDrafts] = useState<Record<string, Record<string, string>>>({});
+  const [projectProblems, setProjectProblems] = useState<Record<string, string>>({});
+  const [projectActions, setProjectActions] = useState<Record<string, string>>({});
+  const [projectVerdicts, setProjectVerdicts] = useState<Record<string, string | null>>({});
+  const [personalRatings, setPersonalRatings] = useState<Record<string, string>>({});
+  const [bonusReason, setBonusReason] = useState<Record<string, string>>({});
+  const [bonusValue, setBonusValue] = useState<Record<string, string>>({});
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [saveFeedback, setSaveFeedback] = useState<SaveFeedback | null>(null);
+  const saveTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  const saveVersions = useRef<Record<string, number>>({});
+  const feedbackTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const isWalker = canEditFinalRating(reviewer?.code);
+  const getActiveRound = (project = activeProject) => project?.round_no ? `r${project.round_no}` : project?.currentRound || 'r1';
+  const getScoringVersion = (project = activeProject) => ['two_round_v2', 'two_round_v3', 'two_round_v4'].includes(project?.scoring_version || '')
+    ? project?.scoring_version as 'two_round_v2' | 'two_round_v3' | 'two_round_v4'
+    : 'two_round_v2';
+  const roundFieldKey = (projectId: string, roundId: string) => `${projectId}:${roundId}`;
+  const reviewerRules = useMemo(() => {
+    const roundId = getActiveRound();
+    return getRoundScoringDimensions(roundId, getScoringVersion());
+  }, [activeProject?.currentRound, activeProject?.round_no, activeProject?.scoring_version]);
+
+  useEffect(() => {
+    const stored = localStorage.getItem('reviewer');
+    if (!stored) {
+      router.push('/');
+      return;
+    }
+    const r = JSON.parse(stored);
+    if (r.is_admin) {
+      router.push('/admin');
+      return;
+    }
+    setReviewer(r);
+    loadMeetings();
+  }, []);
+
+  const loadMeetings = async () => {
+    const res = await fetch('/api/meetings', { cache: 'no-store' });
+    const data = await res.json();
+    const all = data.meetings || [];
+    setMeetings(all);
+    if (all.length > 0) {
+      const current = all.find((m: Meeting) => m.is_current) || all[0];
+      setActiveMeeting(current);
+      await loadProjects(current.id);
+    }
+  };
+
+  const loadProjects = async (meetingId: string) => {
+    setLoading(true);
+    try {
+      const res = await fetch(`/api/summary?meetingId=${meetingId}`, { cache: 'no-store' });
+      const data = await res.json();
+      const nextProjects = getReviewableMeetingProjects(data.projects || []) as Project[];
+      const projectsWithMaterialProgress = await Promise.all(nextProjects.map(async (project: Project) => {
+        if (!project.pool_project_id) return project;
+        try {
+          const [materialResponse, historyResponse] = await Promise.all([
+            fetch(`/api/project-pool/${project.pool_project_id}/materials`, { cache: 'no-store' }),
+            fetch(`/api/project-pool/${project.pool_project_id}/history`, { cache: 'no-store' })
+          ]);
+          const materialData = await materialResponse.json();
+          const historyData = await historyResponse.json();
+          return materialResponse.ok ? { ...project, materialProgress: getMaterialProgress(materialData.materials || []), materialItems: materialData.materials || [], preliminary_rating: historyData.project?.preliminary_rating || '', final_rating: historyData.project?.final_rating || '' } : project;
+        } catch {
+          return project;
+        }
+      }));
+      setProjects(projectsWithMaterialProgress);
+      setActiveProject(projectsWithMaterialProgress[0] || null);
+      await loadScores(meetingId);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const loadScores = async (meetingId: string) => {
+    const stored = localStorage.getItem('reviewer');
+    if (!stored) return;
+    const r = JSON.parse(stored);
+    const [res, ratingRes] = await Promise.all([
+      fetch(`/api/scores?meetingId=${meetingId}&reviewerCode=${r.code}`, { cache: 'no-store' }),
+      fetch(`/api/project-ratings?meetingId=${meetingId}`, { headers: scoreRequestHeaders(), cache: 'no-store' })
+    ]);
+    const data = await res.json();
+    const ratingData = ratingRes.ok ? await ratingRes.json() : { ratings: [] };
+    const scoreMap: Record<string, Record<string, number>> = {};
+    const scoreDraftMap: Record<string, Record<string, string>> = {};
+    const probMap: Record<string, string> = {};
+    const actMap: Record<string, string> = {};
+    const verdictMap: Record<string, string | null> = {};
+    const bonusReasonMap: Record<string, string> = {};
+    const bonusValueMap: Record<string, string> = {};
+    const personalRatingMap: Record<string, string> = {};
+
+    (data.scores || []).forEach((s: Score) => {
+      const parts = String(s.dim_name).split('::');
+      const roundId = parts[0] === 'r1' || parts[0] === 'r2' ? parts[0] : 'legacy';
+      const baseDimName = roundId === 'legacy' ? s.dim_name : parts.slice(1).join('::');
+      const scopedKey = roundFieldKey(s.project_id, roundId);
+      if (baseDimName === '__bonus__') {
+        bonusValueMap[scopedKey] = String(Number(s.score));
+        bonusReasonMap[scopedKey] = s.comment || '';
+      } else if (baseDimName === '__problems__') {
+        probMap[scopedKey] = s.comment || '';
+      } else if (baseDimName === '__actions__') {
+        actMap[scopedKey] = s.comment || '';
+      } else if (baseDimName === '__verdict__') {
+        verdictMap[scopedKey] = s.comment || null;
+      } else {
+        if (!scoreMap[s.project_id]) scoreMap[s.project_id] = {};
+        if (!scoreDraftMap[s.project_id]) scoreDraftMap[s.project_id] = {};
+        scoreMap[s.project_id][s.dim_name] = Number(s.score);
+        scoreDraftMap[s.project_id][s.dim_name] = String(Number(s.score));
+      }
+    });
+
+    setScores(scoreMap);
+    setScoreDrafts(scoreDraftMap);
+    setProjectProblems(probMap);
+    setProjectActions(actMap);
+    setProjectVerdicts(verdictMap);
+    setBonusReason(bonusReasonMap);
+    setBonusValue(bonusValueMap);
+    (ratingData.ratings || []).forEach((rating: any) => {
+      personalRatingMap[roundFieldKey(rating.project_id, `r${rating.round_no}`)] = rating.rating;
+    });
+    setPersonalRatings(personalRatingMap);
+  };
+
+  const showFeedback = (feedback: SaveFeedback, duration = 2200) => {
+    if (feedbackTimer.current) clearTimeout(feedbackTimer.current);
+    setSaveFeedback(feedback);
+    if (duration > 0) {
+      feedbackTimer.current = setTimeout(() => setSaveFeedback(null), duration);
+    }
+  };
+
+  const showSaveFeedback = (state: FeedbackTone, action: string, errorMessage = '') => {
+    showFeedback(createSaveFeedback(state, action, errorMessage), state === 'saving' ? 0 : 2400);
+  };
+
+  const showMessage = (text: string) => {
+    showFeedback({ tone: 'error', text }, 3000);
+  };
+
+  const getSaveAction = (dimName: string) => {
+    const baseDimName = String(dimName).replace(/^r[12]::/, '');
+    if (baseDimName === '__bonus__') return '加分';
+    if (baseDimName === '__problems__' || baseDimName === '__actions__') return '评审意见';
+    if (baseDimName === '__verdict__') return '评审结论';
+    return '评分';
+  };
+
+  const legacyHandleScoreChange = async (dimName: string, value: number, comment?: string | null) => {
+    if (!activeMeeting || !activeProject || !reviewer || Number.isNaN(value)) return;
+    setSaving(true);
+    showSaveFeedback('saving', '评分');
+    try {
+      const res = await fetch('/api/scores', {
+        method: 'POST',
+        headers: scoreRequestHeaders(),
+        body: JSON.stringify({
+          meeting_id: activeMeeting.id,
+          project_id: activeProject.id,
+          reviewer_code: reviewer.code,
+          dim_name: dimName,
+          score: value,
+          comment: comment || null
+        })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        showSaveFeedback('error', '评分', data.error || '请稍后重试');
+      } else {
+        setScores((prev) => ({
+          ...prev,
+          [activeProject.id]: { ...prev[activeProject.id], [dimName]: value }
+        }));
+        showSaveFeedback('success', '评分');
+      }
+    } catch (err: any) {
+      showSaveFeedback('error', '评分', err.message || '请稍后重试');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const persistScore = async (projectId: string, dimName: string, value: number, comment?: string | null) => {
+    if (!activeMeeting || !reviewer || Number.isNaN(value)) return;
+    const saveKey = `${projectId}:${dimName}`;
+    const version = (saveVersions.current[saveKey] || 0) + 1;
+    saveVersions.current[saveKey] = version;
+    setSaving(true);
+    const action = getSaveAction(dimName);
+    showSaveFeedback('saving', action);
+    try {
+      const res = await fetch('/api/scores', {
+        method: 'POST',
+        headers: scoreRequestHeaders(),
+        body: JSON.stringify({
+          meeting_id: activeMeeting.id,
+          project_id: projectId,
+          reviewer_code: reviewer.code,
+          dim_name: dimName,
+          score: value,
+          comment: comment || null
+        })
+      });
+      const data = await res.json();
+      if (saveVersions.current[saveKey] !== version) return;
+      if (!res.ok) showSaveFeedback('error', action, data.error || '请稍后重试');
+      else showSaveFeedback('success', action);
+    } catch (err: any) {
+      if (saveVersions.current[saveKey] === version) showSaveFeedback('error', action, err.message || '请稍后重试');
+    } finally {
+      if (saveVersions.current[saveKey] === version) setSaving(false);
+    }
+  };
+
+  const schedulePersistScore = (projectId: string, dimName: string, value: number, comment?: string | null, delay = 450) => {
+    const saveKey = `${projectId}:${dimName}`;
+    if (saveTimers.current[saveKey]) clearTimeout(saveTimers.current[saveKey]);
+    saveTimers.current[saveKey] = setTimeout(() => {
+      persistScore(projectId, dimName, value, comment);
+    }, delay);
+  };
+
+  const setLocalScore = (projectId: string, dimName: string, value: number) => {
+    setScores((prev) => ({
+      ...prev,
+      [projectId]: { ...prev[projectId], [dimName]: value }
+    }));
+    setScoreDrafts((prev) => ({
+      ...prev,
+      [projectId]: { ...prev[projectId], [dimName]: String(value) }
+    }));
+  };
+
+  const handleScoreChange = (dimName: string, value: number, comment?: string | null, immediate = false) => {
+    if (!activeProject || Number.isNaN(value)) return;
+    setLocalScore(activeProject.id, dimName, value);
+    schedulePersistScore(activeProject.id, dimName, value, comment, immediate ? 0 : 450);
+  };
+
+  const handleNumericDraftChange = (dimName: string, raw: string) => {
+    if (!activeProject) return;
+    const projectId = activeProject.id;
+    setScoreDrafts((prev) => ({
+      ...prev,
+      [projectId]: { ...prev[projectId], [dimName]: raw }
+    }));
+    if (raw === '') return;
+    const value = Math.max(0, Math.min(10, Number(raw)));
+    if (Number.isNaN(value)) return;
+    setScores((prev) => ({
+      ...prev,
+      [projectId]: { ...prev[projectId], [dimName]: value }
+    }));
+    schedulePersistScore(projectId, dimName, value);
+  };
+
+  const commitNumericDraft = (dimName: string) => {
+    if (!activeProject) return;
+    const projectId = activeProject.id;
+    const raw = scoreDrafts[projectId]?.[dimName] ?? '';
+    const value = raw === '' ? 0 : Math.max(0, Math.min(10, Number(raw)));
+    if (Number.isNaN(value)) return;
+    setLocalScore(projectId, dimName, value);
+    schedulePersistScore(projectId, dimName, value, null, 0);
+  };
+
+  const legacyHandleBonusSave = async () => {
+    if (!activeProject) return;
+    const reason = (bonusReason[activeProject.id] || '').trim();
+    const value = Number(bonusValue[activeProject.id]);
+    if (!value || value < 1 || value > 5) {
+      showMessage('加分值必须在 1-5 之间');
+      return;
+    }
+    if (!reason) {
+      showMessage('请填写加分原因');
+      return;
+    }
+    await handleScoreChange('__bonus__', value, reason);
+  };
+
+  const handleBonusSave = async () => {
+    if (!activeProject) return;
+    const roundId = getActiveRound();
+    const scopedKey = roundFieldKey(activeProject.id, roundId);
+    const reason = (bonusReason[scopedKey] || '').trim();
+    const rawValue = bonusValue[scopedKey] ?? '';
+    const value = rawValue === '' ? 0 : Math.max(0, Math.min(5, Number(rawValue)));
+    if (Number.isNaN(value)) {
+      showMessage('加分值必须是 0-5');
+      return;
+    }
+    if (value > 0 && !reason) {
+      showMessage('请填写加分原因');
+      return;
+    }
+    setBonusValue((prev) => ({ ...prev, [scopedKey]: String(value) }));
+    await persistScore(activeProject.id, specialScoreKey(roundId, '__bonus__'), value, reason);
+  };
+
+  const handleProblemsActionsSave = async () => {
+    if (!activeMeeting || !activeProject || !reviewer) return;
+    const roundId = getActiveRound();
+    const scopedKey = roundFieldKey(activeProject.id, roundId);
+    const problemsText = (projectProblems[scopedKey] || '').trim();
+    const actionsText = (projectActions[scopedKey] || '').trim();
+    const payloadBase = {
+      meeting_id: activeMeeting.id,
+      project_id: activeProject.id,
+      reviewer_code: reviewer.code,
+      score: 0
+    };
+
+    setSaving(true);
+    showSaveFeedback('saving', '评审意见');
+    try {
+      const [problemsRes, actionsRes] = await Promise.all([
+        fetch('/api/scores', {
+          method: 'POST',
+          headers: scoreRequestHeaders(),
+          body: JSON.stringify({ ...payloadBase, dim_name: specialScoreKey(roundId, '__problems__'), comment: problemsText || null })
+        }),
+        fetch('/api/scores', {
+          method: 'POST',
+          headers: scoreRequestHeaders(),
+          body: JSON.stringify({ ...payloadBase, dim_name: specialScoreKey(roundId, '__actions__'), comment: actionsText || null })
+        })
+      ]);
+      if (problemsRes.ok && actionsRes.ok) {
+        showSaveFeedback('success', '评审意见');
+      } else {
+        const failedRes = problemsRes.ok ? actionsRes : problemsRes;
+        const failedData = await failedRes.json().catch(() => ({}));
+        showSaveFeedback('error', '评审意见', failedData.error || '请稍后重试');
+      }
+    } catch (err: any) {
+      showSaveFeedback('error', '评审意见', err.message || '请稍后重试');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const saveWalkerRating = async (ratingType: 'preliminary' | 'final', rating: string) => {
+    if (ratingType !== 'final' || !canEditFinalRating(reviewer?.code) || !activeProject?.pool_project_id || !['S', 'A', 'B', 'C'].includes(rating)) return;
+    try {
+      const response = await fetch(`/api/project-pool/${activeProject.pool_project_id}/rating`, { method: 'POST', headers: scoreRequestHeaders(), body: JSON.stringify({ rating_type: ratingType, rating }) });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || '评级保存失败');
+      setProjects((current) => current.map((project) => project.id === activeProject.id ? { ...project, [`${ratingType}_rating`]: rating } : project));
+      setActiveProject((current) => current ? { ...current, [`${ratingType}_rating`]: rating } : current);
+      showSaveFeedback('success', ratingType === 'final' ? '最终评级' : '初步评级');
+    } catch (error: any) { showSaveFeedback('error', '项目评级', error.message || '请稍后重试'); }
+  };
+
+  const savePersonalRating = async (rating: string) => {
+    if (!activeMeeting || !activeProject || !reviewer || !['S', 'A', 'B', 'C'].includes(rating)) return;
+    const roundId = getActiveRound();
+    const key = roundFieldKey(activeProject.id, roundId);
+    setPersonalRatings((current) => ({ ...current, [key]: rating }));
+    showSaveFeedback('saving', '个人评级');
+    try {
+      const response = await fetch('/api/project-ratings', {
+        method: 'POST',
+        headers: scoreRequestHeaders(),
+        body: JSON.stringify({ meeting_id: activeMeeting.id, project_id: activeProject.id, rating })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || '个人评级保存失败');
+      showSaveFeedback('success', '个人评级');
+    } catch (error: any) {
+      showSaveFeedback('error', '个人评级', error.message || '请稍后重试');
+    }
+  };
+
+  const persistTextField = (projectId: string, dimName: '__problems__' | '__actions__', comment: string, delay = 650) => {
+    const roundId = getActiveRound();
+    schedulePersistScore(projectId, specialScoreKey(roundId, dimName), 0, comment.trim() || null, delay);
+  };
+
+  const handleVerdictChange = (value: string) => {
+    if (!activeProject) return;
+    const roundId = getActiveRound();
+    const scopedKey = roundFieldKey(activeProject.id, roundId);
+    const next = projectVerdicts[scopedKey] === value ? null : value;
+    setProjectVerdicts((prev) => ({ ...prev, [scopedKey]: next }));
+    schedulePersistScore(activeProject.id, specialScoreKey(roundId, '__verdict__'), 0, next, 0);
+  };
+
+  const getExpectedCount = () => reviewerRules.reduce((sum: number, rule: any) => {
+    return sum + (rule.type === 'level' ? 1 : rule.items.length);
+  }, 0);
+
+  const getProjectCompletion = (project: Project) => {
+    const roundId = getActiveRound(project);
+    const rules = getRoundScoringDimensions(roundId, getScoringVersion(project));
+    const projectId = project.id;
+    const current = scores[projectId] || {};
+    const expected = rules.reduce((sum: number, rule: any) => sum + (rule.type === 'level' ? 1 : rule.items.length), 0);
+    if (!expected) return 0;
+    const filled = rules.reduce((sum: number, rule: any) => {
+      if (rule.type === 'level') return sum + (current[roundScoreKey(roundId, rule.name, 'level')] !== undefined ? 1 : 0);
+      return sum + rule.items.filter((item: any) => current[roundScoreKey(roundId, rule.name, item.key)] !== undefined).length;
+    }, 0);
+    return Math.round((filled / expected) * 100);
+  };
+
+  const getLocalWeightedBaseScore = (project: Project) => computeRoundBaseScoreFromScoreMap(getActiveRound(project), scores[project.id] || {}, getScoringVersion(project));
+  const activeRoundDefinition = getRoundDefinition(getActiveRound(), getScoringVersion());
+  const isV4RoundTwo = getActiveRound() === 'r2' && getScoringVersion() === 'two_round_v4';
+
+  if (!reviewer) return <div style={{ padding: 40 }}>加载中...</div>;
+
+  return (
+    <div style={{ minHeight: '100vh', background: '#f8fafc', fontFamily: '-apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif' }}>
+      <div style={{ background: 'white', borderBottom: '1px solid #e2e8f0', padding: '14px 32px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div>
+          <div style={{ fontSize: 16, fontWeight: 700, color: '#0f172a' }}>{reviewer.name} <span style={{ color: '#64748b', fontWeight: 500, fontSize: 13 }}>· {reviewer.role}</span></div>
+          <select
+            value={activeMeeting?.id || ''}
+            onChange={(event) => {
+              const meeting = meetings.find((m) => m.id === event.target.value);
+              if (!meeting) return;
+              setActiveMeeting(meeting);
+              setScores({});
+              setScoreDrafts({});
+              setProjectProblems({});
+              setProjectActions({});
+              setProjectVerdicts({});
+              setBonusReason({});
+              setBonusValue({});
+              setPersonalRatings({});
+              loadProjects(meeting.id);
+            }}
+            style={{ marginTop: 6, padding: '4px 8px', border: '1px solid #e2e8f0', borderRadius: 6, background: 'white' }}
+          >
+            {meetings.map((meeting) => <option key={meeting.id} value={meeting.id}>{meeting.is_current ? '当前 · ' : ''}{meeting.name}</option>)}
+          </select>
+        </div>
+        <button onClick={() => { localStorage.removeItem('reviewer'); router.push('/'); }} style={{ padding: '8px 16px', border: 'none', borderRadius: 8, background: '#f1f5f9', color: '#475569', cursor: 'pointer' }}>退出登录</button>
+      </div>
+
+      <div style={{ display: 'flex', maxWidth: 1420, margin: '0 auto' }}>
+        <aside style={{ width: 320, background: 'white', borderRight: '1px solid #e2e8f0', minHeight: 'calc(100vh - 65px)' }}>
+          <div style={{ padding: '16px 20px', borderBottom: '1px solid #e2e8f0', fontSize: 13, fontWeight: 700, color: '#64748b' }}>项目列表 ({projects.length})</div>
+          {loading ? <div style={{ padding: 20, color: '#94a3b8' }}>加载中...</div> : projects.map((project) => {
+            const completion = getProjectCompletion(project);
+            const active = activeProject?.id === project.id;
+            const roundId = getActiveRound(project);
+            const roundBadge = ROUND_BADGES[roundId] || ROUND_BADGES.r1;
+            const attemptBadge = ATTEMPT_BADGES[Number(project.attempt_no) === 2 ? 2 : 1];
+            return (
+              <button key={project.id} onClick={() => setActiveProject(project)} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '14px 20px', border: 'none', borderBottom: '1px solid #f1f5f9', cursor: 'pointer', background: active ? '#eff6ff' : 'white', borderLeft: active ? '3px solid #3b82f6' : '3px solid transparent' }}>
+                <div style={{ fontSize: 14, fontWeight: 700, color: active ? '#1e40af' : '#0f172a', marginBottom: 4 }}>{project.seq_no}. {project.name}</div>
+                <div style={{ fontSize: 12, color: '#64748b', marginBottom: 8 }}>提报人：{project.submitter}</div>
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 8 }}>
+                  <span style={{ fontSize: 11, fontWeight: 800, color: roundBadge.color, background: roundBadge.bg, padding: '2px 8px', borderRadius: 999 }}>{roundBadge.label}</span>
+                  <span style={{ fontSize: 11, fontWeight: 800, color: attemptBadge.color, background: attemptBadge.bg, padding: '2px 8px', borderRadius: 999 }}>{attemptBadge.label}</span>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <div style={{ flex: 1, height: 5, background: '#e2e8f0', borderRadius: 3, overflow: 'hidden' }}><div style={{ width: `${completion}%`, height: '100%', background: completion === 100 ? '#10b981' : '#3b82f6' }} /></div>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: completion === 100 ? '#10b981' : '#64748b' }}>{completion}%</span>
+                </div>
+                {completion === 100 && <div style={{ marginTop: 6, fontSize: 12, color: '#64748b' }}>已填本轮基础分：{getLocalWeightedBaseScore(project).toFixed(1)}/100（不含加分）</div>}
+              </button>
+            );
+          })}
+        </aside>
+
+        <main style={{ flex: 1, padding: '32px 40px' }}>
+          {!activeProject ? <div style={{ textAlign: 'center', color: '#94a3b8', marginTop: 100 }}>请选择左侧项目开始打分</div> : (
+            <>
+              <div style={{ marginBottom: 22 }}>
+                <h1 style={{ margin: '0 0 8px', fontSize: 28, color: '#0f172a' }}>{activeProject.seq_no}. {activeProject.name}</h1>
+                <div style={{ fontSize: 14, color: '#64748b' }}>提报人：{activeProject.submitter}</div>
+                <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
+                  <span style={{ fontSize: 12, fontWeight: 800, color: (ROUND_BADGES[getActiveRound()] || ROUND_BADGES.r1).color, background: (ROUND_BADGES[getActiveRound()] || ROUND_BADGES.r1).bg, padding: '4px 10px', borderRadius: 999 }}>{(ROUND_BADGES[getActiveRound()] || ROUND_BADGES.r1).label} · {activeRoundDefinition?.title || ROUND_TITLES[getActiveRound() as keyof typeof ROUND_TITLES]}</span>
+                  <span style={{ fontSize: 12, fontWeight: 800, color: (ATTEMPT_BADGES[Number(activeProject.attempt_no) === 2 ? 2 : 1]).color, background: (ATTEMPT_BADGES[Number(activeProject.attempt_no) === 2 ? 2 : 1]).bg, padding: '4px 10px', borderRadius: 999 }}>{(ATTEMPT_BADGES[Number(activeProject.attempt_no) === 2 ? 2 : 1]).label}</span>
+                  {activeProject.pool_project_id && <span style={{ fontSize: 12, fontWeight: 800, color: activeProject.materialProgress?.complete ? '#047857' : '#b45309', background: activeProject.materialProgress?.complete ? '#ecfdf5' : '#fffbeb', padding: '4px 10px', borderRadius: 999 }}>{activeProject.materialProgress?.complete ? '资料齐全' : `待补充 ${activeProject.materialProgress?.approved || 0}/${activeProject.materialProgress?.total || 7}`}</span>}
+                </div>
+              </div>
+
+              <div style={{ background: '#eef2ff', border: '1px solid #c7d2fe', color: '#3730a3', padding: '12px 16px', borderRadius: 10, fontSize: 13, lineHeight: 1.7, marginBottom: 20 }}>
+                {isV4RoundTwo
+                  ? '评分方法：第二轮六个维度独立汇总为 100 分。游戏性 25 分、创新性 20 分、项目规划 15 分、技术&美术 15 分、风险预估 15 分、造价与预算 10 分；打分型子项均为 0-10 分，创新性按 8/10/12/14/20 档位取全体评委中位数。'
+                  : '评分方法：当前轮次独立 100 分；打分型子项均为 0-10 分，所有评委取平均后计入大维度；创新性按当前轮次的档位取全体评委中位数。'}
+              </div>
+
+              {activeMeeting?.deadline && <div style={{ background: '#fef3c7', border: '1px solid #fde68a', color: '#92400e', padding: '10px 16px', borderRadius: 8, fontSize: 13, marginBottom: 20 }}>打分截止日期：{activeMeeting.deadline}</div>}
+
+                {activeProject.pool_project_id && <section style={{ background: '#fff', border: '1px solid #d9e1ec', borderRadius: 8, padding: 14, marginBottom: 20 }}><div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 10 }}><strong style={{ fontSize: 14 }}>项目资料检查</strong><span style={{ fontSize: 12, color: activeProject.materialProgress?.complete ? '#047857' : '#b45309' }}>{activeProject.materialProgress?.complete ? '资料齐全' : `待补充 ${activeProject.materialProgress?.approved || 0}/${activeProject.materialProgress?.total || 7}`}</span></div><div style={{ overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}><thead><tr><th style={{ textAlign: 'left', padding: '7px 6px', color: '#64748b' }}>资料项</th><th style={{ textAlign: 'left', padding: '7px 6px', color: '#64748b' }}>要求</th><th style={{ textAlign: 'left', padding: '7px 6px', color: '#64748b' }}>状态</th></tr></thead><tbody>{MATERIAL_ITEMS.map((item: any) => { const status = activeProject.materialItems?.find((material) => material.item_key === item.item_key)?.status || 'missing'; return <tr key={item.item_key}><td style={{ padding: '7px 6px', borderTop: '1px solid #edf2f7' }}>{item.label}</td><td style={{ padding: '7px 6px', borderTop: '1px solid #edf2f7', color: item.required ? '#b45309' : '#64748b' }}>{item.required ? '必填' : '选填'}</td><td style={{ padding: '7px 6px', borderTop: '1px solid #edf2f7', color: materialStatusColors[status] || '#475569', fontWeight: 700 }}>{materialStatusLabels[status] || status}</td></tr>; })}</tbody></table></div></section>}
+
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: 16, marginBottom: 24 }}>
+                {reviewerRules.map((rule: any) => {
+                  const ruleScores = scores[activeProject.id] || {};
+                  return (
+                    <section key={rule.name} style={{ background: 'white', borderRadius: 12, padding: 20, border: '1px solid #e2e8f0' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+                        <div>
+                          <div style={{ fontSize: 16, fontWeight: 800, color: '#0f172a' }}>{rule.name}</div>
+                          <div style={{ fontSize: 12, color: '#64748b', marginTop: 2 }}>{rule.type === 'level' ? '档位型，汇总取中位档' : `子项均分 × ${rule.multiplier}`}</div>
+                        </div>
+                        <div style={{ background: '#eff6ff', color: '#1e40af', padding: '4px 10px', borderRadius: 999, fontSize: 12, fontWeight: 700 }}>满分 {rule.maxScore}</div>
+                      </div>
+
+                      {rule.type === 'level' ? (
+                        <div style={{ display: 'grid', gap: 8 }}>
+                          {rule.levels.map((level: number) => {
+                            const key = roundScoreKey(getActiveRound(), rule.name, 'level');
+                            const selected = ruleScores[key] === level;
+                            return (
+                              <button key={level} onClick={() => handleScoreChange(key, level)} disabled={saving} style={{ padding: '10px 12px', textAlign: 'left', borderRadius: 9, border: selected ? '2px solid #8b5cf6' : '1px solid #e2e8f0', background: selected ? '#f5f3ff' : 'white', color: selected ? '#6d28d9' : '#334155', cursor: 'pointer', fontWeight: selected ? 800 : 600 }}>
+                                <span style={{ display: 'inline-block', minWidth: 42 }}>{level}分</span>{rule.levelLabels[level]}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      ) : (
+                        <div style={{ display: 'grid', gap: 14 }}>
+                          {rule.items.map((item: any) => {
+                            const key = roundScoreKey(getActiveRound(), rule.name, item.key);
+                            const current = ruleScores[key];
+                            return (
+                              <div key={item.key}>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
+                                  <label style={{ fontSize: 13, fontWeight: 700, color: '#334155' }}>{item.label}</label>
+                                  <span style={{ fontSize: 12, color: '#64748b' }}>{current ?? '-'} / 10</span>
+                                </div>
+                                <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+                                  <input type="range" min="0" max="10" step="1" value={current ?? 0} onChange={(event) => handleScoreChange(key, Number(event.target.value))} onMouseUp={() => commitNumericDraft(key)} onTouchEnd={() => commitNumericDraft(key)} style={{ flex: 1, accentColor: '#3b82f6' }} />
+                                  <input type="number" min="0" max="10" step="1" value={scoreDrafts[activeProject.id]?.[key] ?? ''} placeholder="0" onChange={(event) => handleNumericDraftChange(key, event.target.value)} onBlur={() => commitNumericDraft(key)} style={{ width: 70, padding: '8px 10px', fontSize: 16, fontWeight: 800, border: '1.5px solid #cbd5e1', borderRadius: 8, textAlign: 'center' }} />
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </section>
+                  );
+                })}
+              </div>
+
+              <section style={{ background: '#f0fdf4', border: '1.5px solid #86efac', borderRadius: 12, padding: 20, marginBottom: 24 }}>
+                <div style={{ fontSize: 16, fontWeight: 800, color: '#166534', marginBottom: 6 }}>本轮个人项目评级</div>
+                <div style={{ fontSize: 12, color: '#64748b', marginBottom: 12 }}>所有评委均可填写，结果仅作为盲评统计参考。</div>
+                <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                  {(['S', 'A', 'B', 'C'] as const).map((rating) => {
+                    const selected = personalRatings[roundFieldKey(activeProject.id, getActiveRound())] === rating;
+                    return <button key={rating} type="button" onClick={() => savePersonalRating(rating)} disabled={saving} style={{ minWidth: 64, padding: '10px 16px', borderRadius: 8, border: selected ? '2px solid #16a34a' : '1px solid #bbf7d0', background: selected ? '#dcfce7' : '#fff', color: selected ? '#166534' : '#475569', fontWeight: 800, cursor: 'pointer' }}>{rating}</button>;
+                  })}
+                </div>
+              </section>
+
+              {isWalker && (
+                <section style={{ background: '#fffbeb', border: '1.5px solid #f59e0b', borderRadius: 12, padding: 20, marginBottom: 24 }}>
+                  <div style={{ fontSize: 16, fontWeight: 800, color: '#92400e', marginBottom: 12 }}>Walker 本轮加分项</div>
+                  <textarea value={bonusReason[roundFieldKey(activeProject.id, getActiveRound())] || ''} onChange={(event) => setBonusReason((prev) => ({ ...prev, [roundFieldKey(activeProject.id, getActiveRound())]: event.target.value }))} placeholder="填写本轮加分原因" rows={2} style={{ width: '100%', boxSizing: 'border-box', padding: 10, border: '1px solid #fbbf24', borderRadius: 8, marginBottom: 10 }} />
+                  <div style={{ display: 'flex', gap: 10 }}>
+                    <input type="number" min="0" max="5" step="1" value={bonusValue[roundFieldKey(activeProject.id, getActiveRound())] ?? ''} placeholder="0-5" onChange={(event) => setBonusValue((prev) => ({ ...prev, [roundFieldKey(activeProject.id, getActiveRound())]: event.target.value }))} onBlur={handleBonusSave} style={{ width: 100, padding: 10, border: '1px solid #f59e0b', borderRadius: 8, fontWeight: 800 }} />
+                    <button onClick={handleBonusSave} disabled={saving} style={{ padding: '10px 18px', border: 'none', borderRadius: 8, background: '#f59e0b', color: 'white', fontWeight: 800, cursor: 'pointer' }}>保存加分</button>
+                  </div>
+                </section>
+              )}
+
+              <section style={{ background: 'white', borderRadius: 12, padding: 20, border: '1px solid #e2e8f0' }}>
+                <div style={{ fontSize: 16, fontWeight: 800, color: '#0f172a', marginBottom: 14 }}>评审意见</div>
+                <label style={{ display: 'block', fontSize: 13, color: '#dc2626', fontWeight: 700, marginBottom: 6 }}>存在问题（每行一条）</label>
+                <textarea value={projectProblems[roundFieldKey(activeProject.id, getActiveRound())] || ''} onChange={(event) => { const value = event.target.value; const scopedKey = roundFieldKey(activeProject.id, getActiveRound()); setProjectProblems((prev) => ({ ...prev, [scopedKey]: value })); persistTextField(activeProject.id, '__problems__', value); }} onBlur={() => persistTextField(activeProject.id, '__problems__', projectProblems[roundFieldKey(activeProject.id, getActiveRound())] || '', 0)} rows={4} style={{ width: '100%', boxSizing: 'border-box', padding: 10, border: '1px solid #fecaca', borderRadius: 8, background: '#fef2f2', marginBottom: 14 }} />
+                <label style={{ display: 'block', fontSize: 13, color: '#16a34a', fontWeight: 700, marginBottom: 6 }}>整改意见（每行一条）</label>
+                <textarea value={projectActions[roundFieldKey(activeProject.id, getActiveRound())] || ''} onChange={(event) => { const value = event.target.value; const scopedKey = roundFieldKey(activeProject.id, getActiveRound()); setProjectActions((prev) => ({ ...prev, [scopedKey]: value })); persistTextField(activeProject.id, '__actions__', value); }} onBlur={() => persistTextField(activeProject.id, '__actions__', projectActions[roundFieldKey(activeProject.id, getActiveRound())] || '', 0)} rows={4} style={{ width: '100%', boxSizing: 'border-box', padding: 10, border: '1px solid #bbf7d0', borderRadius: 8, background: '#f0fdf4', marginBottom: 14 }} />
+                <button onClick={handleProblemsActionsSave} style={{ padding: '9px 18px', border: 'none', borderRadius: 8, background: '#0f172a', color: 'white', fontWeight: 700, cursor: 'pointer' }}>保存评审意见</button>
+              </section>
+
+              <section style={{ background: 'white', borderRadius: 12, padding: 20, border: isWalker ? '1.5px solid #8b5cf6' : '1px solid #e2e8f0', marginTop: 24 }}>
+                  <div style={{ fontSize: 16, fontWeight: 800, color: isWalker ? '#5b21b6' : '#334155', marginBottom: 6 }}>{isWalker ? 'Walker 最终评审结论' : '本轮个人评审结论（盲评参考）'}</div>
+                  {!isWalker && <div style={{ fontSize: 12, color: '#64748b', marginBottom: 12 }}>所有评委均可填写，Walker 的结论才会推动项目状态流转。</div>}
+                  <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+                    {VERDICT_OPTIONS.filter((option) => !(activeProject.attempt_no === 2 && option.value === 'recheck')).map((option) => {
+                      const selected = projectVerdicts[roundFieldKey(activeProject.id, getActiveRound())] === option.value;
+                      return (
+                        <button key={option.value} onClick={() => handleVerdictChange(option.value)} style={{ padding: '10px 16px', borderRadius: 8, border: selected ? `2px solid ${option.color}` : '1px solid #e2e8f0', background: selected ? option.bg : 'white', color: selected ? option.color : '#475569', fontWeight: 800, cursor: 'pointer' }}>
+                          {option.label}
+                        </button>
+                      );
+                    })}
+                    {isWalker && (<label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, marginLeft: 6, paddingLeft: 12, borderLeft: '1px solid #ddd6fe', fontSize: 13, fontWeight: 800, color: '#5b21b6' }}>最终评级<select aria-label="最终评级" value={activeProject.final_rating || ''} onChange={(event) => saveWalkerRating('final', event.target.value)} style={{ padding: 9, border: '1px solid #c4b5fd', borderRadius: 8, background: '#fff' }}><option value="">待评级</option>{['S', 'A', 'B', 'C'].map((rating) => <option key={rating} value={rating}>{rating}</option>)}</select></label>)}
+                  </div>
+                </section>
+            </>
+          )}
+        </main>
+      </div>
+      {saveFeedback && (
+        <div
+          role="status"
+          aria-live="polite"
+          style={{
+            position: 'fixed', top: 16, right: 16, zIndex: 50,
+            minWidth: 190, maxWidth: 360, padding: '11px 14px', borderRadius: 8,
+            fontSize: 13, fontWeight: 700, boxShadow: '0 10px 24px rgba(15, 23, 42, 0.16)',
+            color: saveFeedback.tone === 'error' ? '#b91c1c' : saveFeedback.tone === 'saving' ? '#1d4ed8' : '#047857',
+            background: saveFeedback.tone === 'error' ? '#fef2f2' : saveFeedback.tone === 'saving' ? '#eff6ff' : '#ecfdf5',
+            border: `1px solid ${saveFeedback.tone === 'error' ? '#fecaca' : saveFeedback.tone === 'saving' ? '#bfdbfe' : '#a7f3d0'}`
+          }}
+        >
+          {saveFeedback.text}
+        </div>
+      )}
+    </div>
+  );
+}
