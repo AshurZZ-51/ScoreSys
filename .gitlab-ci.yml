@@ -88,7 +88,9 @@ build-image:
 
 scan-image:
   stage: scan
-  image: aquasec/trivy:0.56.2
+  image:
+    name: aquasec/trivy:0.56.2
+    entrypoint: [""]
   rules:
     - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
   needs:

@@ -23,6 +23,19 @@ def parse_yaml_documents(path: Path) -> list[dict]:
 
 
 class CceDeliveryContractTest(unittest.TestCase):
+    def assert_scan_image_contract(self, pipeline: dict) -> None:
+        scan = pipeline["scan-image"]
+        self.assertEqual(
+            scan["image"],
+            {"name": "aquasec/trivy:0.56.2", "entrypoint": [""]},
+        )
+        self.assertIn('export TRIVY_USERNAME="${SWR_REGION}@${SWR_AK}"', scan["script"])
+        self.assertIn('export TRIVY_PASSWORD="$SWR_PASSWORD"', scan["script"])
+        self.assertIn(
+            'trivy image --severity HIGH,CRITICAL --exit-code 1 "${SWR_REGISTRY}/scoringsys:${CI_COMMIT_SHA}"',
+            scan["script"],
+        )
+
     def test_pipeline_has_ordered_stages_and_safe_workflow(self) -> None:
         pipeline = yaml.safe_load(CI)
         self.assertEqual(pipeline["stages"], ["verify", "build", "scan", "deploy", "notify"])
@@ -35,17 +48,18 @@ class CceDeliveryContractTest(unittest.TestCase):
         self.assertIn("tags:\n    - AI", CI)
 
     def test_build_scan_deploy_contract(self) -> None:
+        pipeline = yaml.safe_load(CI)
         self.assertIn("npm ci", CI)
         self.assertIn("npm test", CI)
         self.assertIn("npm run build", CI)
         self.assertIn("docker buildx build --platform linux/amd64 --provenance=false --push", CI)
-        self.assertIn("--severity HIGH,CRITICAL", CI)
-        deploy = yaml.safe_load(CI)["deploy-cce"]
+        self.assert_scan_image_contract(pipeline)
+        deploy = pipeline["deploy-cce"]
         self.assertEqual(deploy["retry"], 0)
         self.assertFalse(deploy["interruptible"])
         self.assertEqual(deploy["resource_group"], "scoringsys-cce")
-        self.assertEqual(yaml.safe_load(CI)["notify-failure"]["when"], "on_failure")
-        self.assertTrue(yaml.safe_load(CI)["notify-failure"]["allow_failure"])
+        self.assertEqual(pipeline["notify-failure"]["when"], "on_failure")
+        self.assertTrue(pipeline["notify-failure"]["allow_failure"])
         self.assertNotIn("FEISHU_CHAT_ID", CI)
 
     def test_workload_is_single_non_root_service_with_real_probes(self) -> None:
@@ -115,6 +129,10 @@ class CceDeliveryContractTest(unittest.TestCase):
         self.assertNotIn("--provenance=false", CI.replace("--provenance=false", ""))
         mutated_pipeline = CI.replace("retry: 0", "retry: 1", 1)
         self.assertNotEqual(yaml.safe_load(mutated_pipeline)["deploy-cce"]["retry"], 0)
+        mutated_pipeline = yaml.safe_load(CI)
+        mutated_pipeline["scan-image"]["image"].pop("entrypoint")
+        with self.assertRaises(AssertionError):
+            self.assert_scan_image_contract(mutated_pipeline)
         self.assertNotIn("kind: Secret", DEPLOYMENT_TEMPLATE)
         self.assertNotIn("kind: ConfigMap", INGRESS_TEMPLATE)
 
