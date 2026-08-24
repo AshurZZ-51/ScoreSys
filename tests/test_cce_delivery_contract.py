@@ -29,6 +29,18 @@ class CceDeliveryContractTest(unittest.TestCase):
             scan["image"],
             {"name": "aquasec/trivy:0.56.2", "entrypoint": [""]},
         )
+        self.assertEqual(
+            scan["variables"]["TRIVY_DB_REPOSITORY"],
+            "m.daocloud.io/ghcr.io/aquasecurity/trivy-db:2",
+        )
+        self.assertEqual(
+            scan["variables"]["TRIVY_JAVA_DB_REPOSITORY"],
+            "m.daocloud.io/ghcr.io/aquasecurity/trivy-java-db:1",
+        )
+        self.assertNotEqual(
+            scan["variables"]["TRIVY_DB_REPOSITORY"],
+            "ghcr.io/aquasecurity/trivy-db:2",
+        )
         self.assertIn('export TRIVY_USERNAME="${SWR_REGION}@${SWR_AK}"', scan["script"])
         self.assertIn('export TRIVY_PASSWORD="$SWR_PASSWORD"', scan["script"])
         self.assertIn(
@@ -131,6 +143,10 @@ class CceDeliveryContractTest(unittest.TestCase):
         self.assertNotEqual(yaml.safe_load(mutated_pipeline)["deploy-cce"]["retry"], 0)
         mutated_pipeline = yaml.safe_load(CI)
         mutated_pipeline["scan-image"]["image"].pop("entrypoint")
+        with self.assertRaises(AssertionError):
+            self.assert_scan_image_contract(mutated_pipeline)
+        mutated_pipeline = yaml.safe_load(CI)
+        mutated_pipeline["scan-image"]["variables"]["TRIVY_DB_REPOSITORY"] = "ghcr.io/aquasecurity/trivy-db:2"
         with self.assertRaises(AssertionError):
             self.assert_scan_image_contract(mutated_pipeline)
         self.assertNotIn("kind: Secret", DEPLOYMENT_TEMPLATE)

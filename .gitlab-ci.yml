@@ -97,6 +97,8 @@ scan-image:
     - job: build-image
   variables:
     TRIVY_NO_PROGRESS: "true"
+    TRIVY_DB_REPOSITORY: "m.daocloud.io/ghcr.io/aquasecurity/trivy-db:2"
+    TRIVY_JAVA_DB_REPOSITORY: "m.daocloud.io/ghcr.io/aquasecurity/trivy-java-db:1"
   script:
     - ': "${SWR_REGION:?SWR_REGION is required}"'
     - ': "${SWR_AK:?SWR_AK is required}"'
