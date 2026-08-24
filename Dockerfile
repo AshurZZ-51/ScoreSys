@@ -1,6 +1,9 @@
-﻿FROM node:20-alpine
+# Explicit upstream Node 20 Alpine variant instead of the mutable umbrella tag.
+FROM node:20-alpine3.23
 
 WORKDIR /app
+
+RUN npm install --global npm@11.12.1 tar@7.5.22
 
 COPY package.json package-lock.json ./
 RUN npm ci
