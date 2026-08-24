@@ -1,0 +1,32 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: scoringsys
+  namespace: "{{NAMESPACE}}"
+  annotations:
+    kubernetes.io/ingress.class: cce
+    kubernetes.io/elb.class: performance
+    kubernetes.io/elb.id: abab7533-a1c6-4138-a4bc-59d53e3446e2
+    kubernetes.io/elb.listen-ports: '[{"HTTP":80},{"HTTPS":443}]'
+    kubernetes.io/elb.listener-master-ingress: nexus-prod/nexus-studio
+    kubernetes.io/elb.tls-certificate-ids: 56de20421757445ea53f5af51ecb4e10
+spec:
+  ingressClassName: cce
+  rules:
+    - host: nexus.youdoogo.com
+      http:
+        paths:
+          - path: /scoringsys
+            pathType: Prefix
+            backend:
+              service:
+                name: scoringsys
+                port:
+                  number: 3000
+          - path: /scoringsys/
+            pathType: Prefix
+            backend:
+              service:
+                name: scoringsys
+                port:
+                  number: 3000

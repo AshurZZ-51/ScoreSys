@@ -1,0 +1,135 @@
+workflow:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+    - when: never
+
+stages:
+  - verify
+  - build
+  - scan
+  - deploy
+  - notify
+
+variables:
+  KUBE_NAMESPACE: "nexus-prod"
+  PUBLIC_HOST: "nexus.youdoogo.com"
+  PUBLIC_PREFIX: "/scoringsys"
+  CCE_ELB_ID: "abab7533-a1c6-4138-a4bc-59d53e3446e2"
+  CCE_LISTENER_MASTER_INGRESS: "nexus-prod/nexus-studio"
+  CCE_TLS_CERTIFICATE_IDS: "56de20421757445ea53f5af51ecb4e10"
+  CCE_INGRESS_CLASS: "cce"
+  DOCKER_HOST: "unix:///runner-docker.sock"
+
+default:
+  tags:
+    - AI
+
+verify-app:
+  stage: verify
+  image: node:20-alpine
+  script:
+    - npm ci
+    - npm test
+    - npm run build
+
+verify-delivery-contract:
+  stage: verify
+  image: python:3.12-slim
+  script:
+    - python -m pip install --disable-pip-version-check --no-cache-dir pyyaml
+    - python tests/test_cce_delivery_contract.py
+
+render-cce:
+  stage: verify
+  image: python:3.12-slim
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+  script:
+    - python -m pip install --disable-pip-version-check --no-cache-dir pyyaml
+    - ': "${SWR_REGION:?SWR_REGION is required}"'
+    - ': "${KUBE_IMAGE_PULL_SECRET:?KUBE_IMAGE_PULL_SECRET is required}"'
+    - export SWR_REGISTRY="${SWR_REGISTRY_OVERRIDE:-swr.${SWR_REGION}.myhuaweicloud.com}"
+    - export IMAGE_REFERENCE="${SWR_REGISTRY}/scoringsys:${CI_COMMIT_SHA}"
+    - python scripts/ci/render_cce.py --output-dir .rendered/cce
+  artifacts:
+    expire_in: 1 day
+    paths:
+      - .rendered/cce/
+
+build-image:
+  stage: build
+  image: docker:27-cli
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+  script:
+    - ': "${SWR_REGION:?SWR_REGION is required}"'
+    - ': "${SWR_AK:?SWR_AK is required}"'
+    - ': "${SWR_PASSWORD:?SWR_PASSWORD is required}"'
+    - export SWR_REGISTRY="${SWR_REGISTRY_OVERRIDE:-swr.${SWR_REGION}.myhuaweicloud.com}"
+    - export SWR_REGISTRY_HOST="${SWR_REGISTRY%%/*}"
+    - export DOCKER_CONFIG="$(mktemp -d)"
+    - trap 'rm -rf "$DOCKER_CONFIG"' EXIT
+    - printf '%s' "$SWR_PASSWORD" | docker login "$SWR_REGISTRY_HOST" --username "${SWR_REGION}@${SWR_AK}" --password-stdin
+    - docker buildx inspect scoringsys-ci >/dev/null 2>&1 || docker buildx create --name scoringsys-ci --use
+    - docker buildx use scoringsys-ci
+    - docker buildx build --platform linux/amd64 --provenance=false --push --tag "${SWR_REGISTRY}/scoringsys:${CI_COMMIT_SHA}" .
+    - docker logout "$SWR_REGISTRY_HOST" >/dev/null 2>&1 || true
+
+scan-image:
+  stage: scan
+  image: aquasec/trivy:0.56.2
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+  needs:
+    - job: build-image
+  variables:
+    TRIVY_NO_PROGRESS: "true"
+  script:
+    - ': "${SWR_REGION:?SWR_REGION is required}"'
+    - ': "${SWR_AK:?SWR_AK is required}"'
+    - ': "${SWR_PASSWORD:?SWR_PASSWORD is required}"'
+    - export SWR_REGISTRY="${SWR_REGISTRY_OVERRIDE:-swr.${SWR_REGION}.myhuaweicloud.com}"
+    - export SWR_REGISTRY_HOST="${SWR_REGISTRY%%/*}"
+    - export TRIVY_USERNAME="${SWR_REGION}@${SWR_AK}"
+    - export TRIVY_PASSWORD="$SWR_PASSWORD"
+    - trivy image --severity HIGH,CRITICAL --exit-code 1 "${SWR_REGISTRY}/scoringsys:${CI_COMMIT_SHA}"
+
+deploy-cce:
+  stage: deploy
+  image: alpine:3.20
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+  needs:
+    - job: render-cce
+      artifacts: true
+    - job: build-image
+    - job: scan-image
+  retry: 0
+  interruptible: false
+  resource_group: scoringsys-cce
+  environment:
+    name: production
+  before_script:
+    - apk add --no-cache bash ca-certificates curl kubectl python3
+  script:
+    - export SWR_REGISTRY="${SWR_REGISTRY_OVERRIDE:-swr.${SWR_REGION}.myhuaweicloud.com}"
+    - export IMAGE_REFERENCE="${SWR_REGISTRY}/scoringsys:${CI_COMMIT_SHA}"
+    - scripts/ci/deploy-cce.sh
+
+notify-failure:
+  stage: notify
+  image: alpine:3.20
+  when: on_failure
+  allow_failure: true
+  script:
+    - apk add --no-cache ca-certificates curl
+    - |
+      if [ -z "${FEISHU_WEBHOOK_URL:-}" ]; then
+        echo "Notification endpoint is not configured; continuing."
+        exit 0
+      fi
+      payload=$(printf '{"msg_type":"text","content":{"text":"scoringsys pipeline failed: %s"}}' "${CI_PIPELINE_URL:-unknown}")
+      curl --fail --silent --show-error --output /dev/null \
+        -H 'Content-Type: application/json' \
+        --data "$payload" "$FEISHU_WEBHOOK_URL"
