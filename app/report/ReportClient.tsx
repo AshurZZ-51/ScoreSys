@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
+import { appFetch } from '@/lib/appPath';
 import RoundOneReport from './components/RoundOneReport';
 import RoundTwoReport from './components/RoundTwoReport';
 import InitiationProjectReport from './components/InitiationProjectReport';
@@ -16,12 +17,12 @@ export default function ReportClient() {
   const load = async () => {
     if (!meetingId && !projectId) return;
     if (projectId) {
-      const snapshotResponse = await fetch(`/api/reports?scope_type=project&scope_id=${encodeURIComponent(projectId)}&report_type=initiation`, { cache: 'no-store' });
+      const snapshotResponse = await appFetch(`/api/reports?scope_type=project&scope_id=${encodeURIComponent(projectId)}&report_type=initiation`, { cache: 'no-store' });
       const snapshotData = await snapshotResponse.json();
       if (snapshotResponse.ok) { setSnapshots(snapshotData.snapshots || []); setSnapshotId((current) => current || snapshotData.snapshots?.[0]?.id || ''); } else setError(snapshotData.error || '无法读取项目报告');
       return;
     }
-    const [summaryResponse, snapshotResponse] = await Promise.all([fetch(`/api/summary?meetingId=${encodeURIComponent(meetingId)}`, { cache: 'no-store' }), fetch(`/api/reports?scope_type=meeting&scope_id=${encodeURIComponent(meetingId)}&report_type=${reportType}`, { cache: 'no-store' })]);
+    const [summaryResponse, snapshotResponse] = await Promise.all([appFetch(`/api/summary?meetingId=${encodeURIComponent(meetingId)}`, { cache: 'no-store' }), appFetch(`/api/reports?scope_type=meeting&scope_id=${encodeURIComponent(meetingId)}&report_type=${reportType}`, { cache: 'no-store' })]);
     const summaryData = await summaryResponse.json(); const snapshotData = await snapshotResponse.json();
     if (summaryResponse.ok) setSummary(summaryData); else setError(summaryData.error || '无法读取报告数据');
     if (snapshotResponse.ok) { setSnapshots(snapshotData.snapshots || []); setSnapshotId((current) => current || snapshotData.snapshots?.[0]?.id || ''); }
@@ -29,7 +30,7 @@ export default function ReportClient() {
   useEffect(() => { setSnapshotId(''); load(); }, [meetingId, projectId, reportType]);
   const liveReport = useMemo(() => buildMeetingReportPayload(summary, summary?.meeting, reportType), [summary, reportType]);
   const selected = snapshots.find((snapshot) => snapshot.id === snapshotId); const report = selected?.payload || liveReport;
-  const generate = async () => { const scopeType = projectId ? 'project' : 'meeting'; const scopeId = projectId || meetingId; const type = projectId ? 'initiation' : reportType; if (!scopeId) return; setBusy(true); setError(''); try { const response = await fetch('/api/reports', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ scope_type: scopeType, scope_id: scopeId, report_type: type, operator_code: 'ignored' }) }); const data = await response.json(); if (!response.ok) throw new Error(data.error || '生成失败'); setSnapshots((current) => [data.snapshot, ...current]); setSnapshotId(data.snapshot.id); } catch (reason: any) { setError(reason.message || '生成失败'); } finally { setBusy(false); } };
+  const generate = async () => { const scopeType = projectId ? 'project' : 'meeting'; const scopeId = projectId || meetingId; const type = projectId ? 'initiation' : reportType; if (!scopeId) return; setBusy(true); setError(''); try { const response = await appFetch('/api/reports', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ scope_type: scopeType, scope_id: scopeId, report_type: type, operator_code: 'ignored' }) }); const data = await response.json(); if (!response.ok) throw new Error(data.error || '生成失败'); setSnapshots((current) => [data.snapshot, ...current]); setSnapshotId(data.snapshot.id); } catch (reason: any) { setError(reason.message || '生成失败'); } finally { setBusy(false); } };
   const close = () => { if (params.get('fromAdmin') === 'true' && window.opener) { window.close(); return; } router.push('/admin'); };
   if (!meetingId && !projectId) return <main style={styles.empty}>请选择一个评审会或项目后再打开报告。</main>;
   return <main style={styles.shell}><style>{'@media print { .report-actions { display:none !important; } body { background:#fff; } }'}</style><div className="report-actions" style={styles.actions}><button type="button" onClick={close} style={styles.secondary}>返回</button>{!projectId && <select aria-label="报告类型" value={reportType} onChange={(event) => setReportType(event.target.value)} style={styles.select}>{reportTypes.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select>}<select aria-label="报告版本" value={snapshotId} onChange={(event) => setSnapshotId(event.target.value)} style={styles.select}><option value="">{projectId ? '请选择或生成报告快照' : '实时数据（未保存）'}</option>{snapshots.map((snapshot) => <option key={snapshot.id} value={snapshot.id}>v{snapshot.version} · {String(snapshot.generated_at).replace('T', ' ').slice(0, 16)}</option>)}</select><button type="button" onClick={generate} disabled={busy} style={styles.primary}>{busy ? '生成中' : '生成新版本'}</button><button type="button" onClick={() => window.print()} disabled={projectId && !selected} style={styles.secondary}>打印</button></div>{error && <p style={styles.error}>{error}</p>}{projectId ? selected ? <InitiationProjectReport report={selected.payload}/> : <div style={styles.empty}>生成快照后即可查看完整项目评审报告。</div> : reportType === 'round_1' ? <RoundOneReport report={report}/> : <RoundTwoReport report={report}/>}</main>;

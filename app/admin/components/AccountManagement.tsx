@@ -1,6 +1,7 @@
 'use client';
 
 import { FormEvent, useEffect, useState } from 'react';
+import { appFetch } from '@/lib/appPath';
 
 type Account = { code: string; name: string; role: string; is_admin: boolean };
 
@@ -14,7 +15,7 @@ export default function AccountManagement() {
   const [busy, setBusy] = useState(false);
 
   const load = async () => {
-    const response = await fetch('/api/accounts', { cache: 'no-store' });
+    const response = await appFetch('/api/accounts', { cache: 'no-store' });
     const data = await response.json();
     if (!response.ok) { setNotice(data.error || '读取账号失败'); return; }
     setAccounts(data.accounts || []);
@@ -25,7 +26,7 @@ export default function AccountManagement() {
   const createAccount = async (event: FormEvent) => {
     event.preventDefault();
     setBusy(true);
-    const response = await fetch('/api/accounts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(form) });
+    const response = await appFetch('/api/accounts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(form) });
     const data = await response.json();
     setBusy(false);
     setNotice(response.ok ? '账号已创建。' : data.error || '创建账号失败');
@@ -35,7 +36,7 @@ export default function AccountManagement() {
   const resetPassword = async (code: string) => {
     const password = passwords[code] || '';
     setBusy(true);
-    const response = await fetch(`/api/accounts/${encodeURIComponent(code)}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'reset_password', password }) });
+    const response = await appFetch(`/api/accounts/${encodeURIComponent(code)}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'reset_password', password }) });
     const data = await response.json();
     setBusy(false);
     setNotice(response.ok ? `已重置 ${code} 的密码。` : data.error || '重置密码失败');
@@ -44,7 +45,7 @@ export default function AccountManagement() {
 
   const setAdmin = async (account: Account) => {
     setBusy(true);
-    const response = await fetch(`/api/accounts/${encodeURIComponent(account.code)}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'set_admin', is_admin: !account.is_admin }) });
+    const response = await appFetch(`/api/accounts/${encodeURIComponent(account.code)}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'set_admin', is_admin: !account.is_admin }) });
     const data = await response.json();
     setBusy(false);
     setNotice(response.ok ? `已更新 ${account.code} 的管理员权限。` : data.error || '更新管理员权限失败');

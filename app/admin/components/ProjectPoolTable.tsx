@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
+import { appFetch } from '@/lib/appPath';
 import { getMaterialProgress, projectStatusLabel } from '@/lib/projectPoolWorkflow';
 
 type Project = Record<string, any>;
@@ -53,7 +54,7 @@ export default function ProjectPoolTable({ projects, meetings, scope, month, onR
     if (!selected.length || !status) return;
     setBusy(true);
     try {
-      const response = await fetch('/api/project-pool/batch', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids: selected, action: 'status', status, operator_code: adminCode() }) });
+      const response = await appFetch('/api/project-pool/batch', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids: selected, action: 'status', status, operator_code: adminCode() }) });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || '批量状态更新失败');
       await refreshAfter(`已更新 ${selected.length} 个项目状态。`);
@@ -70,7 +71,7 @@ export default function ProjectPoolTable({ projects, meetings, scope, month, onR
     if (rounds.length !== 1) { setFeedback('请按评审轮次分别安排项目。'); return; }
     setBusy(true);
     try {
-      const response = await fetch('/api/meeting-assignments', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ meeting_id: targetMeetingId, pool_project_ids: ids, round_no: rounds[0], operator_code: adminCode() }) });
+      const response = await appFetch('/api/meeting-assignments', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ meeting_id: targetMeetingId, pool_project_ids: ids, round_no: rounds[0], operator_code: adminCode() }) });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || '安排评审会失败');
       await refreshAfter(`已安排 ${data.assignments?.length || ids.length} 个项目进入评审会。${data.errors?.length ? ` 另有 ${data.errors.length} 个未能安排。` : ''}`);
@@ -84,7 +85,7 @@ export default function ProjectPoolTable({ projects, meetings, scope, month, onR
     if (!selected.length || !window.confirm(`归档选中的 ${selected.length} 个项目？历史评审记录会保留。`)) return;
     setBusy(true);
     try {
-      const response = await fetch('/api/project-pool/batch', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids: selected, action: 'archive', operator_code: adminCode() }) });
+      const response = await appFetch('/api/project-pool/batch', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids: selected, action: 'archive', operator_code: adminCode() }) });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || '批量归档失败');
       await refreshAfter(`已归档 ${selected.length} 个项目。`);

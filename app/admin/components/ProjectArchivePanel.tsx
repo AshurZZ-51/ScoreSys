@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { appFetch } from '@/lib/appPath';
 import { formatArchiveBulkFeedback } from '@/lib/projectArchiveBulk';
 import { projectStatusLabel } from '@/lib/projectPoolWorkflow';
 
@@ -27,7 +28,7 @@ export default function ProjectArchivePanel({ archivedProjects, purgePendingProj
   const isBusy = busyIds.length > 0;
 
   const requestAction = async (project: Project, action: ArchiveAction) => {
-    const response = await fetch('/api/project-pool/archive', {
+    const response = await appFetch('/api/project-pool/archive', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id: project.id, action, operator_code: adminCode() })

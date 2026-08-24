@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { reorderMeetingAssignments } from '@/lib/adminLifecycle';
+import { appFetch } from '@/lib/appPath';
 
 type Item = Record<string, any>;
 const schedulableStatuses = ['draft', 'materials_pending', 'ready_r1', 'r1_recheck_ready', 'ready_r2', 'r2_recheck_ready'];
@@ -17,7 +18,7 @@ export default function MeetingWorkspace({ meeting, projects, source = 'meetings
   const [form, setForm] = useState({ name: meeting.name || '', meeting_date: meeting.meeting_date || '', deadline: meeting.deadline ? String(meeting.deadline).slice(0, 10) : '', notes: meeting.notes || '' });
 
   const load = async () => {
-    const [projectResponse, summaryResponse, poolResponse] = await Promise.all([fetch(`/api/projects?meetingId=${meeting.id}&role=admin`, { cache: 'no-store' }), fetch(`/api/summary?meetingId=${meeting.id}&_=${Date.now()}`, { cache: 'no-store' }), fetch('/api/project-pool?scope=pending', { cache: 'no-store' })]);
+    const [projectResponse, summaryResponse, poolResponse] = await Promise.all([appFetch(`/api/projects?meetingId=${meeting.id}&role=admin`, { cache: 'no-store' }), appFetch(`/api/summary?meetingId=${meeting.id}&_=${Date.now()}`, { cache: 'no-store' }), appFetch('/api/project-pool?scope=pending', { cache: 'no-store' })]);
     const projectData = await projectResponse.json(); const summaryData = await summaryResponse.json(); const poolData = await poolResponse.json();
     if (projectResponse.ok) setAssignments((projectData.projects || []).sort((left: Item, right: Item) => Number(left.seq_no) - Number(right.seq_no)));
     if (summaryResponse.ok) setSummary(summaryData);
@@ -29,7 +30,7 @@ export default function MeetingWorkspace({ meeting, projects, source = 'meetings
   const summaryProjects = useMemo(() => [...(summary?.projects || [])].filter((project: Item) => project.name && project.submitter).sort((left: Item, right: Item) => Number(right.totalScore || 0) - Number(left.totalScore || 0)), [summary]);
 
   const saveSettings = async () => {
-    const response = await fetch('/api/meetings', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: meeting.id, ...form }) });
+    const response = await appFetch('/api/meetings', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: meeting.id, ...form }) });
     const data = await response.json(); onNotice(response.ok ? '评审会设置已保存。' : data.error || '保存失败');
     if (response.ok) {
       const saved = data.meeting || { ...meeting, ...form };
@@ -40,7 +41,7 @@ export default function MeetingWorkspace({ meeting, projects, source = 'meetings
   };
   const saveOrder = async (next: Item[]) => {
     setAssignments(next);
-    const response = await fetch('/api/meeting-assignments', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ meeting_id: meeting.id, ordered_assignment_ids: next.map((item) => item.id) }) });
+    const response = await appFetch('/api/meeting-assignments', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ meeting_id: meeting.id, ordered_assignment_ids: next.map((item) => item.id) }) });
     const data = await response.json();
     if (!response.ok) { onNotice(data.error || '保存排序失败'); await load(); return; }
     onNotice('项目评审顺序已保存。');
@@ -48,17 +49,17 @@ export default function MeetingWorkspace({ meeting, projects, source = 'meetings
   const drop = (event: React.DragEvent, targetId: string) => { event.preventDefault(); const sourceId = event.dataTransfer.getData('text/plain'); if (sourceId && sourceId !== targetId) saveOrder(reorderMeetingAssignments(assignments, sourceId, targetId)); };
   const addSelected = async () => {
     for (const project of eligible.filter((item) => selected.includes(item.id))) {
-      const response = await fetch('/api/meeting-assignments', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ meeting_id: meeting.id, pool_project_id: project.id }) });
+      const response = await appFetch('/api/meeting-assignments', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ meeting_id: meeting.id, pool_project_id: project.id }) });
       const data = await response.json(); if (!response.ok) { onNotice(data.error || '加入评审会失败'); break; }
     }
     setSelected([]); await load(); await onRefresh();
   };
   const remove = async (assignment: Item) => {
     if (!window.confirm(`将“${assignment.name}”移出本次评审会？`)) return;
-    const response = await fetch(`/api/meeting-assignments?id=${encodeURIComponent(assignment.id)}`, { method: 'DELETE' });
+    const response = await appFetch(`/api/meeting-assignments?id=${encodeURIComponent(assignment.id)}`, { method: 'DELETE' });
     const data = await response.json(); onNotice(response.ok ? '项目已移出评审会。' : data.error || '移除失败'); if (response.ok) { await load(); await onRefresh(); }
   };
-  return <section style={styles.section}><div style={styles.header}><div><button style={styles.secondary} onClick={() => onBack(source)}>返回{source === 'reports' ? '结论与报告' : '评审会列表'}</button><h2 style={{ margin: '12px 0 0', fontSize: 20 }}>{meeting.name}</h2></div><button style={styles.secondary} onClick={() => fetch('/api/meetings', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: meeting.id, is_current: true }) }).then(async (response) => { const data = await response.json(); onNotice(response.ok ? '已设为当前评审会。' : data.error || '设置失败'); if (response.ok) await onRefresh(); })}>设为当前</button></div>
+  return <section style={styles.section}><div style={styles.header}><div><button style={styles.secondary} onClick={() => onBack(source)}>返回{source === 'reports' ? '结论与报告' : '评审会列表'}</button><h2 style={{ margin: '12px 0 0', fontSize: 20 }}>{meeting.name}</h2></div><button style={styles.secondary} onClick={() => appFetch('/api/meetings', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: meeting.id, is_current: true }) }).then(async (response) => { const data = await response.json(); onNotice(response.ok ? '已设为当前评审会。' : data.error || '设置失败'); if (response.ok) await onRefresh(); })}>设为当前</button></div>
     <nav style={styles.tabs}>{[['settings', '评审会设置'], ['arrange', '项目编排'], ['summary', '本轮结论与汇总']].map(([id, label]) => <button key={id} style={{ ...styles.tab, ...(tab === id ? styles.activeTab : {}) }} onClick={() => setTab(id as typeof tab)}>{label}</button>)}</nav>
     {tab === 'settings' && <div style={styles.panel}><input style={styles.input} placeholder="评审会名称" value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })}/><input style={styles.input} type="date" value={form.meeting_date} onChange={(event) => setForm({ ...form, meeting_date: event.target.value })}/><input style={styles.input} type="date" value={form.deadline} onChange={(event) => setForm({ ...form, deadline: event.target.value })}/><textarea style={styles.input} rows={3} placeholder="会议备注" value={form.notes} onChange={(event) => setForm({ ...form, notes: event.target.value })}/><button style={styles.primary} onClick={saveSettings}>保存设置</button></div>}
     {tab === 'arrange' && <><div style={styles.panel}><h3 style={styles.h3}>加入待评审项目</h3><div style={styles.choices}>{eligible.map((project) => <label key={project.id} style={styles.choice}><input type="checkbox" checked={selected.includes(project.id)} onChange={() => setSelected((items) => items.includes(project.id) ? items.filter((id) => id !== project.id) : [...items, project.id])}/><span>{project.name} · {project.submitter}</span></label>)}{!eligible.length && <span style={styles.help}>暂无可加入的项目。</span>}</div><button style={styles.primary} disabled={!selected.length || assignments.length >= 12} onClick={addSelected}>加入所选项目</button></div><h3 style={styles.h3}>项目评审顺序（12 个槽位）</h3><div style={styles.slots}>{Array.from({ length: 12 }, (_, index) => { const assignment = assignments[index]; return <div key={assignment?.id || index} style={{ ...styles.slot, ...(assignment ? {} : styles.emptySlot) }} onDragOver={(event) => event.preventDefault()} onDrop={(event) => assignment && drop(event, assignment.id)}>{assignment ? <div draggable onDragStart={(event) => event.dataTransfer.setData('text/plain', assignment.id)} style={styles.dragItem}><strong>{index + 1}. {assignment.name}</strong><span>{assignment.submitter}</span><div><button style={styles.danger} onClick={() => remove(assignment)}>移出</button></div></div> : <span>{index + 1}. 空槽位</span>}</div>; })}</div></>}

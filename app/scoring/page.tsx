@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { appFetch } from '@/lib/appPath';
 import { computeRoundBaseScoreFromScoreMap, getRoundDefinition, getRoundScoringDimensions, roundScoreKey, specialScoreKey } from '@/lib/scoringRules';
 import { ROUND_TITLES, VERDICT_OPTIONS } from '@/lib/reviewWorkflow';
 import { createSaveFeedback } from '@/lib/saveFeedback';
@@ -118,7 +119,7 @@ export default function ScoringPage() {
   }, []);
 
   const loadMeetings = async () => {
-    const res = await fetch('/api/meetings', { cache: 'no-store' });
+    const res = await appFetch('/api/meetings', { cache: 'no-store' });
     const data = await res.json();
     const all = data.meetings || [];
     setMeetings(all);
@@ -132,15 +133,15 @@ export default function ScoringPage() {
   const loadProjects = async (meetingId: string) => {
     setLoading(true);
     try {
-      const res = await fetch(`/api/summary?meetingId=${meetingId}`, { cache: 'no-store' });
+      const res = await appFetch(`/api/summary?meetingId=${meetingId}`, { cache: 'no-store' });
       const data = await res.json();
       const nextProjects = getReviewableMeetingProjects(data.projects || []) as Project[];
       const projectsWithMaterialProgress = await Promise.all(nextProjects.map(async (project: Project) => {
         if (!project.pool_project_id) return project;
         try {
           const [materialResponse, historyResponse] = await Promise.all([
-            fetch(`/api/project-pool/${project.pool_project_id}/materials`, { cache: 'no-store' }),
-            fetch(`/api/project-pool/${project.pool_project_id}/history`, { cache: 'no-store' })
+            appFetch(`/api/project-pool/${project.pool_project_id}/materials`, { cache: 'no-store' }),
+            appFetch(`/api/project-pool/${project.pool_project_id}/history`, { cache: 'no-store' })
           ]);
           const materialData = await materialResponse.json();
           const historyData = await historyResponse.json();
@@ -162,8 +163,8 @@ export default function ScoringPage() {
     if (!stored) return;
     const r = JSON.parse(stored);
     const [res, ratingRes] = await Promise.all([
-      fetch(`/api/scores?meetingId=${meetingId}&reviewerCode=${r.code}`, { cache: 'no-store' }),
-      fetch(`/api/project-ratings?meetingId=${meetingId}`, { headers: scoreRequestHeaders(), cache: 'no-store' })
+      appFetch(`/api/scores?meetingId=${meetingId}&reviewerCode=${r.code}`, { cache: 'no-store' }),
+      appFetch(`/api/project-ratings?meetingId=${meetingId}`, { headers: scoreRequestHeaders(), cache: 'no-store' })
     ]);
     const data = await res.json();
     const ratingData = ratingRes.ok ? await ratingRes.json() : { ratings: [] };
@@ -240,7 +241,7 @@ export default function ScoringPage() {
     setSaving(true);
     showSaveFeedback('saving', '评分');
     try {
-      const res = await fetch('/api/scores', {
+      const res = await appFetch('/api/scores', {
         method: 'POST',
         headers: scoreRequestHeaders(),
         body: JSON.stringify({
@@ -278,7 +279,7 @@ export default function ScoringPage() {
     const action = getSaveAction(dimName);
     showSaveFeedback('saving', action);
     try {
-      const res = await fetch('/api/scores', {
+      const res = await appFetch('/api/scores', {
         method: 'POST',
         headers: scoreRequestHeaders(),
         body: JSON.stringify({
@@ -404,12 +405,12 @@ export default function ScoringPage() {
     showSaveFeedback('saving', '评审意见');
     try {
       const [problemsRes, actionsRes] = await Promise.all([
-        fetch('/api/scores', {
+        appFetch('/api/scores', {
           method: 'POST',
           headers: scoreRequestHeaders(),
           body: JSON.stringify({ ...payloadBase, dim_name: specialScoreKey(roundId, '__problems__'), comment: problemsText || null })
         }),
-        fetch('/api/scores', {
+        appFetch('/api/scores', {
           method: 'POST',
           headers: scoreRequestHeaders(),
           body: JSON.stringify({ ...payloadBase, dim_name: specialScoreKey(roundId, '__actions__'), comment: actionsText || null })
@@ -432,7 +433,7 @@ export default function ScoringPage() {
   const saveWalkerRating = async (ratingType: 'preliminary' | 'final', rating: string) => {
     if (ratingType !== 'final' || !canEditFinalRating(reviewer?.code) || !activeProject?.pool_project_id || !['S', 'A', 'B', 'C'].includes(rating)) return;
     try {
-      const response = await fetch(`/api/project-pool/${activeProject.pool_project_id}/rating`, { method: 'POST', headers: scoreRequestHeaders(), body: JSON.stringify({ rating_type: ratingType, rating }) });
+      const response = await appFetch(`/api/project-pool/${activeProject.pool_project_id}/rating`, { method: 'POST', headers: scoreRequestHeaders(), body: JSON.stringify({ rating_type: ratingType, rating }) });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || '评级保存失败');
       setProjects((current) => current.map((project) => project.id === activeProject.id ? { ...project, [`${ratingType}_rating`]: rating } : project));
@@ -448,7 +449,7 @@ export default function ScoringPage() {
     setPersonalRatings((current) => ({ ...current, [key]: rating }));
     showSaveFeedback('saving', '个人评级');
     try {
-      const response = await fetch('/api/project-ratings', {
+      const response = await appFetch('/api/project-ratings', {
         method: 'POST',
         headers: scoreRequestHeaders(),
         body: JSON.stringify({ meeting_id: activeMeeting.id, project_id: activeProject.id, rating })

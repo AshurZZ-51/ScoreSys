@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
+import { appFetch, appPath } from '@/lib/appPath';
 import V2AdminPage from './V2AdminPage';
 import { projectDisplayName, projectDisplaySubmitter, shouldShowProjectSlot } from '@/lib/projectDisplay';
 import { PROJECT_SLOT_COUNT } from '@/lib/projectSlots';
@@ -114,7 +115,7 @@ function LegacyAdminPage() {
 
   const loadMeetings = async () => {
     try {
-      const res = await fetch('/api/meetings?includeDeleted=true', { cache: 'no-store' });
+      const res = await appFetch('/api/meetings?includeDeleted=true', { cache: 'no-store' });
       const data = await res.json();
       const all = data.meetings || [];
       setMeetings(all.filter((m: Meeting) => !m.deleted_at));
@@ -134,12 +135,12 @@ function LegacyAdminPage() {
     if (!silent) setLoading(true);
     try {
       // 加载项目（管理员看所有）
-      const projRes = await fetch(`/api/projects?meetingId=${meetingId}&role=admin`, { cache: 'no-store' });
+      const projRes = await appFetch(`/api/projects?meetingId=${meetingId}&role=admin`, { cache: 'no-store' });
       const projData = await projRes.json();
       setProjects(projData.projects || []);
 
       // 加载汇总
-      const sumRes = await fetch(`/api/summary?meetingId=${meetingId}`, { cache: 'no-store' });
+      const sumRes = await appFetch(`/api/summary?meetingId=${meetingId}`, { cache: 'no-store' });
       const sumData = await sumRes.json();
       setSummaryProjects(sumData.projects || []);
       setReviewers(sumData.reviewers || []);
@@ -164,7 +165,7 @@ function LegacyAdminPage() {
 
   const handleSetCurrent = async () => {
     if (!activeMeeting) return;
-    const res = await fetch('/api/meetings', {
+    const res = await appFetch('/api/meetings', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id: activeMeeting.id, is_current: true })
@@ -182,7 +183,7 @@ function LegacyAdminPage() {
   const handleSoftDelete = async () => {
     if (!activeMeeting) return;
     if (!confirm(`确定要删除「${activeMeeting.name}」吗？\n\n删除后数据保留 3 天，可在此期间恢复。3天后将自动清理。`)) return;
-    const res = await fetch('/api/meetings/delete', {
+    const res = await appFetch('/api/meetings/delete', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id: activeMeeting.id, action: 'soft_delete' })
@@ -196,7 +197,7 @@ function LegacyAdminPage() {
 
   const handleRestore = async (id: string) => {
     if (!confirm('确定要恢复这个评审会吗？')) return;
-    const res = await fetch('/api/meetings/delete', {
+    const res = await appFetch('/api/meetings/delete', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id, action: 'restore' })
@@ -209,7 +210,7 @@ function LegacyAdminPage() {
 
   const handlePurge = async (id: string, name: string) => {
     if (!confirm(`确定要彻底删除「${name}」吗？此操作不可撤销！所有项目、评分数据都将永久删除。`)) return;
-    const res = await fetch('/api/meetings/delete', {
+    const res = await appFetch('/api/meetings/delete', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id, action: 'purge' })
@@ -223,7 +224,7 @@ function LegacyAdminPage() {
   const handleResetScores = async () => {
     if (!activeMeeting) return;
     if (!confirm(`确定要清空「${activeMeeting.name}」的所有评分吗？此操作不可撤销！`)) return;
-    const res = await fetch(`/api/scores?meetingId=${activeMeeting.id}`, { method: 'DELETE' });
+    const res = await appFetch(`/api/scores?meetingId=${activeMeeting.id}`, { method: 'DELETE' });
     const data = await res.json();
     if (data.success) {
       setMessage('✓ 已清空所有评分');
@@ -314,7 +315,7 @@ function LegacyAdminPage() {
   const generateReportHTML = () => {
     if (!activeMeeting) return;
     const params = new URLSearchParams({ meetingId: activeMeeting.id, fromAdmin: 'true' });
-    window.open(`/report?${params}`, '_blank');
+    window.open(appPath(`/report?${params}`), '_blank');
   };
 
   if (!reviewer) return <div style={{ padding: 40 }}>加载中...</div>;
@@ -767,7 +768,7 @@ function NewMeetingModal({ meetings, onClose, onSuccess }: any) {
     if (!name.trim()) { setError('请输入评审会名称'); return; }
     setLoading(true);
     setError('');
-    const res = await fetch('/api/meetings', {
+    const res = await appFetch('/api/meetings', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -900,7 +901,7 @@ function ProjectDetailCard({ project, meetingId, onSaved }: { project: SummaryPr
       const admin = stored ? JSON.parse(stored) : null;
       const code = admin?.code || 'W';
       const newVerdict = localVerdict === value ? null : value;
-      const res = await fetch('/api/scores', {
+      const res = await appFetch('/api/scores', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -929,7 +930,7 @@ function ProjectDetailCard({ project, meetingId, onSaved }: { project: SummaryPr
       const stored = localStorage.getItem('reviewer');
       const admin = stored ? JSON.parse(stored) : null;
       const code = admin?.code || 'admin';
-      const res = await fetch('/api/scores', {
+      const res = await appFetch('/api/scores', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -976,7 +977,7 @@ function ProjectDetailCard({ project, meetingId, onSaved }: { project: SummaryPr
         { dim_name: specialScoreKey(localRound, '__admin_problems__'), comment: localProblemSummary.trim() || null },
         { dim_name: specialScoreKey(localRound, '__admin_actions__'), comment: localActionSummary.trim() || null }
       ];
-      const responses = await Promise.all(rows.map((row) => fetch('/api/scores', {
+      const responses = await Promise.all(rows.map((row) => appFetch('/api/scores', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ...payloadBase, ...row })
@@ -1145,7 +1146,7 @@ function EditProjectModal({ project, onClose, onSuccess }: any) {
     }
     setLoading(true);
     setError('');
-    const res = await fetch('/api/projects', {
+    const res = await appFetch('/api/projects', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -1168,7 +1169,7 @@ function EditProjectModal({ project, onClose, onSuccess }: any) {
   const handleDelete = async () => {
     if (!confirm(`确定要删除「${project.name || '项目'+project.seq_no}」吗？\n\n将清空项目名和提报人，评委无法再看到此项目。`)) return;
     setLoading(true);
-    const res = await fetch('/api/projects', {
+    const res = await appFetch('/api/projects', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({

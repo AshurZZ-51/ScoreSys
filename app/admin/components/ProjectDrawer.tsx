@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
+import { appFetch, appPath } from '@/lib/appPath';
 import { MATERIAL_ITEMS, getMaterialProgress, projectStatusLabel } from '@/lib/projectPoolWorkflow';
 import { buildInitiationAnnouncement, PROJECT_RATING_OPTIONS } from '@/lib/initiationWorkflow';
 import { mergeProjectMaterials } from '@/lib/projectDetailWorkflow';
@@ -49,8 +50,8 @@ export default function ProjectDrawer({ project, onDismiss, onSaved }: { project
     };
     applyProject(project);
     Promise.all([
-      fetch(`/api/project-pool/${project.id}/history`, { cache: 'no-store' }),
-      fetch(`/api/project-pool/${project.id}/materials`, { cache: 'no-store' })
+      appFetch(`/api/project-pool/${project.id}/history`, { cache: 'no-store' }),
+      appFetch(`/api/project-pool/${project.id}/materials`, { cache: 'no-store' })
     ])
       .then(async ([historyResponse, materialsResponse]) => {
         const historyData = historyResponse.ok ? await historyResponse.json() : null;
@@ -69,7 +70,7 @@ export default function ProjectDrawer({ project, onDismiss, onSaved }: { project
   const saveProject = async () => {
     setBusy(true);
     try {
-      const response = await fetch('/api/project-pool', { method: 'PATCH', headers: adminRequestHeaders(true), body: JSON.stringify({ id: project.id, ...form, operator_code: adminCode() }) });
+      const response = await appFetch('/api/project-pool', { method: 'PATCH', headers: adminRequestHeaders(true), body: JSON.stringify({ id: project.id, ...form, operator_code: adminCode() }) });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || '保存项目详情失败');
       setFeedback('项目详情已保存。');
@@ -86,7 +87,7 @@ export default function ProjectDrawer({ project, onDismiss, onSaved }: { project
     setMaterials(nextMaterials);
     setBusy(true);
     try {
-      const response = await fetch(`/api/project-pool/${project.id}/materials`, { method: 'PATCH', headers: adminRequestHeaders(true), body: JSON.stringify({ item_key: itemKey, status, operator_code: adminCode() }) });
+      const response = await appFetch(`/api/project-pool/${project.id}/materials`, { method: 'PATCH', headers: adminRequestHeaders(true), body: JSON.stringify({ item_key: itemKey, status, operator_code: adminCode() }) });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || '保存资料状态失败');
       setFeedback('资料状态已保存。');
@@ -97,7 +98,7 @@ export default function ProjectDrawer({ project, onDismiss, onSaved }: { project
   const changeStatus = async () => {
     setBusy(true);
     try {
-      const response = await fetch(`/api/project-pool/${project.id}/status`, { method: 'POST', headers: adminRequestHeaders(true), body: JSON.stringify({ status: manualStatus, note: manualNote, confirmed: true }) });
+      const response = await appFetch(`/api/project-pool/${project.id}/status`, { method: 'POST', headers: adminRequestHeaders(true), body: JSON.stringify({ status: manualStatus, note: manualNote, confirmed: true }) });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || '调整项目状态失败');
       setFeedback('项目状态已更新。');
@@ -109,7 +110,7 @@ export default function ProjectDrawer({ project, onDismiss, onSaved }: { project
     if (!PROJECT_RATING_OPTIONS.includes(rating as any)) return;
     setBusy(true);
     try {
-      const response = await fetch(`/api/project-pool/${project.id}/rating`, { method: 'POST', headers: adminRequestHeaders(true), body: JSON.stringify({ rating_type: ratingType, rating }) });
+      const response = await appFetch(`/api/project-pool/${project.id}/rating`, { method: 'POST', headers: adminRequestHeaders(true), body: JSON.stringify({ rating_type: ratingType, rating }) });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || '保存项目评级失败');
       setRatings((current) => ({ ...current, [ratingType]: rating }));
@@ -131,7 +132,7 @@ export default function ProjectDrawer({ project, onDismiss, onSaved }: { project
   const saveAnnouncement = async () => {
     setBusy(true);
     try {
-      const response = await fetch(`/api/project-pool/${project.id}/announcement`, { method: 'POST', headers: adminRequestHeaders(true), body: JSON.stringify({ announcement }) });
+      const response = await appFetch(`/api/project-pool/${project.id}/announcement`, { method: 'POST', headers: adminRequestHeaders(true), body: JSON.stringify({ announcement }) });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || '保存立项公示失败');
       setFeedback('立项公示已保存。');
@@ -143,7 +144,7 @@ export default function ProjectDrawer({ project, onDismiss, onSaved }: { project
     if (!window.confirm(`归档“${project.name}”？历史评审记录会保留。`)) return;
     setBusy(true);
     try {
-      const response = await fetch(`/api/project-pool?id=${encodeURIComponent(project.id)}&operator_code=${encodeURIComponent(adminCode())}`, { method: 'DELETE', headers: adminRequestHeaders() });
+      const response = await appFetch(`/api/project-pool?id=${encodeURIComponent(project.id)}&operator_code=${encodeURIComponent(adminCode())}`, { method: 'DELETE', headers: adminRequestHeaders() });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || '归档项目失败');
       setFeedback('项目已归档。');
@@ -154,7 +155,7 @@ export default function ProjectDrawer({ project, onDismiss, onSaved }: { project
 
   return <div style={styles.overlay} onMouseDown={(event) => { if (event.target !== event.currentTarget) return; onDismiss(); }}>
     <aside aria-label="项目详情" style={styles.drawer}>
-      <div style={styles.actions}><button type="button" style={styles.secondary} onClick={onDismiss}>关闭</button>{project.status === 'initiation' && <button type="button" style={styles.secondary} onClick={() => window.open(`/report?projectId=${encodeURIComponent(project.id)}`, '_blank', 'noopener,noreferrer')}>项目报告</button>}<button type="button" style={styles.danger} disabled={busy} onClick={archive}>归档项目</button></div>
+      <div style={styles.actions}><button type="button" style={styles.secondary} onClick={onDismiss}>关闭</button>{project.status === 'initiation' && <button type="button" style={styles.secondary} onClick={() => window.open(appPath(`/report?projectId=${encodeURIComponent(project.id)}`), '_blank', 'noopener,noreferrer')}>项目报告</button>}<button type="button" style={styles.danger} disabled={busy} onClick={archive}>归档项目</button></div>
       <h2 style={styles.heading}>{project.name}</h2>
       {feedback && <div role="status" style={styles.feedback}>{feedback}</div>}
       <section style={styles.panel}><h3 style={styles.sectionHeading}>项目详情</h3><input aria-label="项目名称" style={styles.input} value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} /><input aria-label="提报人" style={styles.input} value={form.submitter} onChange={(event) => setForm({ ...form, submitter: event.target.value })} /><textarea aria-label="项目说明" style={styles.input} rows={3} value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} /><button type="button" style={styles.primary} disabled={busy} onClick={saveProject}>保存项目详情</button></section>

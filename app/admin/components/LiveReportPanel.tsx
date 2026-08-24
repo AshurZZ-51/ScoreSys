@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
+import { appFetch, appPath } from '@/lib/appPath';
 
 type Item = Record<string, any>;
 type Snapshot = { id: string; version: number; generated_at?: string };
@@ -23,7 +24,7 @@ export default function LiveReportPanel({ meeting }: { meeting: Item }) {
     const load = async (silent = false) => {
       if (!silent) setLoading(true);
       try {
-        const response = await fetch(`/api/summary?meetingId=${encodeURIComponent(meeting.id)}&_=${Date.now()}`, { cache: 'no-store' });
+        const response = await appFetch(`/api/summary?meetingId=${encodeURIComponent(meeting.id)}&_=${Date.now()}`, { cache: 'no-store' });
         const data = await response.json();
         if (!response.ok) throw new Error(data.error || '无法读取实时报告数据');
         if (active) {
@@ -64,7 +65,7 @@ export default function LiveReportPanel({ meeting }: { meeting: Item }) {
     setCreatingSnapshot(true);
     setError('');
     try {
-      const response = await fetch('/api/reports', {
+      const response = await appFetch('/api/reports', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ scope_type: 'meeting', scope_id: meeting.id, report_type: reportType })
@@ -72,7 +73,7 @@ export default function LiveReportPanel({ meeting }: { meeting: Item }) {
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || '生成报告快照失败');
       setSnapshot(data.snapshot);
-      window.open(`/report?meetingId=${encodeURIComponent(meeting.id)}&reportType=${encodeURIComponent(reportType)}&fromAdmin=true`, '_blank', 'noopener,noreferrer');
+      window.open(appPath(`/report?meetingId=${encodeURIComponent(meeting.id)}&reportType=${encodeURIComponent(reportType)}&fromAdmin=true`), '_blank', 'noopener,noreferrer');
     } catch (reason: any) {
       setError(reason.message || '生成报告快照失败');
     } finally {
