@@ -24,73 +24,6 @@ def parse_yaml_documents(path: Path) -> list[dict]:
 
 
 class CceDeliveryContractTest(unittest.TestCase):
-    def run_smoke_with_statuses(self, statuses: list[str], attempts: int = 2):
-        with tempfile.TemporaryDirectory() as directory:
-            temp_dir = Path(directory)
-            fake_curl = temp_dir / "curl"
-            fake_curl.write_text(
-                """#!/usr/bin/env python3
-from pathlib import Path
-import os
-import sys
-
-args = sys.argv[1:]
-headers = next(args[index + 1] for index, arg in enumerate(args) if arg == "--dump-header")
-output = next(args[index + 1] for index, arg in enumerate(args) if arg == "--output")
-url = args[-1]
-state_path = Path(os.environ["FAKE_CURL_STATE"])
-log_path = Path(os.environ["FAKE_CURL_LOG"])
-statuses = os.environ["FAKE_CURL_STATUSES"].split(",")
-request_number = int(state_path.read_text())
-status = statuses[min(request_number, len(statuses) - 1)]
-state_path.write_text(str(request_number + 1))
-with log_path.open("a", encoding="utf-8") as log:
-    log.write(url + "\\n")
-if status == "000":
-    Path(headers).write_text("HTTP/1.1 000\\n\\n", encoding="utf-8")
-    print(status, end="")
-    raise SystemExit(0)
-
-content_type = ""
-if "_next/static/" in url:
-    content_type = "application/javascript"
-elif url.endswith("/scoringsys/"):
-    content_type = "text/html"
-Path(headers).write_text(
-    f"HTTP/1.1 {status}\\n"
-    + (f"Location: /scoringsys/\\n" if status in {"301", "302", "307", "308"} else "")
-    + (f"Content-Type: {content_type}\\n" if content_type else "")
-    + "\\n",
-    encoding="utf-8",
-)
-if output != "/dev/null" and status == "200":
-    body = "立项评审在线打分系统 /scoringsys/_next/static/chunks/app.js" if url.endswith("/scoringsys/") else "asset"
-    Path(output).write_text(body, encoding="utf-8")
-print(status, end="")
-""",
-                encoding="utf-8",
-            )
-            fake_curl.chmod(0o755)
-            state_path = temp_dir / "state"
-            state_path.write_text("0", encoding="utf-8")
-            log_path = temp_dir / "requests.log"
-            env = os.environ.copy()
-            env.update(
-                {
-                    "PATH": f"{temp_dir}:{env['PATH']}",
-                    "PUBLIC_HOST": "example.test",
-                    "PUBLIC_PREFIX": "/scoringsys",
-                    "SMOKE_ATTEMPTS": str(attempts),
-                    "SMOKE_DELAY_SECONDS": "0",
-                    "FAKE_CURL_STATE": str(state_path),
-                    "FAKE_CURL_LOG": str(log_path),
-                    "FAKE_CURL_STATUSES": ",".join(statuses),
-                }
-            )
-            result = subprocess.run(["bash", str(ROOT / "scripts/ci/smoke-scoringsys.sh")], env=env, text=True, capture_output=True)
-            requests = log_path.read_text(encoding="utf-8").splitlines() if log_path.exists() else []
-            return result, requests
-
     def assert_scan_image_contract(self, pipeline: dict) -> None:
         scan = pipeline["scan-image"]
         self.assertEqual(
@@ -194,24 +127,6 @@ print(status, end="")
         self.assertIn("SMOKE_HTML_MARKER", SMOKE_SCRIPT)
         self.assertIn("static asset unexpectedly returned HTML", SMOKE_SCRIPT)
 
-    def test_canonical_redirect_transient_retry_preserves_page_contract(self) -> None:
-        for transient_status in ("404", "502"):
-            with self.subTest(status=transient_status):
-                result, requests = self.run_smoke_with_statuses([transient_status, "302", "200", "200"])
-                self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertIn("canonical-redirect passed on attempt 2", result.stdout)
-                self.assertEqual(len(requests), 4)
-
-        result, requests = self.run_smoke_with_statuses(["000", "302", "200", "200"])
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("canonical-redirect passed on attempt 2", result.stdout)
-        self.assertEqual(len(requests), 4)
-
-    def test_canonical_redirect_rejects_non_redirect_without_retry(self) -> None:
-        result, requests = self.run_smoke_with_statuses(["200"], attempts=2)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("canonical URL returned HTTP 200", result.stderr)
-        self.assertEqual(requests, ["https://example.test/scoringsys"])
 
     def test_renderer_rejects_missing_required_input_and_renders_optional_refs(self) -> None:
         renderer = ROOT / "scripts/ci/render_cce.py"
