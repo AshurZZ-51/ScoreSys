@@ -67,12 +67,13 @@ done
 [[ -n "${addresses:-}" ]] || die "Service has no ready endpoints"
 
 kubectl -n "$NAMESPACE" apply --dry-run=server -f "$ingress" >/dev/null || die "Ingress server dry-run failed"
+kubectl -n "$NAMESPACE" delete ingress scoringsys --ignore-not-found=true >/dev/null || die "old Ingress delete failed"
 kubectl -n "$NAMESPACE" apply -f "$ingress" >/dev/null || die "Ingress apply failed"
 
 host=$(kubectl -n "$NAMESPACE" get ingress scoringsys -o jsonpath='{.spec.rules[0].host}')
 [[ "$host" == "$PUBLIC_HOST" ]] || die "Ingress host does not match PUBLIC_HOST"
 paths=$(kubectl -n "$NAMESPACE" get ingress scoringsys -o jsonpath='{range .spec.rules[0].http.paths[*]}{.path}{"\n"}{end}')
-expected_paths=$(printf '%s\n%s/\n' "$PUBLIC_PREFIX" "$PUBLIC_PREFIX")
+expected_paths=$(printf '%s\n' "$PUBLIC_PREFIX")
 [[ "$paths" == "$expected_paths" ]] || die "Ingress paths do not match PUBLIC_PREFIX"
 backend_port=$(kubectl -n "$NAMESPACE" get ingress scoringsys -o jsonpath='{.spec.rules[0].http.paths[0].backend.service.port.number}')
 [[ "$backend_port" == "3000" ]] || die "Ingress backend port is not 3000"

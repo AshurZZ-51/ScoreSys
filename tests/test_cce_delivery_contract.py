@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 CI = (ROOT / ".gitlab-ci.yml").read_text(encoding="utf-8")
 DEPLOYMENT_TEMPLATE = (ROOT / "ops/cce/deployment.yaml.tmpl").read_text(encoding="utf-8")
 INGRESS_TEMPLATE = (ROOT / "ops/cce/ingress.yaml.tmpl").read_text(encoding="utf-8")
+DEPLOY_SCRIPT = (ROOT / "scripts/ci/deploy-cce.sh").read_text(encoding="utf-8")
 SMOKE_SCRIPT = (ROOT / "scripts/ci/smoke-scoringsys.sh").read_text(encoding="utf-8")
 
 
@@ -105,8 +106,12 @@ class CceDeliveryContractTest(unittest.TestCase):
         ingress = parse_yaml_documents(ROOT / "ops/cce/ingress.yaml.tmpl")[0]
         self.assertEqual(ingress["spec"]["ingressClassName"], "cce")
         self.assertEqual(ingress["spec"]["rules"][0]["host"], "nexus.youdoogo.com")
-        paths = [entry["path"] for entry in ingress["spec"]["rules"][0]["http"]["paths"]]
-        self.assertEqual(paths, ["/scoringsys", "/scoringsys/"])
+        path_entries = ingress["spec"]["rules"][0]["http"]["paths"]
+        paths = [entry["path"] for entry in path_entries]
+        self.assertEqual(paths, ["/scoringsys"])
+        self.assertEqual(path_entries[0]["pathType"], "Prefix")
+        self.assertEqual(path_entries[0]["backend"]["service"]["name"], "scoringsys")
+        self.assertEqual(path_entries[0]["backend"]["service"]["port"]["number"], 3000)
         self.assertNotIn("/", paths)
         annotations = ingress["metadata"]["annotations"]
         self.assertEqual(annotations["kubernetes.io/elb.class"], "performance")
@@ -115,6 +120,19 @@ class CceDeliveryContractTest(unittest.TestCase):
         self.assertEqual(annotations["kubernetes.io/elb.listener-master-ingress"], "nexus-prod/nexus-studio")
         self.assertNotIn("kubernetes.io/elb.listen-ports", annotations)
         self.assertNotIn("kubernetes.io/elb.tls-certificate-ids", annotations)
+
+    def test_deploy_replaces_only_scoring_ingress_after_readiness_checks(self) -> None:
+        ingress_dry_run = DEPLOY_SCRIPT.index('apply --dry-run=server -f "$ingress"')
+        endpoints_ready = DEPLOY_SCRIPT.index('[[ -n "${addresses:-}" ]] || die "Service has no ready endpoints"')
+        ingress_delete = DEPLOY_SCRIPT.index('delete ingress scoringsys --ignore-not-found=true')
+        ingress_apply = DEPLOY_SCRIPT.index('apply -f "$ingress"')
+        self.assertLess(ingress_dry_run, ingress_delete)
+        self.assertLess(endpoints_ready, ingress_delete)
+        self.assertLess(ingress_delete, ingress_apply)
+        self.assertIn("--ignore-not-found=true", DEPLOY_SCRIPT)
+        self.assertNotIn("delete deployment", DEPLOY_SCRIPT)
+        self.assertNotIn("delete service", DEPLOY_SCRIPT)
+        self.assertNotIn("delete ingress nexus-studio", DEPLOY_SCRIPT)
 
     def test_canonical_redirect_retries_only_transient_statuses(self) -> None:
         canonical_check = SMOKE_SCRIPT.split("check_canonical_redirect()", 1)[1].split("check_page_and_asset()", 1)[0]
@@ -151,9 +169,9 @@ class CceDeliveryContractTest(unittest.TestCase):
 
     def test_negative_mutations_fail_contract(self) -> None:
         paths = [entry["path"] for entry in parse_yaml_documents(ROOT / "ops/cce/ingress.yaml.tmpl")[0]["spec"]["rules"][0]["http"]["paths"]]
-        self.assertEqual(paths, ["/scoringsys", "/scoringsys/"])
+        self.assertEqual(paths, ["/scoringsys"])
         mutated_paths = paths + ["/"]
-        self.assertNotEqual(mutated_paths, ["/scoringsys", "/scoringsys/"])
+        self.assertNotEqual(mutated_paths, ["/scoringsys"])
         self.assertNotIn("--provenance=false", CI.replace("--provenance=false", ""))
         mutated_pipeline = CI.replace("retry: 0", "retry: 1", 1)
         self.assertNotEqual(yaml.safe_load(mutated_pipeline)["deploy-cce"]["retry"], 0)
