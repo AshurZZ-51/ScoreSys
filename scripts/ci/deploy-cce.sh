@@ -66,8 +66,15 @@ while (( SECONDS < deadline )); do
 done
 [[ -n "${addresses:-}" ]] || die "Service has no ready endpoints"
 
+# The Ingress is applied, never deleted-then-recreated. The CCE controller drives
+# the ELB through asynchronous cloud-side calls, so a delete immediately followed
+# by an apply can land the delete's forwarding-policy cleanup AFTER the recreate's
+# policy generation. That leaves a healthy-looking Ingress -- status.loadBalancer
+# populated, a successful CREATE event -- with no ELB route at all, and nothing
+# resyncs it afterwards. The rendered manifest instead carries a per-pipeline
+# reconcile-trigger annotation, which is how the other sub-ingresses on this
+# shared ELB (nexus-prod/des-game, nexus-prod/nexus-studio) force a re-reconcile.
 kubectl -n "$NAMESPACE" apply --dry-run=server -f "$ingress" >/dev/null || die "Ingress server dry-run failed"
-kubectl -n "$NAMESPACE" delete ingress scoringsys --ignore-not-found=true >/dev/null || die "old Ingress delete failed"
 kubectl -n "$NAMESPACE" apply -f "$ingress" >/dev/null || die "Ingress apply failed"
 
 host=$(kubectl -n "$NAMESPACE" get ingress scoringsys -o jsonpath='{.spec.rules[0].host}')
@@ -77,5 +84,21 @@ expected_paths=$(printf '%s\n' "$PUBLIC_PREFIX")
 [[ "$paths" == "$expected_paths" ]] || die "Ingress paths do not match PUBLIC_PREFIX"
 backend_port=$(kubectl -n "$NAMESPACE" get ingress scoringsys -o jsonpath='{.spec.rules[0].http.paths[0].backend.service.port.number}')
 [[ "$backend_port" == "3000" ]] || die "Ingress backend port is not 3000"
+
+# The listener on the shared ELB belongs to the master Ingress. Fail closed if a
+# stale or hand-edited object still claims the listener or the deprecated class
+# selector, rather than letting it reach the ELB.
+for forbidden in kubernetes.io/elb.listen-ports kubernetes.io/elb.tls-certificate-ids kubernetes.io/ingress.class; do
+  value=$(kubectl -n "$NAMESPACE" get ingress scoringsys -o "jsonpath={.metadata.annotations['${forbidden//./\\.}']}" 2>/dev/null || true)
+  [[ -z "$value" ]] || die "Ingress must not declare $forbidden on the shared listener"
+done
+
+applied_trigger=$(kubectl -n "$NAMESPACE" get ingress scoringsys -o "jsonpath={.metadata.annotations['reconcile-trigger']}" 2>/dev/null || true)
+[[ -n "$applied_trigger" ]] || die "Ingress is missing the reconcile-trigger annotation"
+
+running_image=$(kubectl -n "$NAMESPACE" get deployment scoringsys -o jsonpath='{.spec.template.spec.containers[0].image}')
+if [[ -n "${IMAGE_REFERENCE:-}" && "$running_image" != "$IMAGE_REFERENCE" ]]; then
+  die "rolled out image does not match IMAGE_REFERENCE"
+fi
 
 PUBLIC_HOST="$PUBLIC_HOST" PUBLIC_PREFIX="$PUBLIC_PREFIX" "$SCRIPT_DIR/smoke-scoringsys.sh"

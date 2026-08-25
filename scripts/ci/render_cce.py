@@ -15,13 +15,29 @@ except ImportError as exc:  # pragma: no cover - exercised by CI setup failures
     raise SystemExit("PyYAML is required to render CCE manifests") from exc
 
 
-PUBLIC_HOST = "nexus.youdoogo.com"
-PUBLIC_PREFIX = "/scoringsys"
-CCE_ELB_ID = "abab7533-a1c6-4138-a4bc-59d53e3446e2"
-CCE_LISTENER_MASTER_INGRESS = "nexus-prod/nexus-studio"
-CCE_TLS_CERTIFICATE_IDS = "56de20421757445ea53f5af51ecb4e10"
-CCE_INGRESS_CLASS = "cce"
+PUBLIC_HOST = os.environ.get("PUBLIC_HOST", "").strip() or "nexus.youdoogo.com"
+PUBLIC_PREFIX = os.environ.get("PUBLIC_PREFIX", "").strip() or "/scoringsys"
+CCE_ELB_ID = os.environ.get("CCE_ELB_ID", "").strip() or "abab7533-a1c6-4138-a4bc-59d53e3446e2"
+CCE_LISTENER_MASTER_INGRESS = (
+    os.environ.get("CCE_LISTENER_MASTER_INGRESS", "").strip() or "nexus-prod/nexus-studio"
+)
+CCE_ELB_PORT = os.environ.get("CCE_ELB_PORT", "").strip() or "80"
+CCE_ELB_CLASS = os.environ.get("CCE_ELB_CLASS", "").strip() or "performance"
+CCE_INGRESS_CLASS = os.environ.get("CCE_INGRESS_CLASS", "").strip() or "cce"
 NAME_PATTERN = re.compile(r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$")
+TRIGGER_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,63}$")
+
+# The listener on the shared nexus-prod ELB (ports 80/443 plus the TLS certificate)
+# is owned by the master Ingress. A sub-ingress that declares these annotations
+# fights the master for the listener definition, so they must never be rendered.
+FORBIDDEN_INGRESS_ANNOTATIONS = (
+    "kubernetes.io/elb.listen-ports",
+    "kubernetes.io/elb.tls-certificate-ids",
+    # Deprecated selector. Every working cce Ingress in nexus-prod selects the
+    # controller through spec.ingressClassName only; carrying both is the single
+    # configuration difference that set scoringsys apart from its working peers.
+    "kubernetes.io/ingress.class",
+)
 
 
 def required(name: str) -> str:
@@ -80,6 +96,15 @@ def build_values() -> dict[str, str]:
     if any(char.isspace() for char in image) or "\n" in image:
         raise ValueError("IMAGE_REFERENCE must not contain whitespace")
 
+    trigger = (
+        os.environ.get("RECONCILE_TRIGGER", "").strip()
+        or os.environ.get("CI_PIPELINE_ID", "").strip()
+        or os.environ.get("CI_COMMIT_SHA", "").strip()
+        or "local"
+    )
+    if not TRIGGER_PATTERN.fullmatch(trigger):
+        raise ValueError("RECONCILE_TRIGGER must be a short alphanumeric token")
+
     secret_name = os.environ.get("RUNTIME_SECRET_NAME", "").strip() or None
     configmap_name = os.environ.get("RUNTIME_CONFIGMAP_NAME", "").strip() or None
     if secret_name:
@@ -92,7 +117,41 @@ def build_values() -> dict[str, str]:
         "IMAGE_PULL_SECRET": pull_secret,
         "IMAGE_REFERENCE": image,
         "RUNTIME_ENV_BLOCK": render_runtime_env(secret_name, configmap_name),
+        "RECONCILE_TRIGGER": trigger,
     }
+
+
+def validate_probe_paths(deployment: dict) -> None:
+    """Keep the container probes on the same public prefix the Ingress exposes.
+
+    A probe on "{prefix}/" only ever observes the Next.js 308 that normalises the
+    trailing slash away, and kubectl treats 3xx as success -- so the workload can
+    report Ready without the page having rendered once.
+    """
+    container = deployment["spec"]["template"]["spec"]["containers"][0]
+    for probe in ("startupProbe", "readinessProbe", "livenessProbe"):
+        path = container[probe]["httpGet"]["path"]
+        if path != PUBLIC_PREFIX:
+            raise ValueError(f"{probe} path {path} does not match PUBLIC_PREFIX {PUBLIC_PREFIX}")
+
+
+def validate_shared_elb_annotations(ingress: dict, trigger: str) -> None:
+    """Enforce the sub-ingress contract for the shared nexus-prod ELB."""
+    annotations = ingress["metadata"].get("annotations") or {}
+    expected = {
+        "kubernetes.io/elb.class": CCE_ELB_CLASS,
+        "kubernetes.io/elb.id": CCE_ELB_ID,
+        "kubernetes.io/elb.port": str(CCE_ELB_PORT),
+        "kubernetes.io/elb.listener-master-ingress": CCE_LISTENER_MASTER_INGRESS,
+        "reconcile-trigger": trigger,
+    }
+    for key, want in expected.items():
+        got = annotations.get(key)
+        if str(got) != want:
+            raise ValueError(f"Ingress annotation {key} must be {want}")
+    for key in FORBIDDEN_INGRESS_ANNOTATIONS:
+        if key in annotations:
+            raise ValueError(f"Ingress must not declare {key} on a shared-listener sub-ingress")
 
 
 def render(output_dir: Path, template_dir: Path) -> None:
@@ -107,14 +166,17 @@ def render(output_dir: Path, template_dir: Path) -> None:
     service_obj = deployment_docs[1]
     if deployment_obj["metadata"]["namespace"] != values["NAMESPACE"] or service_obj["metadata"]["namespace"] != values["NAMESPACE"]:
         raise ValueError("workload namespace does not match KUBE_NAMESPACE")
+    validate_probe_paths(deployment_obj)
+
     ingress_obj = ingress_docs[0]
     if ingress_obj["spec"].get("ingressClassName") != CCE_INGRESS_CLASS:
-        raise ValueError("Ingress must use ingressClassName cce")
+        raise ValueError(f"Ingress must use ingressClassName {CCE_INGRESS_CLASS}")
     paths = ingress_obj["spec"]["rules"][0]["http"]["paths"]
     if [path["path"] for path in paths] != [PUBLIC_PREFIX]:
-        raise ValueError("Ingress must expose only /scoringsys")
+        raise ValueError(f"Ingress must expose only {PUBLIC_PREFIX}")
     if ingress_obj["spec"]["rules"][0]["host"] != PUBLIC_HOST:
         raise ValueError("Ingress host does not match the public contract")
+    validate_shared_elb_annotations(ingress_obj, values["RECONCILE_TRIGGER"])
 
     (output_dir / "deployment.yaml").write_text(deployment, encoding="utf-8")
     (output_dir / "ingress.yaml").write_text(ingress, encoding="utf-8")

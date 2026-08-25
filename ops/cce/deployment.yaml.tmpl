@@ -53,21 +53,21 @@ spec:
               mountPath: /tmp
           startupProbe:
             httpGet:
-              path: /scoringsys/
+              path: /scoringsys
               port: http
             periodSeconds: 5
             timeoutSeconds: 3
             failureThreshold: 30
           readinessProbe:
             httpGet:
-              path: /scoringsys/
+              path: /scoringsys
               port: http
             periodSeconds: 10
             timeoutSeconds: 3
             failureThreshold: 3
           livenessProbe:
             httpGet:
-              path: /scoringsys/
+              path: /scoringsys
               port: http
             periodSeconds: 20
             timeoutSeconds: 3

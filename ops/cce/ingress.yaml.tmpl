@@ -4,11 +4,20 @@ metadata:
   name: scoringsys
   namespace: "{{NAMESPACE}}"
   annotations:
-    kubernetes.io/ingress.class: cce
+    # Sub-ingress on the shared nexus-prod ELB. It must declare only elb.id,
+    # elb.port and listener-master-ingress: the listener itself (ports 80/443
+    # and the TLS certificate) is owned by the master Ingress nexus-prod/nexus-studio.
+    # Declaring elb.listen-ports or elb.tls-certificate-ids here would fight the
+    # master for the listener definition.
     kubernetes.io/elb.class: performance
     kubernetes.io/elb.id: abab7533-a1c6-4138-a4bc-59d53e3446e2
     kubernetes.io/elb.port: "80"
     kubernetes.io/elb.listener-master-ingress: nexus-prod/nexus-studio
+    # Bumped once per pipeline so the CCE controller always receives an update
+    # event and regenerates the ELB forwarding policy. This replaces deleting
+    # and recreating the Ingress, which raced the controller's asynchronous ELB
+    # cleanup and could leave the object healthy with no forwarding policy.
+    reconcile-trigger: "{{RECONCILE_TRIGGER}}"
 spec:
   ingressClassName: cce
   rules:
