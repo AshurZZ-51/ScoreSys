@@ -23,7 +23,6 @@ spec:
           type: RuntimeDefault
       imagePullSecrets:
         - name: "{{IMAGE_PULL_SECRET}}"
-{{RUNTIME_ENV_BLOCK}}
       containers:
         - name: scoringsys
           image: "{{IMAGE_REFERENCE}}"
@@ -48,6 +47,7 @@ spec:
               value: 0.0.0.0
             - name: PORT
               value: "3000"
+{{RUNTIME_ENV_BLOCK}}
           volumeMounts:
             - name: tmp
               mountPath: /tmp

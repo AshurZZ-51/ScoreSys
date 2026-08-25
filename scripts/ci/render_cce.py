@@ -40,12 +40,12 @@ def validate_name(name: str, value: str) -> str:
 def render_runtime_env(secret_name: str | None, configmap_name: str | None) -> str:
     refs = []
     if secret_name:
-        refs.append(f"        - secretRef:\n            name: {secret_name}")
+        refs.append(f"          - secretRef:\n              name: {secret_name}")
     if configmap_name:
-        refs.append(f"        - configMapRef:\n            name: {configmap_name}")
+        refs.append(f"          - configMapRef:\n              name: {configmap_name}")
     if not refs:
         return ""
-    return "      envFrom:\n" + "\n".join(refs)
+    return "          envFrom:\n" + "\n".join(refs)
 
 
 def render_template(template: str, values: dict[str, str]) -> str:
