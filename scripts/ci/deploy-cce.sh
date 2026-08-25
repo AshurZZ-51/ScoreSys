@@ -35,7 +35,7 @@ fi
 
 kubeconfig=$(mktemp)
 trap 'rm -f "$kubeconfig"' EXIT
-printf '%s' "$KUBECONFIG_CCE_B64" | base64 --decode >"$kubeconfig" || die "invalid KUBECONFIG_CCE_B64"
+printf '%s' "$KUBECONFIG_CCE_B64" | base64 -d >"$kubeconfig" || die "invalid KUBECONFIG_CCE_B64"
 chmod 600 "$kubeconfig"
 export KUBECONFIG="$kubeconfig"
 
