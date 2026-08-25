@@ -53,7 +53,6 @@ if [[ -n "${RUNTIME_CONFIGMAP_NAME:-}" ]]; then
 fi
 
 kubectl -n "$NAMESPACE" apply --dry-run=server -f "$workload" >/dev/null || die "workload server dry-run failed"
-kubectl -n "$NAMESPACE" apply --dry-run=server -f "$ingress" >/dev/null || die "Ingress server dry-run failed"
 kubectl -n "$NAMESPACE" apply -f "$workload" >/dev/null || die "workload apply failed"
 kubectl -n "$NAMESPACE" rollout status deployment/scoringsys --timeout=180s >/dev/null || die "deployment rollout failed"
 
@@ -67,6 +66,7 @@ while (( SECONDS < deadline )); do
 done
 [[ -n "${addresses:-}" ]] || die "Service has no ready endpoints"
 
+kubectl -n "$NAMESPACE" apply --dry-run=server -f "$ingress" >/dev/null || die "Ingress server dry-run failed"
 kubectl -n "$NAMESPACE" apply -f "$ingress" >/dev/null || die "Ingress apply failed"
 
 host=$(kubectl -n "$NAMESPACE" get ingress scoringsys -o jsonpath='{.spec.rules[0].host}')
