@@ -47,7 +47,7 @@ state_path.write_text(str(request_number + 1))
 with log_path.open("a", encoding="utf-8") as log:
     log.write(url + "\\n")
 if status == "000":
-    Path(headers).write_text("", encoding="utf-8")
+    Path(headers).write_text("HTTP/1.1 000\\n\\n", encoding="utf-8")
     print(status, end="")
     raise SystemExit(0)
 
