@@ -47,7 +47,9 @@ state_path.write_text(str(request_number + 1))
 with log_path.open("a", encoding="utf-8") as log:
     log.write(url + "\\n")
 if status == "000":
-    raise SystemExit(7)
+    Path(headers).write_text("", encoding="utf-8")
+    print(status, end="")
+    raise SystemExit(0)
 
 content_type = ""
 if "_next/static/" in url:
