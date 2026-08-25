@@ -81,28 +81,66 @@ class CceDeliveryContractTest(unittest.TestCase):
 
     def assert_scan_image_contract(self, pipeline: dict) -> None:
         scan = pipeline["scan-image"]
+        variables = scan["variables"]
+        script = scan["script"]
+        db_download = next(command for command in script if command.startswith("download_trivy_db()"))
+        scan_command = next(command for command in script if command.startswith("trivy image --severity"))
         self.assertEqual(
             scan["image"],
             {"name": "aquasec/trivy:0.56.2", "entrypoint": [""]},
         )
         self.assertEqual(
-            scan["variables"]["TRIVY_DB_REPOSITORY"],
-            "m.daocloud.io/ghcr.io/aquasecurity/trivy-db:2",
+            variables["TRIVY_DB_REPOSITORY_PRIMARY"],
+            "mirror.gcr.io/aquasec/trivy-db:2",
         )
         self.assertEqual(
-            scan["variables"]["TRIVY_JAVA_DB_REPOSITORY"],
-            "m.daocloud.io/ghcr.io/aquasecurity/trivy-java-db:1",
-        )
-        self.assertNotEqual(
-            scan["variables"]["TRIVY_DB_REPOSITORY"],
+            variables["TRIVY_DB_REPOSITORY_FALLBACK"],
             "ghcr.io/aquasecurity/trivy-db:2",
         )
-        self.assertIn('export TRIVY_USERNAME="${SWR_REGION}@${SWR_AK}"', scan["script"])
-        self.assertIn('export TRIVY_PASSWORD="$SWR_PASSWORD"', scan["script"])
-        self.assertIn(
-            'trivy image --severity HIGH,CRITICAL --exit-code 1 "${SWR_REGISTRY}/scoringsys:${CI_COMMIT_SHA}"',
-            scan["script"],
+        self.assertNotEqual(
+            variables["TRIVY_DB_REPOSITORY_PRIMARY"],
+            variables["TRIVY_DB_REPOSITORY_FALLBACK"],
         )
+        self.assertEqual(variables["TRIVY_DB_DOWNLOAD_TIMEOUT"], "5m")
+        self.assertEqual(variables["TRIVY_CACHE_DIR"], ".trivycache")
+        self.assertEqual(
+            scan["cache"],
+            {
+                "key": "trivy-0.56.2-db-v2",
+                "paths": [".trivycache/"],
+                "policy": "pull-push",
+                "when": "always",
+            },
+        )
+        self.assertNotIn("$", scan["cache"]["key"])
+        self.assertNotIn("PASSWORD", json.dumps(scan["cache"]))
+
+        self.assertIn('TRIVY_DB_REPOSITORY="$repository" trivy image', db_download)
+        self.assertIn("--download-db-only", db_download)
+        self.assertIn('--cache-dir "$TRIVY_CACHE_DIR"', db_download)
+        self.assertIn('--timeout "$TRIVY_DB_DOWNLOAD_TIMEOUT"', db_download)
+        self.assertIn('download_trivy_db "$TRIVY_DB_REPOSITORY_PRIMARY"', db_download)
+        self.assertIn('elif download_trivy_db "$TRIVY_DB_REPOSITORY_FALLBACK"', db_download)
+        self.assertLess(
+            db_download.index("TRIVY_DB_REPOSITORY_PRIMARY"),
+            db_download.index("TRIVY_DB_REPOSITORY_FALLBACK"),
+        )
+        self.assertIn("exit 1", db_download)
+        self.assertNotIn("--skip-db-update", db_download)
+
+        self.assertIn("unset TRIVY_USERNAME TRIVY_PASSWORD", script)
+        self.assertIn('export TRIVY_USERNAME="${SWR_REGION}@${SWR_AK}"', script)
+        self.assertIn('export TRIVY_PASSWORD="$SWR_PASSWORD"', script)
+        self.assertLess(script.index(db_download), script.index('export TRIVY_USERNAME="${SWR_REGION}@${SWR_AK}"'))
+        self.assertEqual(
+            scan_command,
+            'trivy image --severity HIGH,CRITICAL --exit-code 1 --cache-dir "$TRIVY_CACHE_DIR" '
+            '--skip-db-update --skip-java-db-update "${SWR_REGISTRY}/scoringsys:${CI_COMMIT_SHA}"',
+        )
+        self.assertLess(script.index(db_download), script.index(scan_command))
+        self.assertEqual("\n".join(script).count("--skip-db-update"), 1)
+        self.assertNotIn("--ignore", "\n".join(script))
+        self.assertNotIn("allow_failure", scan)
 
     def test_pipeline_has_ordered_stages_and_safe_workflow(self) -> None:
         pipeline = yaml.safe_load(CI)
@@ -342,7 +380,18 @@ class CceDeliveryContractTest(unittest.TestCase):
         with self.assertRaises(AssertionError):
             self.assert_scan_image_contract(mutated_pipeline)
         mutated_pipeline = yaml.safe_load(CI)
-        mutated_pipeline["scan-image"]["variables"]["TRIVY_DB_REPOSITORY"] = "ghcr.io/aquasecurity/trivy-db:2"
+        mutated_pipeline["scan-image"]["variables"]["TRIVY_DB_REPOSITORY_PRIMARY"] = "ghcr.io/aquasecurity/trivy-db:2"
+        with self.assertRaises(AssertionError):
+            self.assert_scan_image_contract(mutated_pipeline)
+        mutated_pipeline = yaml.safe_load(CI.replace('--timeout "$TRIVY_DB_DOWNLOAD_TIMEOUT"', "", 1))
+        with self.assertRaises(AssertionError):
+            self.assert_scan_image_contract(mutated_pipeline)
+        mutated_pipeline = yaml.safe_load(CI)
+        mutated_pipeline["scan-image"]["cache"]["paths"] = [".different-cache/"]
+        with self.assertRaises(AssertionError):
+            self.assert_scan_image_contract(mutated_pipeline)
+        mutated_pipeline = yaml.safe_load(CI)
+        mutated_pipeline["scan-image"]["allow_failure"] = True
         with self.assertRaises(AssertionError):
             self.assert_scan_image_contract(mutated_pipeline)
         self.assertNotIn("kind: Secret", DEPLOYMENT_TEMPLATE)

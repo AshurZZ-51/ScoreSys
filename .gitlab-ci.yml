@@ -95,19 +95,46 @@ scan-image:
     - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
   needs:
     - job: build-image
+  cache:
+    key: "trivy-0.56.2-db-v2"
+    paths:
+      - .trivycache/
+    policy: pull-push
+    when: always
   variables:
     TRIVY_NO_PROGRESS: "true"
-    TRIVY_DB_REPOSITORY: "m.daocloud.io/ghcr.io/aquasecurity/trivy-db:2"
-    TRIVY_JAVA_DB_REPOSITORY: "m.daocloud.io/ghcr.io/aquasecurity/trivy-java-db:1"
+    TRIVY_CACHE_DIR: ".trivycache"
+    TRIVY_DB_DOWNLOAD_TIMEOUT: "5m"
+    TRIVY_DB_REPOSITORY_PRIMARY: "mirror.gcr.io/aquasec/trivy-db:2"
+    TRIVY_DB_REPOSITORY_FALLBACK: "ghcr.io/aquasecurity/trivy-db:2"
   script:
     - ': "${SWR_REGION:?SWR_REGION is required}"'
     - ': "${SWR_AK:?SWR_AK is required}"'
     - ': "${SWR_PASSWORD:?SWR_PASSWORD is required}"'
     - export SWR_REGISTRY="${SWR_REGISTRY_OVERRIDE:-swr.${SWR_REGION}.myhuaweicloud.com}"
     - export SWR_REGISTRY_HOST="${SWR_REGISTRY%%/*}"
+    - unset TRIVY_USERNAME TRIVY_PASSWORD
+    - |
+      download_trivy_db() {
+        repository="$1"
+        echo "Downloading Trivy vulnerability DB from ${repository}"
+        TRIVY_DB_REPOSITORY="$repository" trivy image \
+          --download-db-only \
+          --cache-dir "$TRIVY_CACHE_DIR" \
+          --timeout "$TRIVY_DB_DOWNLOAD_TIMEOUT"
+      }
+
+      if download_trivy_db "$TRIVY_DB_REPOSITORY_PRIMARY"; then
+        echo "Trivy vulnerability DB is ready from the primary repository"
+      elif download_trivy_db "$TRIVY_DB_REPOSITORY_FALLBACK"; then
+        echo "Trivy vulnerability DB is ready from the fallback repository"
+      else
+        echo "Unable to download the Trivy vulnerability DB from either repository" >&2
+        exit 1
+      fi
     - export TRIVY_USERNAME="${SWR_REGION}@${SWR_AK}"
     - export TRIVY_PASSWORD="$SWR_PASSWORD"
-    - trivy image --severity HIGH,CRITICAL --exit-code 1 "${SWR_REGISTRY}/scoringsys:${CI_COMMIT_SHA}"
+    - trivy image --severity HIGH,CRITICAL --exit-code 1 --cache-dir "$TRIVY_CACHE_DIR" --skip-db-update --skip-java-db-update "${SWR_REGISTRY}/scoringsys:${CI_COMMIT_SHA}"
 
 deploy-cce:
   stage: deploy
