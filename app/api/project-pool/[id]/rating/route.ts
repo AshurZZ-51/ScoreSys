@@ -6,7 +6,8 @@ import { canEditFinalRating } from '@/lib/projectDetailWorkflow';
 
 export const dynamic = 'force-dynamic';
 
-export async function POST(request: NextRequest, { params }: { params: { id: string } }) {
+export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
   if (!isProjectPoolV2Enabled()) return NextResponse.json({ error: '项目池功能尚未启用' }, { status: 404 });
   const session = requireReviewerSession(request);
   if (!session) return NextResponse.json({ error: '请先登录' }, { status: 401 });
@@ -27,7 +28,7 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
     }
 
     const { data: rawProject, error } = await supabaseAdmin.rpc('apply_project_rating', {
-      p_project_id: params.id,
+      p_project_id: id,
       p_rating_type: ratingType,
       p_rating: rating,
       p_operator_code: session.code

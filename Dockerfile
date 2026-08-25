@@ -3,6 +3,8 @@ FROM node:20-alpine3.23
 
 WORKDIR /app
 
+RUN apk upgrade --no-cache libcrypto3 libssl3
+
 COPY package.json package-lock.json ./
 RUN npm ci
 

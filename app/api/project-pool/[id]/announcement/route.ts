@@ -4,7 +4,8 @@ import { requireAdminSession } from '@/lib/adminSession';
 
 export const dynamic = 'force-dynamic';
 
-export async function POST(request: NextRequest, { params }: { params: { id: string } }) {
+export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
   if (!isProjectPoolV2Enabled()) return NextResponse.json({ error: '项目池功能尚未启用' }, { status: 404 });
   const session = requireAdminSession(request);
   if (!session) return NextResponse.json({ error: '只有管理员可以保存立项公示' }, { status: 403 });
@@ -13,8 +14,8 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
     const announcement = String(body?.announcement || '').trim();
     if (!announcement) return NextResponse.json({ error: '立项公示内容不能为空' }, { status: 400 });
     const [{ data: poolProject, error: poolError }, { data: assignments, error: assignmentsError }] = await Promise.all([
-      supabaseAdmin.from('project_pool').select('status').eq('id', params.id).single(),
-      supabaseAdmin.from('projects').select('round_no, scores(reviewer_code, dim_name, comment)').eq('pool_project_id', params.id)
+      supabaseAdmin.from('project_pool').select('status').eq('id', id).single(),
+      supabaseAdmin.from('projects').select('round_no, scores(reviewer_code, dim_name, comment)').eq('pool_project_id', id)
     ]);
     if (poolError) throw poolError;
     if (poolProject.status !== 'initiation') return NextResponse.json({ error: '项目尚未进入立项流程，不能生成立项公示' }, { status: 409 });
@@ -33,7 +34,7 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
       initiation_announcement_updated_at: new Date().toISOString(),
       initiation_announcement_updated_by: session.code,
       updated_at: new Date().toISOString()
-    }).eq('id', params.id).select().single();
+    }).eq('id', id).select().single();
     if (error) throw error;
     return NextResponse.json({ success: true, project });
   } catch (err: any) {

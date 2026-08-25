@@ -5,14 +5,15 @@ import { isCompletedReview } from '@/lib/adminLifecycle';
 
 export const dynamic = 'force-dynamic';
 
-export async function GET(_: NextRequest, { params }: { params: { id: string } }) {
+export async function GET(_: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
   if (!isProjectPoolV2Enabled()) return NextResponse.json({ error: '项目池功能尚未启用' }, { status: 404 });
   try {
     const [project, history, assignments, ratingHistory] = await Promise.all([
-      supabaseAdmin.from('project_pool').select('*, project_materials(*)').eq('id', params.id).single(),
-      supabaseAdmin.from('project_status_history').select('*').eq('project_id', params.id).order('created_at', { ascending: false }),
-      supabaseAdmin.from('projects').select('*, meetings(id, name, meeting_date, status), scores(reviewer_code, dim_name, score, comment, updated_at)').eq('pool_project_id', params.id).order('created_at'),
-      supabaseAdmin.from('project_rating_history').select('*').eq('project_id', params.id).order('created_at', { ascending: false })
+      supabaseAdmin.from('project_pool').select('*, project_materials(*)').eq('id', id).single(),
+      supabaseAdmin.from('project_status_history').select('*').eq('project_id', id).order('created_at', { ascending: false }),
+      supabaseAdmin.from('projects').select('*, meetings(id, name, meeting_date, status), scores(reviewer_code, dim_name, score, comment, updated_at)').eq('pool_project_id', id).order('created_at'),
+      supabaseAdmin.from('project_rating_history').select('*').eq('project_id', id).order('created_at', { ascending: false })
     ]);
     if (project.error) throw project.error;
     if (history.error) throw history.error;

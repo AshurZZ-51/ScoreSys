@@ -10,12 +10,13 @@ function superAdminSession(request: NextRequest) {
   return session?.is_admin === true && isSuperAdmin(session.code) ? session : null;
 }
 
-export async function PATCH(request: NextRequest, { params }: { params: { code: string } }) {
+export async function PATCH(request: NextRequest, { params }: { params: Promise<{ code: string }> }) {
+  const { code } = await params;
   const session = superAdminSession(request);
   if (!session) return NextResponse.json({ error: '仅超管可管理账号' }, { status: 403 });
 
   try {
-    const targetCode = decodeURIComponent(params.code || '').trim();
+    const targetCode = decodeURIComponent(code || '').trim();
     if (!targetCode) return NextResponse.json({ error: '账号不能为空' }, { status: 400 });
     const body = await request.json();
     const { data: account, error: accountError } = await supabaseAdmin
