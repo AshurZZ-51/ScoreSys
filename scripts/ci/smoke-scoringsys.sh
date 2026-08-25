@@ -49,7 +49,11 @@ check_canonical_redirect() {
       [[ "$location" == "$page_url" || "$location" == "${PUBLIC_PREFIX}/" || "$location" == "${base_url}${PUBLIC_PREFIX}/" ]] || return 1
       return 0
       ;;
+    000|404|502)
+      return 10
+      ;;
     *)
+      printf 'canonical URL returned HTTP %s\n' "$status" >&2
       return 1
       ;;
   esac
