@@ -111,8 +111,8 @@ def render(output_dir: Path, template_dir: Path) -> None:
     if ingress_obj["spec"].get("ingressClassName") != CCE_INGRESS_CLASS:
         raise ValueError("Ingress must use ingressClassName cce")
     paths = ingress_obj["spec"]["rules"][0]["http"]["paths"]
-    if [path["path"] for path in paths] != [PUBLIC_PREFIX, PUBLIC_PREFIX + "/"]:
-        raise ValueError("Ingress must expose only /scoringsys and /scoringsys/")
+    if [path["path"] for path in paths] != [PUBLIC_PREFIX]:
+        raise ValueError("Ingress must expose only /scoringsys")
     if ingress_obj["spec"]["rules"][0]["host"] != PUBLIC_HOST:
         raise ValueError("Ingress host does not match the public contract")
 
