@@ -195,12 +195,17 @@ print(status, end="")
         self.assertIn("static asset unexpectedly returned HTML", SMOKE_SCRIPT)
 
     def test_canonical_redirect_transient_retry_preserves_page_contract(self) -> None:
-        for transient_status in ("000", "404", "502"):
+        for transient_status in ("404", "502"):
             with self.subTest(status=transient_status):
                 result, requests = self.run_smoke_with_statuses([transient_status, "302", "200", "200"])
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertIn("canonical-redirect passed on attempt 2", result.stdout)
                 self.assertEqual(len(requests), 4)
+
+        result, requests = self.run_smoke_with_statuses(["000", "302", "200", "200"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("canonical-redirect passed on attempt 2", result.stdout)
+        self.assertEqual(len(requests), 4)
 
     def test_canonical_redirect_rejects_non_redirect_without_retry(self) -> None:
         result, requests = self.run_smoke_with_statuses(["200"], attempts=2)
