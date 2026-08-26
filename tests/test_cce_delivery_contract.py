@@ -296,13 +296,17 @@ class CceDeliveryContractTest(unittest.TestCase):
         ):
             with self.subTest(reference=reference), tempfile.TemporaryDirectory() as directory:
                 command_dir = Path(directory)
-                kubectl_stub = command_dir / "kubectl"
-                kubectl_stub.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-                kubectl_stub.chmod(0o755)
+                stub_log = command_dir / "stub-invocations.log"
+                stub_script = '#!/bin/sh\nprintf \'%s\\n\' "${0##*/}" >>"$COMMAND_STUB_LOG"\nexit 0\n'
+                for command_name in ("kubectl", "base64", "curl"):
+                    command_stub = command_dir / command_name
+                    command_stub.write_text(stub_script, encoding="utf-8")
+                    command_stub.chmod(0o755)
                 env = os.environ.copy()
                 env.update(
                     {
                         "PATH": f"{command_dir}:{env.get('PATH', '')}",
+                        "COMMAND_STUB_LOG": str(stub_log),
                         "KUBECONFIG_CCE_B64": "eA==",
                         "KUBE_IMAGE_PULL_SECRET": "swr-pull",
                         "CCE_LISTENER_MASTER_INGRESS": reference,
@@ -312,6 +316,8 @@ class CceDeliveryContractTest(unittest.TestCase):
                 result = subprocess.run(["bash", str(ROOT / "scripts/ci/deploy-cce.sh")], env=env, text=True, capture_output=True)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn(expected, result.stderr)
+                invoked_commands = stub_log.read_text(encoding="utf-8").splitlines() if stub_log.exists() else []
+                self.assertNotIn("kubectl", invoked_commands)
 
     def test_deploy_gates_forbidden_shared_listener_annotations(self) -> None:
         for forbidden in FORBIDDEN_SUB_INGRESS_ANNOTATIONS:
