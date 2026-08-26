@@ -1,6 +1,7 @@
 import type { Executor } from '../client';
-import { query } from '../client';
-import type { ProjectMaterialRow, ProjectPoolRow } from '../types';
+import { execute, one, query } from '../client';
+import { buildUpdateSet, PROJECT_UPDATABLE } from '../sql';
+import type { ProjectMaterialRow, ProjectPoolRow, ProjectRow } from '../types';
 
 export interface MeetingProject {
   id: string;
@@ -32,6 +33,49 @@ export interface ListResultProjectsInput {
 
 export type SummaryProject = Omit<MeetingProject, 'is_template' | 'created_at'>;
 export type ResultProject = ProjectPoolRow & { project_materials: ProjectMaterialRow[] };
+
+export interface CreateProjectInput {
+  meeting_id: string;
+  seq_no: number;
+  name: string;
+  submitter: string;
+  description: string;
+  is_pending: boolean;
+  problems: string[];
+  actions: string[];
+}
+
+export async function createProject(input: CreateProjectInput, executor?: Executor): Promise<ProjectRow> {
+  return one<ProjectRow>(
+    `INSERT INTO projects (
+       meeting_id, seq_no, name, submitter, description, is_pending, is_template, problems, actions
+     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+     RETURNING *`,
+    [input.meeting_id, input.seq_no, input.name, input.submitter, input.description, input.is_pending, false, input.problems, input.actions],
+    executor,
+  );
+}
+
+export async function updateProject(
+  projectId: string,
+  patch: Record<string, unknown>,
+  executor?: Executor,
+): Promise<ProjectRow> {
+  const update = buildUpdateSet(patch, PROJECT_UPDATABLE);
+  const idIndex = update.params.length + 1;
+  return one<ProjectRow>(
+    `UPDATE projects
+        SET ${update.clause}
+      WHERE id = $${idIndex}
+      RETURNING *`,
+    [...update.params, projectId],
+    executor,
+  );
+}
+
+export function deleteProject(projectId: string, executor?: Executor): Promise<number> {
+  return execute('DELETE FROM projects WHERE id = $1', [projectId], executor);
+}
 
 export function listMeetingProjects(
   input: ListMeetingProjectsInput,

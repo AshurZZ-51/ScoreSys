@@ -1,9 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isProjectPoolV2Enabled } from '@/lib/featureFlags';
-import { supabaseAdmin } from '@/lib/supabase';
 import { getMissingTemplateProjects } from '@/lib/projectSlots';
 import { requireAdminSession, requireReviewerSession } from '@/lib/adminSession';
-import { listMeetingProjects } from '@/lib/db/repositories/projects';
+import { createProject, deleteProject, listMeetingProjects, updateProject } from '@/lib/db/repositories/projects';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -50,25 +49,18 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'meeting_id/name/submitter 必填' }, { status: 400 });
     }
 
-    const { data, error } = await supabaseAdmin
-      .from('projects')
-      .insert({
-        meeting_id,
-        seq_no: seq_no || 0,
-        name,
-        submitter,
-        description: description || '',
-        is_pending: is_pending || false,
-        is_template: false,
-        problems: body.problems || [],
-        actions: body.actions || []
-      })
-      .select()
-      .single();
+    const project = await createProject({
+      meeting_id,
+      seq_no: seq_no || 0,
+      name,
+      submitter,
+      description: description || '',
+      is_pending: is_pending || false,
+      problems: body.problems || [],
+      actions: body.actions || [],
+    });
 
-    if (error) throw error;
-
-    return NextResponse.json({ success: true, project: data });
+    return NextResponse.json({ success: true, project });
   } catch (err: any) {
     return NextResponse.json(
       { error: '创建项目失败: ' + err.message },
@@ -83,20 +75,14 @@ export async function PATCH(request: NextRequest) {
     const body = await request.json();
     const { id, ...updates } = body;
 
-    const { data, error } = await supabaseAdmin
-      .from('projects')
-      .update(updates)
-      .eq('id', id)
-      .select()
-      .single();
+    if (!id) return NextResponse.json({ error: 'id 必填' }, { status: 400 });
+    const project = await updateProject(id, updates);
 
-    if (error) throw error;
-
-    return NextResponse.json({ success: true, project: data });
+    return NextResponse.json({ success: true, project });
   } catch (err: any) {
     return NextResponse.json(
       { error: '更新项目失败: ' + err.message },
-      { status: 500 }
+      { status: err?.status === 400 ? 400 : 500 }
     );
   }
 }
@@ -111,12 +97,7 @@ export async function DELETE(request: NextRequest) {
       return NextResponse.json({ error: 'id 必填' }, { status: 400 });
     }
 
-    const { error } = await supabaseAdmin
-      .from('projects')
-      .delete()
-      .eq('id', id);
-
-    if (error) throw error;
+    await deleteProject(id);
 
     return NextResponse.json({ success: true });
   } catch (err: any) {

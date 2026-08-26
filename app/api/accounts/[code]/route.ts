@@ -1,7 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isSuperAdmin } from '@/lib/adminAuth';
 import { requireAdminSession } from '@/lib/adminSession';
-import { supabaseAdmin } from '@/lib/supabase';
+import { tx } from '@/lib/db/client';
+import {
+  findAccountByCode,
+  updateAccount,
+  writeAccountAudit,
+} from '@/lib/db/repositories/accounts';
+import type { AccountPatch } from '@/lib/db/repositories/accounts';
 
 export const dynamic = 'force-dynamic';
 
@@ -19,15 +25,10 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     const targetCode = decodeURIComponent(code || '').trim();
     if (!targetCode) return NextResponse.json({ error: '账号不能为空' }, { status: 400 });
     const body = await request.json();
-    const { data: account, error: accountError } = await supabaseAdmin
-      .from('reviewers')
-      .select('code, is_admin')
-      .ilike('code', targetCode)
-      .maybeSingle();
-    if (accountError) throw accountError;
+    const account = await findAccountByCode(targetCode);
     if (!account) return NextResponse.json({ error: '账号不存在' }, { status: 404 });
 
-    let patch: Record<string, unknown>;
+    let patch: AccountPatch;
     let action: string;
     if (body?.action === 'reset_password') {
       const password = String(body?.password || '');
@@ -43,19 +44,11 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       return NextResponse.json({ error: '不支持的账号操作' }, { status: 400 });
     }
 
-    const { data: updated, error: updateError } = await supabaseAdmin
-      .from('reviewers')
-      .update(patch)
-      .eq('code', account.code)
-      .select('code, name, role, is_admin')
-      .single();
-    if (updateError) throw updateError;
-    const { error: auditError } = await supabaseAdmin.from('account_audit_logs').insert({
-      actor_code: session.code,
-      target_code: account.code,
-      action
+    const updated = await tx(async (transaction) => {
+      const changed = await updateAccount(account.code, patch, transaction);
+      await writeAccountAudit(session.code, account.code, action, transaction);
+      return changed;
     });
-    if (auditError) throw auditError;
     return NextResponse.json({ account: updated });
   } catch (err: any) {
     return NextResponse.json({ error: `更新账号失败：${err.message}` }, { status: 500 });

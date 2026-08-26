@@ -8,7 +8,6 @@ export const PROJECT_UPDATABLE = [
   'submitter',
   'description',
   'is_pending',
-  'is_template',
   'problems',
   'actions',
   'round_no',

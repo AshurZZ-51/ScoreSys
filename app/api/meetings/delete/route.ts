@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { supabaseAdmin } from '@/lib/supabase';
 import { requireAdminSession } from '@/lib/adminSession';
+import { updateMeeting } from '@/lib/db/repositories/meetingMutations';
 
 export const dynamic = 'force-dynamic';
 
@@ -13,12 +13,8 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '需要有效的评审会和操作类型' }, { status: 400 });
     }
 
-    const updates = action === 'soft_delete'
-      ? { deleted_at: new Date().toISOString(), scheduled_purge_at: null, status: 'archived', is_current: false }
-      : { deleted_at: null, scheduled_purge_at: null, status: 'active' };
-    const { data, error } = await supabaseAdmin.from('meetings').update(updates).eq('id', id).select().single();
-    if (error) throw error;
-    return NextResponse.json({ success: true, meeting: data, operator: session.code });
+    const meeting = await updateMeeting(id, action);
+    return NextResponse.json({ success: true, meeting, operator: session.code });
   } catch (err: any) {
     return NextResponse.json({ error: `评审会操作失败: ${err.message}` }, { status: 500 });
   }
