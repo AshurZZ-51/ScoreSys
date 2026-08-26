@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { isProjectPoolV2Enabled } from '@/lib/featureFlags';
 import { getMaterialProgress, makeMatchKey, normalizeProjectPart } from '@/lib/projectPoolWorkflow';
 import { countCompletedReviews, hasCompletedReview, isPendingReviewProject } from '@/lib/adminLifecycle';
-import { requireAdminSession } from '@/lib/adminSession';
+import { requireAdminSession, requireReviewerSession } from '@/lib/adminSession';
 import { listProjectPool } from '@/lib/db/repositories/projectPool';
 import { createProjectWithMaterials, updateProjectDetails } from '@/lib/db/repositories/projectPoolWorkflow';
 import { applyProjectPoolMutations } from '@/lib/db/repositories/rpc';
@@ -26,6 +26,7 @@ function unavailable() {
 }
 
 export async function GET(request: NextRequest) {
+  if (!requireReviewerSession(request)) return NextResponse.json({ error: '请先登录' }, { status: 401 });
   if (!isProjectPoolV2Enabled()) return unavailable();
   try {
     const searchParams = new URL(request.url).searchParams;

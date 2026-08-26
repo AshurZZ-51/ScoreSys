@@ -29,6 +29,7 @@ async function getReadReviewer(request: NextRequest) {
 }
 
 export async function GET(request: NextRequest) {
+  if (!requireReviewerSession(request)) return NextResponse.json({ error: '请先登录' }, { status: 401 });
   if (!isProjectPoolV2Enabled()) return NextResponse.json({ error: '项目池功能尚未启用' }, { status: 404 });
   try {
     const reviewer = await getReadReviewer(request);

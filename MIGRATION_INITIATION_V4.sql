@@ -78,7 +78,13 @@ SET material_status = CASE WHEN EXISTS (
 ) THEN 'incomplete' ELSE 'complete' END,
 updated_at = now();
 
--- New reviewer accounts. Initial passwords are ollie123 and simon123; reset them after first login.
+-- Upgrade any legacy plaintext reviewer passwords before adding the new accounts.
+UPDATE reviewers
+SET password_hash = crypt(password_hash, gen_salt('bf'))
+WHERE password_hash !~ '^\$2';
+
+-- New reviewer accounts start with unusable random bcrypt placeholders. An administrator
+-- must set a password through the account-management flow before first login.
 UPDATE reviewers
 SET name = 'Ollie',
     role = '运营评委',
@@ -86,7 +92,7 @@ SET name = 'Ollie',
 WHERE lower(code) = 'o';
 
 INSERT INTO reviewers (code, name, role, is_admin, password_hash)
-SELECT 'o', 'Ollie', '运营评委', false, 'ollie123'
+SELECT 'o', 'Ollie', '运营评委', false, crypt(gen_random_uuid()::text, gen_salt('bf'))
 WHERE NOT EXISTS (
   SELECT 1
   FROM reviewers
@@ -100,7 +106,7 @@ SET name = 'Simon',
 WHERE lower(code) = 'si';
 
 INSERT INTO reviewers (code, name, role, is_admin, password_hash)
-SELECT 'si', 'Simon', '商务评委', false, 'simon123'
+SELECT 'si', 'Simon', '商务评委', false, crypt(gen_random_uuid()::text, gen_salt('bf'))
 WHERE NOT EXISTS (
   SELECT 1
   FROM reviewers

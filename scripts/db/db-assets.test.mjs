@@ -8,6 +8,8 @@ import {
   assertSnapshotShape,
   buildImportSql,
   normalizeSnapshot,
+  parseBundleText,
+  parseArguments,
 } from './import-snapshot.mjs';
 
 const EXPECTED_MIGRATIONS = [
@@ -114,6 +116,26 @@ test('dry-run executes the full transaction but rolls it back', () => {
   assert.match(sql, /json_populate_recordset/);
   assert.match(sql, /ROLLBACK;\s*$/);
   assert.doesNotMatch(sql, /COMMIT;/);
+});
+
+test('stdin bundle carries snapshot and manifest explicitly without implicit manifest paths', () => {
+  const snapshot = { tables: minimalTables };
+  const manifest = manifestFor(minimalTables);
+  assert.deepEqual(parseBundleText(JSON.stringify({ snapshot, manifest })), { snapshot, manifest });
+  assert.throws(() => parseBundleText(JSON.stringify({ snapshot })), /snapshot and manifest/);
+  assert.deepEqual(parseArguments(['--force', '--file', '-']), { force: true, dryRun: false, file: '-', manifest: null });
+  assert.throws(() => parseArguments(['--file', '/tmp/snapshot.json']), /--manifest is required/);
+  assert.throws(() => parseArguments(['--file', '-', '--manifest', '/tmp/manifest.json']), /cannot be used with stdin/);
+});
+
+test('import rehashes legacy reviewer passwords before manifest gates and commit', () => {
+  const tables = { ...minimalTables, reviewers: [{ code: 'W', password_hash: 'legacy-password' }] };
+  const sql = buildImportSql({ tables }, manifestFor(tables), { force: true });
+  const rehash = sql.indexOf('UPDATE public.reviewers');
+  assert.ok(rehash > sql.indexOf('json_populate_recordset'));
+  assert.ok(rehash < sql.indexOf('snapshot manifest mismatch'));
+  assert.ok(rehash < sql.lastIndexOf('COMMIT;'));
+  assert.match(sql, /crypt\(password_hash, gen_salt\('bf'\)\)/);
 });
 
 test('gate SQL names G1-G10 and covers FK and duplicate invariants', async () => {

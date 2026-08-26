@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { requireAdminSession } from '@/lib/adminSession';
+import { requireAdminSession, requireReviewerSession } from '@/lib/adminSession';
 import { buildInitiationProjectPayload, buildMeetingReportPayload } from '@/lib/reportSnapshots';
 import { createReportSnapshot, getProjectReportData, listReportSnapshots } from '@/lib/db/repositories/reports';
 
@@ -20,6 +20,7 @@ async function readSummary(request: NextRequest, meetingId: string) {
 }
 
 export async function GET(request: NextRequest) {
+  if (!requireReviewerSession(request)) return NextResponse.json({ error: '请先登录' }, { status: 401 });
   const session = requireAdminSession(request);
   if (!session) return NextResponse.json({ error: '仅管理员可以读取报告快照' }, { status: 403 });
   const { searchParams } = new URL(request.url);

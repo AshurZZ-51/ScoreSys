@@ -154,8 +154,9 @@ import-db:
       artifacts: true
     - job: build-image
     - job: scan-image
+    - job: migrate-db
   before_script:
-    - apk add --no-cache ca-certificates kubectl
+    - apk add --no-cache ca-certificates kubectl jq
   script:
     # Import is a separate, explicit gate. Snapshot bytes are supplied at run
     # time; they are not committed, put in an image, or stored in a ConfigMap.
@@ -164,7 +165,11 @@ import-db:
     - ': "${KUBECONFIG_CCE_B64:?KUBECONFIG_CCE_B64 is required}"'
     - ': "${MIGRATOR_SECRET_NAME:?MIGRATOR_SECRET_NAME is required}"'
     - ': "${SNAPSHOT_FILE:?SNAPSHOT_FILE must point to an operator-provided snapshot}"'
+    - ': "${MANIFEST_FILE:?MANIFEST_FILE must point to an operator-provided manifest}"'
     - test -s "$SNAPSHOT_FILE"
+    - test -s "$MANIFEST_FILE"
+    - jq -e 'type == "object" and (.tables | type == "object")' "$SNAPSHOT_FILE" >/dev/null
+    - jq -e 'type == "object" and (.table_count == 16) and (.row_count | type == "number") and (.tables | type == "object") and (.errors | type == "array" and length == 0)' "$MANIFEST_FILE" >/dev/null
     - printf '%s' "$KUBECONFIG_CCE_B64" | base64 -d > kubeconfig
     - export KUBECONFIG="$CI_PROJECT_DIR/kubeconfig"
     - trap 'rm -f "$KUBECONFIG"' EXIT
@@ -174,13 +179,16 @@ import-db:
     # The Pod is removed by --rm, so the snapshot never lands in a ConfigMap,
     # Secret, image layer, or long-lived Kubernetes object.
     - |
+      set -eu -o pipefail
       [[ "$MIGRATOR_SECRET_NAME" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]] || { echo "MIGRATOR_SECRET_NAME is not DNS-compatible" >&2; exit 1; }
       pod_name="scoringsys-import-${CI_PIPELINE_ID:-manual}-${CI_JOB_ID:-run}"
       [[ "$pod_name" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ && ${#pod_name} -le 63 ]] || { echo "generated import Pod name is not DNS-compatible" >&2; exit 1; }
-      kubectl -n "$KUBE_NAMESPACE" run "$pod_name" --rm -i --restart=Never \
-        --image="$IMAGE_REFERENCE" \
-        --overrides="{\"apiVersion\":\"v1\",\"spec\":{\"automountServiceAccountToken\":false,\"securityContext\":{\"runAsNonRoot\":true,\"seccompProfile\":{\"type\":\"RuntimeDefault\"}},\"containers\":[{\"name\":\"$pod_name\",\"envFrom\":[{\"secretRef\":{\"name\":\"$MIGRATOR_SECRET_NAME\"}}],\"securityContext\":{\"allowPrivilegeEscalation\":false,\"readOnlyRootFilesystem\":true,\"runAsNonRoot\":true,\"runAsUser\":1000,\"runAsGroup\":1000,\"capabilities\":{\"drop\":[\"ALL\"]}},\"resources\":{\"requests\":{\"cpu\":\"100m\",\"memory\":\"256Mi\"},\"limits\":{\"cpu\":\"500m\",\"memory\":\"512Mi\"}},\"volumeMounts\":[{\"name\":\"tmp\",\"mountPath\":\"/tmp\"}]}],\"volumes\":[{\"name\":\"tmp\",\"emptyDir\":{}}]}}" \
-        --command -- node scripts/db/import-snapshot.mjs --fail-fast --file /dev/stdin < "$SNAPSHOT_FILE"
+      jq -cn --slurpfile snapshot "$SNAPSHOT_FILE" --slurpfile manifest "$MANIFEST_FILE" \
+        '{snapshot: $snapshot[0], manifest: $manifest[0]}' |
+        kubectl -n "$KUBE_NAMESPACE" run "$pod_name" --rm -i --restart=Never \
+          --image="$IMAGE_REFERENCE" \
+          --overrides="{\"apiVersion\":\"v1\",\"spec\":{\"automountServiceAccountToken\":false,\"securityContext\":{\"runAsNonRoot\":true,\"seccompProfile\":{\"type\":\"RuntimeDefault\"}},\"containers\":[{\"name\":\"$pod_name\",\"envFrom\":[{\"secretRef\":{\"name\":\"$MIGRATOR_SECRET_NAME\"}}],\"securityContext\":{\"allowPrivilegeEscalation\":false,\"readOnlyRootFilesystem\":true,\"runAsNonRoot\":true,\"runAsUser\":1000,\"runAsGroup\":1000,\"capabilities\":{\"drop\":[\"ALL\"]}},\"resources\":{\"requests\":{\"cpu\":\"100m\",\"memory\":\"256Mi\"},\"limits\":{\"cpu\":\"500m\",\"memory\":\"512Mi\"}},\"volumeMounts\":[{\"name\":\"tmp\",\"mountPath\":\"/tmp\"}]}],\"volumes\":[{\"name\":\"tmp\",\"emptyDir\":{}}]}}" \
+          --command -- node scripts/db/import-snapshot.mjs --force --file -
 
 build-image:
   stage: build

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { adminSessionCookie, createReviewerSession } from '@/lib/adminSession';
-import { findReviewerByCode, listReviewerDimensions } from '@/lib/db/repositories/reviewers';
+import { findReviewerByCode, listReviewerDimensions, verifyReviewerPassword } from '@/lib/db/repositories/reviewers';
 
 export const dynamic = 'force-dynamic';
 
@@ -24,24 +24,25 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    if (reviewer.password_hash !== password) {
+    const authenticatedReviewer = await verifyReviewerPassword(code, password);
+    if (!authenticatedReviewer) {
       return NextResponse.json(
         { error: '密码错误' },
         { status: 401 }
       );
     }
 
-    const dims = await listReviewerDimensions(reviewer.code);
+    const dims = await listReviewerDimensions(authenticatedReviewer.code);
 
-    const sessionToken = createReviewerSession(reviewer);
+    const sessionToken = createReviewerSession(authenticatedReviewer);
     const response = NextResponse.json({
       success: true,
       session_token: sessionToken,
       reviewer: {
-        code: reviewer.code,
-        name: reviewer.name,
-        role: reviewer.role,
-        is_admin: reviewer.is_admin,
+        code: authenticatedReviewer.code,
+        name: authenticatedReviewer.name,
+        role: authenticatedReviewer.role,
+        is_admin: authenticatedReviewer.is_admin,
         dimensions: dims
       }
     });

@@ -3,10 +3,12 @@ import { isProjectPoolV2Enabled } from '@/lib/featureFlags';
 import { computeLegacyProjectScore, extractLegacyFeedback } from '@/lib/legacyScoring';
 import { isCompletedReview } from '@/lib/adminLifecycle';
 import { getProjectHistory } from '@/lib/db/repositories/projectHistory';
+import { requireReviewerSession } from '@/lib/adminSession';
 
 export const dynamic = 'force-dynamic';
 
-export async function GET(_: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  if (!requireReviewerSession(request)) return NextResponse.json({ error: '请先登录' }, { status: 401 });
   const { id } = await params;
   if (!isProjectPoolV2Enabled()) return NextResponse.json({ error: '项目池功能尚未启用' }, { status: 404 });
   try {

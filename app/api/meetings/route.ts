@@ -3,7 +3,7 @@ import { isProjectPoolV2Enabled } from '@/lib/featureFlags';
 import { createMaterialRows, makeMatchKey, normalizeProjectPart } from '@/lib/projectPoolWorkflow';
 import { PROJECT_SLOT_COUNT, createTemplateProjects } from '@/lib/projectSlots';
 import { sortMeetingsForAdmin } from '@/lib/adminLifecycle';
-import { requireAdminSession } from '@/lib/adminSession';
+import { requireAdminSession, requireReviewerSession } from '@/lib/adminSession';
 import {
   createMeetingWorkflow,
   listMeetings,
@@ -13,6 +13,7 @@ import {
 export const dynamic = 'force-dynamic';
 
 export async function GET(request: NextRequest) {
+  if (!requireReviewerSession(request)) return NextResponse.json({ error: '请先登录' }, { status: 401 });
   try {
     const { searchParams } = new URL(request.url);
     const meetingId = searchParams.get('meetingId');

@@ -27,7 +27,7 @@ spec:
         - name: importer
           image: "{{IMAGE_REFERENCE}}"
           imagePullPolicy: IfNotPresent
-          command: ["node", "scripts/db/import-snapshot.mjs", "--fail-fast", "--file", "/dev/stdin"]
+          command: ["node", "scripts/db/import-snapshot.mjs", "--force", "--file", "-"]
           envFrom:
             - secretRef:
                 name: "{{MIGRATOR_SECRET_NAME}}"

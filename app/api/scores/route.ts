@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { isProjectPoolV2Enabled } from '@/lib/featureFlags';
 import { transitionForVerdict } from '@/lib/projectPoolWorkflow';
 import { getScoreMax, isValidScoreValue, parseScoreKey } from '@/lib/scoringRules';
-import { isSameReviewerCode, requireReviewerSession } from '@/lib/adminSession';
+import { isSameReviewerCode, requireAdminSession, requireReviewerSession } from '@/lib/adminSession';
 import {
   ADMIN_TRACKING_SPECIAL_DIMENSIONS,
   getRoundFromDimName,
@@ -25,6 +25,7 @@ export const dynamic = 'force-dynamic';
 
 export async function GET(request: NextRequest) {
   try {
+    if (!requireReviewerSession(request)) return NextResponse.json({ error: '请先登录' }, { status: 401 });
     const { searchParams } = new URL(request.url);
     const meetingId = searchParams.get('meetingId');
     const reviewerCode = searchParams.get('reviewerCode');
@@ -207,12 +208,21 @@ export async function POST(request: NextRequest) {
 
 export async function DELETE(request: NextRequest) {
   try {
+    const session = requireReviewerSession(request);
+    if (!session) return NextResponse.json({ error: '请先登录' }, { status: 401 });
+    const adminSession = requireAdminSession(request);
     const { searchParams } = new URL(request.url);
     const meetingId = searchParams.get('meetingId');
     const reviewerCode = searchParams.get('reviewerCode');
     const projectId = searchParams.get('projectId');
 
     if (!meetingId) return NextResponse.json({ error: 'meetingId 必填' }, { status: 400 });
+    if (!adminSession && !reviewerCode) {
+      return NextResponse.json({ error: 'reviewerCode 必填' }, { status: 400 });
+    }
+    if (!adminSession && !isSameReviewerCode(reviewerCode, session.code)) {
+      return NextResponse.json({ error: '登录身份与评分人不一致' }, { status: 403 });
+    }
 
     await deleteScores({ meetingId, reviewerCode, projectId });
 

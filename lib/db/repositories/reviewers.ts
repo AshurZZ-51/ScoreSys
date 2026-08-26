@@ -44,6 +44,21 @@ export function findReviewerByCode(
   );
 }
 
+export function verifyReviewerPassword(
+  code: string,
+  password: string,
+  executor?: Executor,
+): Promise<LoginReviewer | null> {
+  return maybeOne<LoginReviewer>(
+    `SELECT code, name, role, is_admin, password_hash
+       FROM reviewers
+      WHERE code ILIKE $1 ESCAPE '\\'
+        AND password_hash = crypt($2, password_hash)`,
+    [escapeIlikeLiteral(code), password],
+    executor,
+  );
+}
+
 export function listReviewerDimensions(
   reviewerCode: string,
   executor?: Executor,

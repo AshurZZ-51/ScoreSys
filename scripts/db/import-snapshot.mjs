@@ -3,7 +3,7 @@
 import { spawn } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const TABLE_ORDER = Object.freeze([
@@ -103,6 +103,19 @@ function manifestAssertions(manifest) {
   return `DO $manifest_gate$\nDECLARE\n  actual_count BIGINT;\nBEGIN\n${checks}\n  SELECT ${TABLE_ORDER.map((table) => `(SELECT count(*) FROM public.${table})`).join(' +\n         ')} INTO actual_count;\n  IF actual_count <> ${manifest.row_count} THEN\n    RAISE EXCEPTION 'snapshot manifest mismatch: total expected ${manifest.row_count}, got %', actual_count;\n  END IF;\nEND\n$manifest_gate$;`;
 }
 
+export function parseBundleText(bundleText) {
+  let bundle;
+  try {
+    bundle = JSON.parse(bundleText);
+  } catch {
+    throw new Error('stdin bundle must be valid JSON');
+  }
+  if (!bundle || typeof bundle !== 'object' || !bundle.snapshot || !bundle.manifest) {
+    throw new Error('stdin bundle must contain snapshot and manifest');
+  }
+  return { snapshot: bundle.snapshot, manifest: bundle.manifest };
+}
+
 export function buildImportSql(snapshot, manifest, { force = false, dryRun = false } = {}) {
   assertSnapshotShape(snapshot, manifest);
   const normalized = normalizeSnapshot(snapshot);
@@ -120,6 +133,12 @@ export function buildImportSql(snapshot, manifest, { force = false, dryRun = fal
       `INSERT INTO public.${table}\nSELECT * FROM json_populate_recordset(NULL::public.${table}, ${dollarQuote(json, `snapshot_${table}`)}::json);`,
     );
   }
+
+  // Snapshots exported before pgcrypto was introduced may contain plaintext
+  // reviewer passwords. Rehash them while the import transaction is open.
+  statements.push(`UPDATE public.reviewers
+SET password_hash = crypt(password_hash, gen_salt('bf'))
+WHERE password_hash !~ '^\\$2';`);
 
   statements.push(manifestAssertions(manifest));
   statements.push(verifyGatesSql.trim());
@@ -150,7 +169,7 @@ function runPsql(sql, { databaseUrl, psqlBin }) {
   });
 }
 
-function parseArguments(argumentsList) {
+export function parseArguments(argumentsList) {
   const options = { force: false, dryRun: false, file: null, manifest: null };
   for (let index = 0; index < argumentsList.length; index += 1) {
     const argument = argumentsList[index];
@@ -161,6 +180,8 @@ function parseArguments(argumentsList) {
     else throw new Error(`unknown argument: ${argument}`);
   }
   if (!options.file) throw new Error('--file is required');
+  if (options.file !== '-' && !options.manifest) throw new Error('--manifest is required when --file is not -');
+  if (options.file === '-' && options.manifest) throw new Error('--manifest cannot be used with stdin bundle');
   return options;
 }
 
@@ -168,14 +189,18 @@ export async function importSnapshot(options) {
   const databaseUrl = process.env.MIGRATOR_DATABASE_URL;
   if (!databaseUrl) throw new Error('MIGRATOR_DATABASE_URL is required');
 
-  const snapshotPath = resolve(options.file);
-  const manifestPath = resolve(options.manifest || dirname(snapshotPath), options.manifest ? '' : 'manifest.json');
-  const [snapshotText, manifestText] = await Promise.all([
-    readFile(snapshotPath, 'utf8'),
-    readFile(manifestPath, 'utf8'),
-  ]);
-  const snapshot = JSON.parse(snapshotText);
-  const manifest = JSON.parse(manifestText);
+  let snapshot;
+  let manifest;
+  if (options.file === '-') {
+    const bundle = parseBundleText(readFileSync(0, 'utf8'));
+    snapshot = bundle.snapshot;
+    manifest = bundle.manifest;
+  } else {
+    const snapshotText = await readFile(resolve(options.file), 'utf8');
+    const manifestText = await readFile(resolve(options.manifest), 'utf8');
+    snapshot = JSON.parse(snapshotText);
+    manifest = JSON.parse(manifestText);
+  }
   const sql = buildImportSql(snapshot, manifest, options);
 
   await runPsql(sql, {

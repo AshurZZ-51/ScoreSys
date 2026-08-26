@@ -10,6 +10,11 @@ ARG APK_UPGRADE_DATE=unset
 RUN echo "apk upgrade ${APK_UPGRADE_DATE}" >/dev/null \
  && apk upgrade --no-cache libcrypto3 libssl3
 
+# Database migration and import jobs execute psql from this same final image.
+# Pin the client package so the job contract does not drift with the Alpine repo.
+RUN apk add --no-cache postgresql16-client=16.10-r0 \
+ && command -v psql
+
 COPY package.json package-lock.json ./
 # The cache mount keeps npm's package tarballs between builds, so a lockfile
 # change re-links from disk instead of re-downloading every dependency (737s

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isSuperAdmin } from '@/lib/adminAuth';
-import { requireAdminSession } from '@/lib/adminSession';
+import { requireAdminSession, requireReviewerSession } from '@/lib/adminSession';
 import { tx } from '@/lib/db/client';
 import {
   createAccount,
@@ -17,6 +17,7 @@ function superAdminSession(request: NextRequest) {
 }
 
 export async function GET(request: NextRequest) {
+  if (!requireReviewerSession(request)) return NextResponse.json({ error: '请先登录' }, { status: 401 });
   if (!superAdminSession(request)) return NextResponse.json({ error: '仅超管可管理账号' }, { status: 403 });
 
   try {

@@ -51,7 +51,7 @@ export function findAccountByCode(code: string, executor?: Executor): Promise<Ac
 export function createAccount(input: AccountInput, executor?: Executor): Promise<AccountSummary> {
   return one<AccountSummary>(
     `INSERT INTO reviewers (code, name, role, is_admin, password_hash)
-     VALUES ($1, $2, $3, $4, $5)
+     VALUES ($1, $2, $3, $4, crypt($5, gen_salt('bf')))
      RETURNING code, name, role, is_admin`,
     [input.code, input.name, input.role, input.isAdmin, input.passwordHash],
     executor,
@@ -65,9 +65,13 @@ export function updateAccount(
 ): Promise<AccountSummary> {
   const update = buildUpdateSet(patch as Record<string, unknown>, ACCOUNT_UPDATABLE);
   const targetIndex = update.params.length + 1;
+  const passwordIndex = Object.keys(patch).indexOf('password_hash') + 1;
+  const clause = passwordIndex > 0
+    ? update.clause.replace(`"password_hash" = $${passwordIndex}`, `"password_hash" = crypt($${passwordIndex}, gen_salt('bf'))`)
+    : update.clause;
   return one<AccountSummary>(
     `UPDATE reviewers
-        SET ${update.clause}
+        SET ${clause}
       WHERE code ILIKE $${targetIndex} ESCAPE '\\'
       RETURNING code, name, role, is_admin`,
     [...update.params, escapeIlikeLiteral(code)],
