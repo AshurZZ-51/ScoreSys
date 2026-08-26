@@ -409,17 +409,17 @@ while [ "$#" -gt 0 ]; do
 done
 case "$url" in
   */scoringsys/)
-    printf 'HTTP/1.1 308 Permanent Redirect\nLocation: /scoringsys\n\n' >"$headers"
+    printf 'HTTP/1.1 308 Permanent Redirect\nlocation: /scoringsys\n\n' >"$headers"
     : >"$body"
     printf 308
     ;;
   */_next/static/*)
-    printf 'HTTP/1.1 200 OK\nContent-Type: application/javascript\n\n' >"$headers"
+    printf 'HTTP/1.1 200 OK\ncontent-type: application/javascript\n\n' >"$headers"
     printf asset >"$body"
     printf 200
     ;;
   */scoringsys)
-    printf 'HTTP/1.1 200 OK\nContent-Type: text/html\n\n' >"$headers"
+    printf 'HTTP/1.1 200 OK\ncontent-type: text/html\n\n' >"$headers"
     printf 'marker /scoringsys/_next/static/app.js' >"$body"
     printf 200
     ;;
