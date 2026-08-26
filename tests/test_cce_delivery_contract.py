@@ -193,13 +193,27 @@ class CceDeliveryContractTest(unittest.TestCase):
         self.assertNotIn("docker buildx rm", after_script)
         self.assertIn('docker buildx use "$BUILDX_BUILDER"', build_script)
 
-        # A reused cache must not be able to pin the image to a stale base
-        # layer or to stale OpenSSL packages.
-        self.assertIn("--pull", build_script)
+        # --pull is forbidden: it forces a fresh base-image resolution that
+        # falls through the configured mirrors to registry-1.docker.io, which
+        # this runner cannot reach (job 14147 died there in 25.6s).
+        self.assertNotIn("--pull", build_script)
+
+        # Because the cache may now hold the base image for a long time, the
+        # two controls that keep a stale base from shipping must both hold.
+        # 1. OpenSSL packages are re-upgraded once a day.
         self.assertIn("APK_UPGRADE_DATE=$(date -u +%Y-%m-%d)", build_script)
         self.assertIn("ARG APK_UPGRADE_DATE", dockerfile)
         self.assertIn("${APK_UPGRADE_DATE}", dockerfile)
         self.assertIn("apk upgrade --no-cache libcrypto3 libssl3", dockerfile)
+        # 2. Trivy still blocks on any HIGH/CRITICAL CVE the base image carries,
+        #    so staleness can only ever fail the pipeline, never ship silently.
+        scan = pipeline["scan-image"]
+        self.assertNotIn("allow_failure", scan)
+        self.assertIn(
+            "--severity HIGH,CRITICAL --exit-code 1",
+            "\n".join(scan["script"]),
+        )
+        self.assertIn({"job": "scan-image"}, pipeline["deploy-cce"]["needs"])
 
         # The image build reuses npm's download cache but still installs from
         # the lockfile.
@@ -849,7 +863,16 @@ esac
         mutated_pipeline["build-image"]["variables"]["BUILDX_BUILDER"] = "scoringsys-ci-${CI_JOB_ID}"
         with self.assertRaises(AssertionError):
             self.assert_build_cache_contract(mutated_pipeline, DOCKERFILE)
-        mutated_pipeline = yaml.safe_load(CI.replace("--push --pull ", "--push ", 1))
+        mutated_pipeline = yaml.safe_load(CI.replace("--push --build-arg", "--push --pull --build-arg", 1))
+        with self.assertRaises(AssertionError):
+            self.assert_build_cache_contract(mutated_pipeline, DOCKERFILE)
+        mutated_pipeline = yaml.safe_load(
+            CI.replace(' --build-arg "APK_UPGRADE_DATE=$(date -u +%Y-%m-%d)"', "", 1)
+        )
+        with self.assertRaises(AssertionError):
+            self.assert_build_cache_contract(mutated_pipeline, DOCKERFILE)
+        mutated_pipeline = yaml.safe_load(CI)
+        mutated_pipeline["scan-image"]["allow_failure"] = True
         with self.assertRaises(AssertionError):
             self.assert_build_cache_contract(mutated_pipeline, DOCKERFILE)
         with self.assertRaises(AssertionError):

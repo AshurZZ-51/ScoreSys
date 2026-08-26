@@ -80,8 +80,8 @@ build-image:
     # A stable builder name keeps the BuildKit layer cache alive across
     # pipelines. With the previous per-job name the builder was created and
     # torn down every run, so job 14117 rebuilt `npm ci` from zero (737s of a
-    # 941s job). Base-image freshness is preserved by --pull and the apk
-    # upgrade layer is busted daily by APK_UPGRADE_DATE below.
+    # 941s job). Base-image freshness is handled by APK_UPGRADE_DATE below
+    # plus the Trivy gate in scan-image; see CI_SPEED_REPORT.md.
     BUILDX_BUILDER: "scoringsys-ci"
     BUILDKITD_CONFIG: "$CI_PROJECT_DIR/.buildkitd.toml"
   script:
@@ -103,10 +103,13 @@ build-image:
         --buildkitd-config "$BUILDKITD_CONFIG" --use \
         || docker buildx use "$BUILDX_BUILDER"
     - docker buildx inspect --bootstrap
-    # --pull re-resolves node:20-alpine3.23 and APK_UPGRADE_DATE busts the apk
-    # upgrade layer once a day, so the reused cache cannot pin the image to
-    # stale libcrypto3/libssl3 packages.
-    - docker buildx build --platform linux/amd64 --provenance=false --push --pull --build-arg "APK_UPGRADE_DATE=$(date -u +%Y-%m-%d)" --tag "${SWR_REGISTRY}/scoringsys:${CI_COMMIT_SHA}" .
+    # No --pull here: it forced a fresh registry resolution of the base image
+    # that fell through the configured mirrors to registry-1.docker.io, which
+    # this runner cannot reach (job 14147: "dial tcp 108.160.167.159:443:
+    # connect: connection refused"). APK_UPGRADE_DATE still busts the apk
+    # upgrade layer once a day so OpenSSL patches keep landing, and scan-image
+    # remains the blocking gate on any base-image CVE.
+    - docker buildx build --platform linux/amd64 --provenance=false --push --build-arg "APK_UPGRADE_DATE=$(date -u +%Y-%m-%d)" --tag "${SWR_REGISTRY}/scoringsys:${CI_COMMIT_SHA}" .
     - docker logout "$SWR_REGISTRY_HOST" >/dev/null 2>&1 || true
   after_script:
     # The builder is deliberately kept so its layer cache survives the job.
