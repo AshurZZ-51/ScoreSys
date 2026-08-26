@@ -47,6 +47,7 @@ readonly ANNOTATION_RECONCILE_TRIGGER='reconcile-trigger'
 readonly ANNOTATION_FORBIDDEN_LISTEN_PORTS='kubernetes.io/elb.listen-ports'
 readonly ANNOTATION_FORBIDDEN_TLS_CERTIFICATES='kubernetes.io/elb.tls-certificate-ids'
 readonly ANNOTATION_FORBIDDEN_INGRESS_CLASS='kubernetes.io/ingress.class'
+readonly ANNOTATION_CCE_NAMED_PORTS='ingress.kubernetes.io/named-ports'
 
 [[ -n "${KUBECONFIG_CCE_B64:-}" ]] || die "KUBECONFIG_CCE_B64 is required"
 [[ -n "${KUBE_IMAGE_PULL_SECRET:-}" ]] || die "KUBE_IMAGE_PULL_SECRET is required"
@@ -117,9 +118,9 @@ done
 # shared ELB (nexus-prod/des-game, nexus-prod/nexus-studio) force a re-reconcile.
 kubectl -n "$NAMESPACE" apply --dry-run=server -f "$ingress" >/dev/null || die "Ingress server dry-run failed"
 
-# Capture the pre-apply shape so a legacy numeric backend cannot be silently
-# accepted when the CCE controller leaves metadata.generation unchanged. Once
-# the object already uses the named Service port, a normal idempotent apply may
+# Capture the pre-apply shape so the named-to-numeric migration cannot be
+# silently accepted when the CCE controller leaves metadata.generation unchanged.
+# Once the object already uses numeric port 3000, an idempotent apply may
 # legitimately keep the same generation.
 old_ingress_exists=false
 old_ingress_generation=""
@@ -131,11 +132,11 @@ if old_ingress_state=$(kubectl -n "$NAMESPACE" get ingress scoringsys -o 'jsonpa
   IFS='|' read -r old_ingress_generation old_ingress_backend_number old_ingress_backend_name <<<"$old_ingress_state"
 fi
 
-numeric_backend_requires_generation_bump=false
+named_backend_requires_generation_bump=false
 old_generation_value=${old_ingress_generation:-0}
-if [[ "$old_ingress_exists" == true && "$old_ingress_backend_number" == "3000" ]]; then
-  [[ "$old_generation_value" =~ ^[0-9]+$ ]] || die "existing Ingress generation is not a non-negative integer"
-  numeric_backend_requires_generation_bump=true
+if [[ "$old_ingress_exists" == true && -z "$old_ingress_backend_number" && "$old_ingress_backend_name" == "http" ]]; then
+  [[ "$old_generation_value" =~ ^[1-9][0-9]*$ ]] || die "existing Ingress generation is not a positive integer"
+  named_backend_requires_generation_bump=true
 fi
 
 kubectl -n "$NAMESPACE" apply -f "$ingress" >/dev/null || die "Ingress apply failed"
@@ -145,16 +146,22 @@ host=$(kubectl -n "$NAMESPACE" get ingress scoringsys -o jsonpath='{.spec.rules[
 paths=$(kubectl -n "$NAMESPACE" get ingress scoringsys -o jsonpath='{range .spec.rules[0].http.paths[*]}{.path}{"\n"}{end}')
 expected_paths=$(printf '%s\n' "$PUBLIC_PREFIX")
 [[ "$paths" == "$expected_paths" ]] || die "Ingress paths do not match PUBLIC_PREFIX"
-backend_port_name=$(kubectl -n "$NAMESPACE" get ingress scoringsys -o jsonpath='{.spec.rules[0].http.paths[0].backend.service.port.name}')
-[[ "$backend_port_name" == "http" ]] || die "Ingress backend port name is not http"
+backend_port=$(kubectl -n "$NAMESPACE" get ingress scoringsys -o 'jsonpath={.spec.rules[0].http.paths[0].backend.service.port.number}{"|"}{.spec.rules[0].http.paths[0].backend.service.port.name}')
+named_ports_annotation=$(get_ingress_annotation "$NAMESPACE" scoringsys "$ANNOTATION_CCE_NAMED_PORTS")
+named_ports_hint=""
+if [[ -n "$named_ports_annotation" ]]; then
+  named_ports_hint="; live Ingress still has controller-generated $ANNOTATION_CCE_NAMED_PORTS and must not rely on it"
+  printf 'CCE deploy warning: live Ingress still has controller-generated %s; ignoring it in favor of the numeric backend contract, and treat it as stale CCE state if strict smoke fails\n' "$ANNOTATION_CCE_NAMED_PORTS" >&2
+fi
+[[ "$backend_port" == "3000|" ]] || die "Ingress backend port must be exactly number=3000${named_ports_hint}"
 
-service_http_port=$(kubectl -n "$NAMESPACE" get service scoringsys -o 'go-template={{range .spec.ports}}{{if eq .name "http"}}{{.port}}|{{.targetPort}}{{end}}{{end}}')
-[[ "$service_http_port" == "3000|http" ]] || die "Service http port must be 3000 with targetPort http"
+service_ports=$(kubectl -n "$NAMESPACE" get service scoringsys -o 'go-template={{range .spec.ports}}{{.name}}|{{.port}}|{{.targetPort}}{{"\n"}}{{end}}')
+[[ "$service_ports" == "http|3000|3000" ]] || die "Service port must be exactly name=http, port=3000, targetPort=3000"
 
 ingress_generation=$(kubectl -n "$NAMESPACE" get ingress scoringsys -o jsonpath='{.metadata.generation}')
 [[ "$ingress_generation" =~ ^[1-9][0-9]*$ ]] || die "Ingress generation is not a positive integer"
-if [[ "$numeric_backend_requires_generation_bump" == true ]] && (( ingress_generation <= old_generation_value )); then
-  die "Ingress generation did not increase after numeric backend migration"
+if [[ "$named_backend_requires_generation_bump" == true ]] && (( ingress_generation <= old_generation_value )); then
+  die "Ingress generation did not increase after named-to-numeric backend migration"
 fi
 
 child_elb_class=$(get_ingress_annotation "$NAMESPACE" scoringsys "$ANNOTATION_ELB_CLASS")

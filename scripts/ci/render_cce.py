@@ -37,6 +37,9 @@ FORBIDDEN_INGRESS_ANNOTATIONS = (
     # controller through spec.ingressClassName only; carrying both is the single
     # configuration difference that set scoringsys apart from its working peers.
     "kubernetes.io/ingress.class",
+    # CCE derives this annotation from named backends. Declaring it would make the
+    # manifest depend on the controller path that leaves this shared ELB at 404.
+    "ingress.kubernetes.io/named-ports",
 )
 
 
@@ -137,6 +140,15 @@ def validate_probe_paths(deployment: dict) -> None:
             raise ValueError(f"{probe} path {path} does not match PUBLIC_PREFIX {PUBLIC_PREFIX}")
 
 
+def validate_service_port(service: dict) -> None:
+    """Keep the Service on the numeric target contract used by working CCE peers."""
+    ports = service["spec"].get("ports") or []
+    expected = {"name": "http", "port": 3000, "targetPort": 3000}
+    actual = {key: ports[0].get(key) for key in expected} if len(ports) == 1 else None
+    if actual != expected:
+        raise ValueError("Service port must be exactly name=http, port=3000, targetPort=3000")
+
+
 def validate_shared_elb_annotations(ingress: dict, trigger: str) -> None:
     """Enforce the sub-ingress contract for the shared nexus-prod ELB."""
     annotations = ingress["metadata"].get("annotations") or {}
@@ -169,6 +181,7 @@ def render(output_dir: Path, template_dir: Path) -> None:
     if deployment_obj["metadata"]["namespace"] != values["NAMESPACE"] or service_obj["metadata"]["namespace"] != values["NAMESPACE"]:
         raise ValueError("workload namespace does not match KUBE_NAMESPACE")
     validate_probe_paths(deployment_obj)
+    validate_service_port(service_obj)
 
     ingress_obj = ingress_docs[0]
     if ingress_obj["spec"].get("ingressClassName") != CCE_INGRESS_CLASS:
@@ -179,8 +192,8 @@ def render(output_dir: Path, template_dir: Path) -> None:
     if ingress_obj["spec"]["rules"][0]["host"] != PUBLIC_HOST:
         raise ValueError("Ingress host does not match the public contract")
     backend_port = paths[0]["backend"]["service"].get("port")
-    if backend_port != {"name": "http"}:
-        raise ValueError("Ingress backend service port must be exactly {name: http}")
+    if backend_port != {"number": 3000}:
+        raise ValueError("Ingress backend service port must be exactly {number: 3000}")
     validate_shared_elb_annotations(ingress_obj, values["RECONCILE_TRIGGER"])
 
     (output_dir / "deployment.yaml").write_text(deployment, encoding="utf-8")

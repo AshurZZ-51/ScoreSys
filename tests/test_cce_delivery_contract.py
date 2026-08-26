@@ -26,7 +26,9 @@ FORBIDDEN_SUB_INGRESS_ANNOTATIONS = (
     "kubernetes.io/elb.listen-ports",
     "kubernetes.io/elb.tls-certificate-ids",
     "kubernetes.io/ingress.class",
+    "ingress.kubernetes.io/named-ports",
 )
+FATAL_LIVE_INGRESS_ANNOTATIONS = FORBIDDEN_SUB_INGRESS_ANNOTATIONS[:3]
 
 
 def parse_yaml_documents(path: Path) -> list[dict]:
@@ -214,7 +216,7 @@ class CceDeliveryContractTest(unittest.TestCase):
         self.assertIn("imagePullSecrets", deployment["spec"]["template"]["spec"])
         self.assertEqual(service["spec"]["ports"][0]["name"], "http")
         self.assertEqual(service["spec"]["ports"][0]["port"], 3000)
-        self.assertEqual(service["spec"]["ports"][0]["targetPort"], "http")
+        self.assertEqual(service["spec"]["ports"][0]["targetPort"], 3000)
 
     def test_ingress_is_narrow_and_matches_public_constants(self) -> None:
         ingress = parse_yaml_documents(ROOT / "ops/cce/ingress.yaml.tmpl")[0]
@@ -225,8 +227,8 @@ class CceDeliveryContractTest(unittest.TestCase):
         self.assertEqual(paths, ["/scoringsys"])
         self.assertEqual(path_entries[0]["pathType"], "Prefix")
         self.assertEqual(path_entries[0]["backend"]["service"]["name"], "scoringsys")
-        self.assertEqual(path_entries[0]["backend"]["service"]["port"], {"name": "http"})
-        self.assertNotIn("number", path_entries[0]["backend"]["service"]["port"])
+        self.assertEqual(path_entries[0]["backend"]["service"]["port"], {"number": 3000})
+        self.assertNotIn("name", path_entries[0]["backend"]["service"]["port"])
         self.assertNotIn("/", paths)
         annotations = ingress["metadata"]["annotations"]
         self.assertEqual(annotations["kubernetes.io/elb.class"], "performance")
@@ -249,9 +251,9 @@ class CceDeliveryContractTest(unittest.TestCase):
         self.assertNotIn("delete ingress", DEPLOY_SCRIPT)
         self.assertNotIn("delete deployment", DEPLOY_SCRIPT)
         self.assertNotIn("delete service", DEPLOY_SCRIPT)
-        self.assertIn("backend_port_name=", DEPLOY_SCRIPT)
-        self.assertNotIn("backend.service.port.number}')", DEPLOY_SCRIPT)
-        self.assertIn("service_http_port=", DEPLOY_SCRIPT)
+        self.assertIn("backend_port=", DEPLOY_SCRIPT)
+        self.assertIn("backend.service.port.number", DEPLOY_SCRIPT)
+        self.assertIn("service_ports=", DEPLOY_SCRIPT)
         self.assertIn("metadata.generation", DEPLOY_SCRIPT)
         self.assertIn("Ingress generation is not a positive integer", DEPLOY_SCRIPT)
 
@@ -328,9 +330,11 @@ class CceDeliveryContractTest(unittest.TestCase):
                 self.assertNotIn("kubectl", invoked_commands)
 
     def test_deploy_gates_forbidden_shared_listener_annotations(self) -> None:
-        for forbidden in FORBIDDEN_SUB_INGRESS_ANNOTATIONS:
+        for forbidden in FATAL_LIVE_INGRESS_ANNOTATIONS:
             self.assertIn(forbidden, DEPLOY_SCRIPT)
         self.assertIn("Ingress must not declare $forbidden on the shared listener", DEPLOY_SCRIPT)
+        self.assertIn("ingress.kubernetes.io/named-ports", DEPLOY_SCRIPT)
+        self.assertIn("ignoring it in favor of the numeric backend contract", DEPLOY_SCRIPT)
         self.assertIn("rolled out image does not match IMAGE_REFERENCE", DEPLOY_SCRIPT)
 
     def test_deploy_reads_annotations_with_go_template_through_master_readback(self) -> None:
@@ -363,11 +367,12 @@ done
 case "$format" in
   go-template=*)
     case "$format" in
-      *'range .spec.ports'*) printf '%s' "${CCE_STUB_SERVICE_STATE:-3000|http}" ;;
+      *'range .spec.ports'*) printf '%s' "${CCE_STUB_SERVICE_STATE:-http|3000|3000}" ;;
       *'kubernetes.io/elb.class'*) printf '%s' "${CCE_ELB_CLASS:-performance}" ;;
       *'kubernetes.io/elb.id'*) printf '%s' "${CCE_ELB_ID:-abab7533-a1c6-4138-a4bc-59d53e3446e2}" ;;
       *'kubernetes.io/elb.port'*) printf '%s' "${CCE_ELB_PORT:-80}" ;;
       *'kubernetes.io/elb.listener-master-ingress'*) printf '%s' "${CCE_LISTENER_MASTER_INGRESS:-nexus-prod/nexus-studio}" ;;
+      *'ingress.kubernetes.io/named-ports'*) printf '%s' "${CCE_STUB_NAMED_PORTS:-}" ;;
       *'reconcile-trigger'*)
         case "$*" in
           *'get ingress nexus-studio'*) printf '%s' "2104-14012" ;;
@@ -391,18 +396,16 @@ case "$format" in
   'jsonpath={.type}') printf '%s' kubernetes.io/dockerconfigjson ;;
   *'subsets'*'addresses'*'ip}') printf '%s' 10.0.0.1 ;;
   *'metadata.generation'*'backend.service.port.number'*'backend.service.port.name'*)
-    if [ -f "$CCE_STUB_STATE_FILE" ]; then
-      printf '%s' "${CCE_STUB_NEW_INGRESS_STATE:-2||http}"
-    elif [ "${CCE_STUB_OLD_INGRESS_EXISTS:-0}" = 1 ]; then
-      printf '%s' "${CCE_STUB_OLD_INGRESS_STATE:-1|3000|}"
+    if [ "${CCE_STUB_OLD_INGRESS_EXISTS:-0}" = 1 ]; then
+      printf '%s' "${CCE_STUB_OLD_INGRESS_STATE:-2||http}"
     else
       exit 1
     fi
     ;;
+  *'backend.service.port.number'*'backend.service.port.name'*) printf '%s' "${CCE_STUB_NEW_BACKEND_STATE:-3000|}" ;;
   *'spec.rules'*'host}') printf '%s' nexus.youdoogo.com ;;
   *'http.paths'*'path}'*) printf '/scoringsys\n' ;;
-  *'backend.service.port.name}') printf '%s' http ;;
-  *'metadata.generation}') printf '%s' "${CCE_STUB_NEW_GENERATION:-2}" ;;
+  *'metadata.generation}') printf '%s' "${CCE_STUB_NEW_GENERATION:-3}" ;;
   *'spec.template.spec.containers'*'image}') printf '%s' registry.example/scoringsys:test ;;
 esac
 exit 0
@@ -464,7 +467,7 @@ esac
                     "COMMAND_STUB_LOG": str(stub_log),
                     "CCE_STUB_STATE_FILE": str(command_dir / "ingress-applied"),
                     "CCE_STUB_OLD_INGRESS_EXISTS": "1",
-                    "CCE_STUB_SERVICE_STATE": "3000|http",
+                    "CCE_STUB_SERVICE_STATE": "http|3000|3000",
                     "KUBECONFIG_CCE_B64": "eA==",
                     "KUBE_IMAGE_PULL_SECRET": "swr-pull",
                     "RENDERED_DIR": str(rendered_dir),
@@ -479,21 +482,23 @@ esac
                 }
             )
             scenarios = (
-                ("1|3000|", "2||http", "2", "3000|http", 0, ""),
-                ("2||http", "2||http", "2", "3000|http", 0, ""),
-                ("1|3000|", "1||http", "1", "3000|http", 1, "generation did not increase"),
-                ("2||http", "2||http", "2", "3000|3000", 1, "Service http port"),
+                ("2||http", "3000|", "3", "http|3000|3000", "", 0, ""),
+                ("3|3000|", "3000|", "3", "http|3000|3000", '{"http":"3000"}', 0, ""),
+                ("2||http", "3000|", "2", "http|3000|3000", "", 1, "generation did not increase"),
+                ("3|3000|", "|http", "4", "http|3000|3000", '{"http":"3000"}', 1, "must be exactly number=3000"),
+                ("3|3000|", "3000|", "3", "http|3000|http", "", 1, "targetPort=3000"),
             )
-            for old_state, new_state, generation, service_state, expected_returncode, expected_error in scenarios:
-                with self.subTest(old_state=old_state, new_state=new_state, generation=generation, service_state=service_state):
+            for old_state, backend_state, generation, service_state, named_ports, expected_returncode, expected_error in scenarios:
+                with self.subTest(old_state=old_state, backend_state=backend_state, generation=generation, service_state=service_state):
                     state_file = command_dir / "ingress-applied"
                     state_file.unlink(missing_ok=True)
                     stub_log.write_text("", encoding="utf-8")
                     env = base_env | {
                         "CCE_STUB_OLD_INGRESS_STATE": old_state,
-                        "CCE_STUB_NEW_INGRESS_STATE": new_state,
+                        "CCE_STUB_NEW_BACKEND_STATE": backend_state,
                         "CCE_STUB_NEW_GENERATION": generation,
                         "CCE_STUB_SERVICE_STATE": service_state,
+                        "CCE_STUB_NAMED_PORTS": named_ports,
                     }
                     result = subprocess.run(
                         ["bash", str(ROOT / "scripts/ci/deploy-cce.sh")],
@@ -504,14 +509,18 @@ esac
                     self.assertEqual(result.returncode, expected_returncode, result.stderr)
                     if expected_error:
                         self.assertIn(expected_error, result.stderr)
+                        if named_ports:
+                            self.assertIn("must not rely on it", result.stderr)
                         continue
+                    if named_ports:
+                        self.assertIn("ignoring it in favor of the numeric backend contract", result.stderr)
                     invocations = stub_log.read_text(encoding="utf-8").splitlines()
                     annotation_reads = [
                         line
                         for line in invocations
                         if "get ingress" in line and "go-template={{ with index .metadata.annotations" in line
                     ]
-                    self.assertEqual(len(annotation_reads), 9)
+                    self.assertEqual(len(annotation_reads), 10)
                     self.assertTrue(all("go-template=" in line for line in annotation_reads))
                     for key in (
                         "kubernetes.io/elb.class",
@@ -521,6 +530,7 @@ esac
                         "kubernetes.io/elb.listen-ports",
                         "kubernetes.io/elb.tls-certificate-ids",
                         "kubernetes.io/ingress.class",
+                        "ingress.kubernetes.io/named-ports",
                         "reconcile-trigger",
                     ):
                         self.assertIn(key, "\n".join(annotation_reads))
@@ -631,6 +641,7 @@ esac
             "kubernetes.io/elb.listen-ports": '\'[{"HTTP":80},{"HTTPS":443}]\'',
             "kubernetes.io/elb.tls-certificate-ids": "56de20421757445ea53f5af51ecb4e10",
             "kubernetes.io/ingress.class": "cce",
+            "ingress.kubernetes.io/named-ports": '\'{"http":"3000"}\'',
         }
         for key, value in injections.items():
             with self.subTest(annotation=key), tempfile.TemporaryDirectory() as directory:
@@ -666,10 +677,19 @@ esac
         with tempfile.TemporaryDirectory() as directory:
             template_dir = self.mutated_templates(
                 directory,
-                lambda text: text.replace("name: http", "number: 3000"),
+                lambda text: text.replace("number: 3000", "name: http"),
             )
             stderr = self.render_expecting_failure(template_dir)
-            self.assertIn("backend service port must be exactly {name: http}", stderr)
+            self.assertIn("backend service port must be exactly {number: 3000}", stderr)
+
+        with tempfile.TemporaryDirectory() as directory:
+            template_dir = Path(directory)
+            (template_dir / "ingress.yaml.tmpl").write_text(INGRESS_TEMPLATE, encoding="utf-8")
+            (template_dir / "deployment.yaml.tmpl").write_text(
+                DEPLOYMENT_TEMPLATE.replace("targetPort: 3000", "targetPort: http"), encoding="utf-8"
+            )
+            stderr = self.render_expecting_failure(template_dir)
+            self.assertIn("Service port must be exactly name=http, port=3000, targetPort=3000", stderr)
 
     def test_negative_mutations_fail_contract(self) -> None:
         paths = [entry["path"] for entry in parse_yaml_documents(ROOT / "ops/cce/ingress.yaml.tmpl")[0]["spec"]["rules"][0]["http"]["paths"]]
