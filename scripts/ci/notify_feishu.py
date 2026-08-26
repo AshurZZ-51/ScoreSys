@@ -9,6 +9,7 @@ import os
 import re
 import sys
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -20,6 +21,8 @@ MESSAGE_ENDPOINT = f"{FEISHU_API_BASE}/im/v1/messages"
 APPLICATION_URL = "https://nexus.youdoogo.com/scoringsys"
 REQUEST_TIMEOUT_SECONDS = 15
 SAFE_IDENTIFIER = re.compile(r"[^A-Za-z0-9_.:-]")
+UTC_PLUS_8 = timezone(timedelta(hours=8))
+FAILURE_EXPLANATION = "verify / build / deploy 任一阶段失败都会触发此红卡，请点流水线查看失败任务。"
 
 
 class NotificationError(RuntimeError):
@@ -36,10 +39,16 @@ class NotificationConfig:
     app_secret: str
     chat_id: str
     status: str
-    project: str
+    pipeline_id: str
+    pipeline_url: str
     ref: str
     commit: str
-    pipeline_url: str
+    commit_title: str
+    triggered_by: str
+    commit_timestamp: str
+    job_started_at: str
+    pipeline_created_at: str
+    job_name: str
 
 
 def required_env(name: str) -> str:
@@ -54,15 +63,23 @@ def optional_env(name: str, fallback: str = "unknown") -> str:
 
 
 def make_config(status: str) -> NotificationConfig:
+    full_commit = optional_env("CI_COMMIT_SHA")
+    short_commit = optional_env("CI_COMMIT_SHORT_SHA", full_commit[:8])
     return NotificationConfig(
         app_id=required_env("FEISHU_APP_ID"),
         app_secret=required_env("FEISHU_APP_SECRET"),
         chat_id=required_env("FEISHU_CHAT_ID"),
         status=status,
-        project=optional_env("CI_PROJECT_PATH"),
-        ref=optional_env("CI_COMMIT_REF_NAME", optional_env("CI_COMMIT_BRANCH")),
-        commit=optional_env("CI_COMMIT_SHA", optional_env("CI_COMMIT_SHORT_SHA")),
+        pipeline_id=optional_env("CI_PIPELINE_ID"),
         pipeline_url=optional_env("CI_PIPELINE_URL"),
+        ref=optional_env("CI_COMMIT_BRANCH", optional_env("CI_COMMIT_REF_NAME")),
+        commit=short_commit,
+        commit_title=optional_env("CI_COMMIT_TITLE"),
+        triggered_by=optional_env("GITLAB_USER_NAME"),
+        commit_timestamp=optional_env("CI_COMMIT_TIMESTAMP"),
+        job_started_at=optional_env("CI_JOB_STARTED_AT"),
+        pipeline_created_at=optional_env("CI_PIPELINE_CREATED_AT"),
+        job_name=optional_env("CI_JOB_NAME"),
     )
 
 
@@ -108,18 +125,77 @@ def get_tenant_access_token(config: NotificationConfig) -> str:
     return token
 
 
-def build_card(config: NotificationConfig) -> dict[str, Any]:
-    status_label = config.status.upper()
+def parse_time(value: str) -> datetime | None:
+    value = value.strip()
+    if not value:
+        return None
+    if value.endswith("Z"):
+        value = value[:-1] + "+00:00"
+    try:
+        return datetime.fromisoformat(value).astimezone(UTC_PLUS_8)
+    except ValueError:
+        return None
+
+
+def format_time(value: str) -> str:
+    parsed = parse_time(value)
+    if parsed is None:
+        return "-"
+    return parsed.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def format_duration(seconds: float) -> str:
+    if seconds < 0:
+        return "-"
+    rounded_seconds = int(round(seconds))
+    minutes, seconds = divmod(rounded_seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours}小时{minutes}分{seconds}秒"
+    if minutes:
+        return f"{minutes}分{seconds}秒"
+    return f"{seconds}秒"
+
+
+def elapsed_since(value: str, completed_at: datetime) -> str:
+    started_at = parse_time(value)
+    if started_at is None:
+        return "-"
+    return format_duration((completed_at - started_at).total_seconds())
+
+
+def build_card(config: NotificationConfig, *, now: datetime | None = None) -> dict[str, Any]:
     succeeded = config.status == "success"
-    title = f"scoringsys pipeline {config.status}"
-    details = (
-        f"**Status:** {status_label}\n"
-        f"**Project:** {config.project}\n"
-        f"**Ref:** {config.ref}\n"
-        f"**Commit:** {config.commit}\n"
-        f"**Pipeline:** {config.pipeline_url}\n"
-        f"**Application:** {APPLICATION_URL}"
-    )
+    completed_at = (now or datetime.now(UTC_PLUS_8)).astimezone(UTC_PLUS_8)
+    completed_at_text = completed_at.strftime("%Y-%m-%d %H:%M:%S")
+    commit = f"{config.commit} {config.commit_title}"
+    if succeeded:
+        title = f"✅ 立项评审在线打分系统部署成功 #{config.pipeline_id}"
+        fields = [
+            ("流水线", config.pipeline_url),
+            ("分支", config.ref),
+            ("提交", commit),
+            ("触发者", config.triggered_by),
+            ("提交时间", format_time(config.commit_timestamp)),
+            ("部署完成", completed_at_text),
+            ("耗时", elapsed_since(config.job_started_at, completed_at)),
+            ("访问地址", APPLICATION_URL),
+        ]
+    else:
+        title = f"❌ 立项评审在线打分系统流水线失败 #{config.pipeline_id}"
+        fields = [
+            ("通知任务", config.job_name),
+            ("流水线", config.pipeline_url),
+            ("分支", config.ref),
+            ("提交", commit),
+            ("触发者", config.triggered_by),
+            ("提交时间", format_time(config.commit_timestamp)),
+            ("通知时间", completed_at_text),
+            ("耗时", elapsed_since(config.pipeline_created_at, completed_at)),
+            ("说明", FAILURE_EXPLANATION),
+            ("访问地址", APPLICATION_URL),
+        ]
+    details = "\n".join(f"**{label}**：{value}" for label, value in fields)
     elements: list[dict[str, Any]] = [{"tag": "div", "text": {"tag": "lark_md", "content": details}}]
     if config.pipeline_url != "unknown":
         elements.append(
@@ -128,13 +204,13 @@ def build_card(config: NotificationConfig) -> dict[str, Any]:
                 "actions": [
                     {
                         "tag": "button",
-                        "text": {"tag": "plain_text", "content": "Open pipeline"},
+                        "text": {"tag": "plain_text", "content": "查看流水线"},
                         "type": "primary" if succeeded else "danger",
                         "url": config.pipeline_url,
                     },
                     {
                         "tag": "button",
-                        "text": {"tag": "plain_text", "content": "Open application"},
+                        "text": {"tag": "plain_text", "content": "访问系统"},
                         "type": "default",
                         "url": APPLICATION_URL,
                     },
