@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase';
 import { requireAdminSession } from '@/lib/adminSession';
 import { buildInitiationProjectPayload, buildMeetingReportPayload, nextSnapshotVersion } from '@/lib/reportSnapshots';
+import { listReportSnapshots } from '@/lib/db/repositories/reports';
 
 export const dynamic = 'force-dynamic';
 
@@ -27,12 +28,12 @@ export async function GET(request: NextRequest) {
   const scopeId = searchParams.get('scope_id');
   const reportType = searchParams.get('report_type');
   if (!validScope(scopeType, scopeId, reportType)) return NextResponse.json({ error: '报告范围或类型无效' }, { status: 400 });
-  const { data, error } = await supabaseAdmin.from('report_snapshots')
-    .select('id, scope_type, scope_id, report_type, version, payload, generated_by, generated_at')
-    .eq('scope_type', scopeType).eq('scope_id', scopeId).eq('report_type', reportType)
-    .order('version', { ascending: false });
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  return NextResponse.json({ snapshots: data || [] });
+  try {
+    const snapshots = await listReportSnapshots({ scopeType: scopeType!, scopeId: scopeId!, reportType: reportType! });
+    return NextResponse.json({ snapshots });
+  } catch (error: any) {
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
 }
 
 export async function POST(request: NextRequest) {

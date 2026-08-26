@@ -4,6 +4,7 @@ import { supabaseAdmin } from '@/lib/supabase';
 import { createMaterialRows, getMaterialProgress, getMaterialStatus, makeMatchKey, normalizeProjectPart } from '@/lib/projectPoolWorkflow';
 import { countCompletedReviews, hasCompletedReview, isPendingReviewProject } from '@/lib/adminLifecycle';
 import { requireAdminSession } from '@/lib/adminSession';
+import { listProjectPool } from '@/lib/db/repositories/projectPool';
 
 export const dynamic = 'force-dynamic';
 
@@ -33,15 +34,11 @@ export async function GET(request: NextRequest) {
     }
     const monthRange = getMonthRange(searchParams.get('month'));
     if (monthRange === undefined) return NextResponse.json({ error: 'month must use YYYY-MM' }, { status: 400 });
-    let query = supabaseAdmin
-      .from('project_pool')
-      .select('*, project_materials(*), project_deletion_requests(*), projects(id, meeting_id, seq_no, round_no, attempt_no, scoring_version, assignment_status, meetings(id, name, meeting_date, status), scores(reviewer_code, dim_name, comment))')
-      .order('updated_at', { ascending: false });
-    if (scope === 'active' || scope === 'pending' || scope === 'reviewed') query = query.is('archived_at', null);
-    else query = query.not('archived_at', 'is', null);
-    if (monthRange) query = query.gte('created_at', monthRange.start).lt('created_at', monthRange.end);
-    const { data, error } = await query;
-    if (error) throw error;
+    const data = await listProjectPool({
+      scope,
+      monthStart: monthRange?.start,
+      monthEnd: monthRange?.end,
+    });
     const now = new Date();
     const projects = (data || [])
       .filter((project: any) => {

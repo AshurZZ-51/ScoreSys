@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isProjectPoolV2Enabled } from '@/lib/featureFlags';
-import { supabaseAdmin } from '@/lib/supabase';
 import { computeLegacyProjectScore, extractLegacyFeedback } from '@/lib/legacyScoring';
 import { isCompletedReview } from '@/lib/adminLifecycle';
+import { getProjectHistory } from '@/lib/db/repositories/projectHistory';
 
 export const dynamic = 'force-dynamic';
 
@@ -10,24 +10,16 @@ export async function GET(_: NextRequest, { params }: { params: Promise<{ id: st
   const { id } = await params;
   if (!isProjectPoolV2Enabled()) return NextResponse.json({ error: '项目池功能尚未启用' }, { status: 404 });
   try {
-    const [project, history, assignments, ratingHistory] = await Promise.all([
-      supabaseAdmin.from('project_pool').select('*, project_materials(*)').eq('id', id).single(),
-      supabaseAdmin.from('project_status_history').select('*').eq('project_id', id).order('created_at', { ascending: false }),
-      supabaseAdmin.from('projects').select('*, meetings(id, name, meeting_date, status), scores(reviewer_code, dim_name, score, comment, updated_at)').eq('pool_project_id', id).order('created_at'),
-      supabaseAdmin.from('project_rating_history').select('*').eq('project_id', id).order('created_at', { ascending: false })
-    ]);
-    if (project.error) throw project.error;
-    if (history.error) throw history.error;
-    if (assignments.error) throw assignments.error;
-    const enrichedAssignments = (assignments.data || []).map((assignment: any) => {
+    const result = await getProjectHistory(id);
+    const enrichedAssignments = result.assignments.map((assignment: any) => {
       const scores = assignment.scores || [];
       const isLegacy = assignment.scoring_version === 'legacy_v1' || !scores.some((score: any) => String(score.dim_name || '').startsWith('r'));
       const feedback = extractLegacyFeedback(scores);
       return { ...assignment, history_summary: isLegacy ? { ...computeLegacyProjectScore(scores), problems: feedback.problems, actions: feedback.actions } : null };
     });
     const completedReviews = enrichedAssignments.filter(isCompletedReview);
-    return NextResponse.json({ project: { ...project.data, rating_history: ratingHistory.error ? [] : (ratingHistory.data || []) }, history: history.data || [], assignments: enrichedAssignments, completed_reviews: completedReviews });
+    return NextResponse.json({ project: result.project, history: result.history, assignments: enrichedAssignments, completed_reviews: completedReviews });
   } catch (err: any) {
-    return NextResponse.json({ error: `获取项目历史失败: ${err.message}` }, { status: 500 });
+    return NextResponse.json({ error: `获取项目历史失败: ${err.message}` }, { status: err.status === 404 ? 404 : 500 });
   }
 }

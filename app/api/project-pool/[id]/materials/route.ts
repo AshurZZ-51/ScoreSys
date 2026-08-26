@@ -3,15 +3,19 @@ import { isProjectPoolV2Enabled } from '@/lib/featureFlags';
 import { supabaseAdmin } from '@/lib/supabase';
 import { buildMaterialUpsert, getMaterialStatus, isMaterialStatus, MATERIAL_ITEMS } from '@/lib/projectPoolWorkflow';
 import { requireAdminSession } from '@/lib/adminSession';
+import { listProjectMaterials } from '@/lib/db/repositories/projectMaterials';
 
 export const dynamic = 'force-dynamic';
 
 export async function GET(_: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   if (!isProjectPoolV2Enabled()) return NextResponse.json({ error: '项目池功能尚未启用' }, { status: 404 });
-  const { data, error } = await supabaseAdmin.from('project_materials').select('*').eq('project_id', id).order('item_key');
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  return NextResponse.json({ materials: data || [] });
+  try {
+    const materials = await listProjectMaterials(id);
+    return NextResponse.json({ materials });
+  } catch (error: any) {
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
 }
 
 export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
