@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { isProjectPoolV2Enabled, supabaseAdmin } from '@/lib/supabase';
+import { isProjectPoolV2Enabled } from '@/lib/featureFlags';
+import { supabaseAdmin } from '@/lib/supabase';
 import { requireAdminSession } from '@/lib/adminSession';
 
 export const dynamic = 'force-dynamic';

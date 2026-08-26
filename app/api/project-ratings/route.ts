@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { isProjectPoolV2Enabled, supabaseAdmin } from '@/lib/supabase';
+import { isProjectPoolV2Enabled } from '@/lib/featureFlags';
+import { supabaseAdmin } from '@/lib/supabase';
 import { isSameReviewerCode, requireReviewerSession } from '@/lib/adminSession';
 import { normalizeProjectRating } from '@/lib/projectReviewerRating';
 

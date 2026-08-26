@@ -6,7 +6,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "test": "node --test lib/*.test.cjs"
+    "test": "node --test lib/*.test.cjs lib/db/*.test.cjs"
   },
   "dependencies": {
     "next": "15.5.21",
@@ -16,13 +16,15 @@
     "sharp": "0.35.0",
     "tar": "7.5.22",
     "nanoid": "3.3.18",
-    "postcss": "8.5.18"
+    "postcss": "8.5.18",
+    "pg": "8.13.1"
   },
   "devDependencies": {
     "typescript": "^5.4.5",
     "@types/react": "^18.3.3",
     "@types/react-dom": "^18.3.0",
-    "@types/node": "^20.14.0"
+    "@types/node": "^20.14.0",
+    "@types/pg": "8.11.10"
   },
   "overrides": {
     "nanoid": "3.3.18",

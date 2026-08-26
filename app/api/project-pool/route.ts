@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { isProjectPoolV2Enabled, supabaseAdmin } from '@/lib/supabase';
+import { isProjectPoolV2Enabled } from '@/lib/featureFlags';
+import { supabaseAdmin } from '@/lib/supabase';
 import { createMaterialRows, getMaterialProgress, getMaterialStatus, makeMatchKey, normalizeProjectPart } from '@/lib/projectPoolWorkflow';
 import { countCompletedReviews, hasCompletedReview, isPendingReviewProject } from '@/lib/adminLifecycle';
 import { requireAdminSession } from '@/lib/adminSession';

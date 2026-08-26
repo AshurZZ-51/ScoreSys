@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { isProjectPoolV2Enabled, supabaseAdmin } from '@/lib/supabase';
+import { isProjectPoolV2Enabled } from '@/lib/featureFlags';
+import { supabaseAdmin } from '@/lib/supabase';
 import { createMaterialRows, makeMatchKey, MEETING_ASSIGNMENT_PROJECT_FIELDS, normalizeProjectPart } from '@/lib/projectPoolWorkflow';
 import { PROJECT_SLOT_COUNT, createTemplateProjects } from '@/lib/projectSlots';
 import { sortMeetingsForAdmin } from '@/lib/adminLifecycle';
