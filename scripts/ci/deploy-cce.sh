@@ -116,6 +116,28 @@ done
 # reconcile-trigger annotation, which is how the other sub-ingresses on this
 # shared ELB (nexus-prod/des-game, nexus-prod/nexus-studio) force a re-reconcile.
 kubectl -n "$NAMESPACE" apply --dry-run=server -f "$ingress" >/dev/null || die "Ingress server dry-run failed"
+
+# Capture the pre-apply shape so a legacy numeric backend cannot be silently
+# accepted when the CCE controller leaves metadata.generation unchanged. Once
+# the object already uses the named Service port, a normal idempotent apply may
+# legitimately keep the same generation.
+old_ingress_exists=false
+old_ingress_generation=""
+old_ingress_backend_number=""
+old_ingress_backend_name=""
+old_ingress_state=""
+if old_ingress_state=$(kubectl -n "$NAMESPACE" get ingress scoringsys -o 'jsonpath={.metadata.generation}{"|"}{.spec.rules[0].http.paths[0].backend.service.port.number}{"|"}{.spec.rules[0].http.paths[0].backend.service.port.name}' 2>/dev/null); then
+  old_ingress_exists=true
+  IFS='|' read -r old_ingress_generation old_ingress_backend_number old_ingress_backend_name <<<"$old_ingress_state"
+fi
+
+numeric_backend_requires_generation_bump=false
+old_generation_value=${old_ingress_generation:-0}
+if [[ "$old_ingress_exists" == true && "$old_ingress_backend_number" == "3000" ]]; then
+  [[ "$old_generation_value" =~ ^[0-9]+$ ]] || die "existing Ingress generation is not a non-negative integer"
+  numeric_backend_requires_generation_bump=true
+fi
+
 kubectl -n "$NAMESPACE" apply -f "$ingress" >/dev/null || die "Ingress apply failed"
 
 host=$(kubectl -n "$NAMESPACE" get ingress scoringsys -o jsonpath='{.spec.rules[0].host}')
@@ -123,8 +145,17 @@ host=$(kubectl -n "$NAMESPACE" get ingress scoringsys -o jsonpath='{.spec.rules[
 paths=$(kubectl -n "$NAMESPACE" get ingress scoringsys -o jsonpath='{range .spec.rules[0].http.paths[*]}{.path}{"\n"}{end}')
 expected_paths=$(printf '%s\n' "$PUBLIC_PREFIX")
 [[ "$paths" == "$expected_paths" ]] || die "Ingress paths do not match PUBLIC_PREFIX"
-backend_port=$(kubectl -n "$NAMESPACE" get ingress scoringsys -o jsonpath='{.spec.rules[0].http.paths[0].backend.service.port.number}')
-[[ "$backend_port" == "3000" ]] || die "Ingress backend port is not 3000"
+backend_port_name=$(kubectl -n "$NAMESPACE" get ingress scoringsys -o jsonpath='{.spec.rules[0].http.paths[0].backend.service.port.name}')
+[[ "$backend_port_name" == "http" ]] || die "Ingress backend port name is not http"
+
+service_http_port=$(kubectl -n "$NAMESPACE" get service scoringsys -o 'go-template={{range .spec.ports}}{{if eq .name "http"}}{{.port}}|{{.targetPort}}{{end}}{{end}}')
+[[ "$service_http_port" == "3000|http" ]] || die "Service http port must be 3000 with targetPort http"
+
+ingress_generation=$(kubectl -n "$NAMESPACE" get ingress scoringsys -o jsonpath='{.metadata.generation}')
+[[ "$ingress_generation" =~ ^[1-9][0-9]*$ ]] || die "Ingress generation is not a positive integer"
+if [[ "$numeric_backend_requires_generation_bump" == true ]] && (( ingress_generation <= old_generation_value )); then
+  die "Ingress generation did not increase after numeric backend migration"
+fi
 
 child_elb_class=$(get_ingress_annotation "$NAMESPACE" scoringsys "$ANNOTATION_ELB_CLASS")
 [[ "$child_elb_class" == "$CCE_ELB_CLASS" ]] || die "Ingress ELB class does not match the shared-listener contract"

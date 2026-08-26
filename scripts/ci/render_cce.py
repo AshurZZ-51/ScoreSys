@@ -178,6 +178,9 @@ def render(output_dir: Path, template_dir: Path) -> None:
         raise ValueError(f"Ingress must expose only {PUBLIC_PREFIX}")
     if ingress_obj["spec"]["rules"][0]["host"] != PUBLIC_HOST:
         raise ValueError("Ingress host does not match the public contract")
+    backend_port = paths[0]["backend"]["service"].get("port")
+    if backend_port != {"name": "http"}:
+        raise ValueError("Ingress backend service port must be exactly {name: http}")
     validate_shared_elb_annotations(ingress_obj, values["RECONCILE_TRIGGER"])
 
     (output_dir / "deployment.yaml").write_text(deployment, encoding="utf-8")
