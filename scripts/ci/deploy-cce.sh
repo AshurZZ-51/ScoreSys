@@ -12,6 +12,7 @@ CCE_ELB_ID=${CCE_ELB_ID:-abab7533-a1c6-4138-a4bc-59d53e3446e2}
 CCE_ELB_PORT=${CCE_ELB_PORT:-80}
 CCE_LISTENER_MASTER_INGRESS=${CCE_LISTENER_MASTER_INGRESS:-nexus-prod/nexus-studio}
 RECONCILE_PROPAGATION_SECONDS=${RECONCILE_PROPAGATION_SECONDS:-5}
+RUNTIME_SECRET_NAME=${RUNTIME_SECRET_NAME:-}
 
 die() {
   printf 'CCE deploy failed: %s\n' "$1" >&2
@@ -77,14 +78,16 @@ master_name=${BASH_REMATCH[2]}
 [[ ${#master_namespace} -le 63 && "$master_namespace" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]] || die "master Ingress namespace is not DNS-compatible"
 [[ ${#master_name} -le 63 && "$master_name" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]] || die "master Ingress name is not DNS-compatible"
 [[ "$master_namespace" == "$NAMESPACE" ]] || die "master Ingress namespace must match KUBE_NAMESPACE"
+[[ -n "$RUNTIME_SECRET_NAME" ]] || die "RUNTIME_SECRET_NAME is required"
 
 workload="$RENDERED_DIR/deployment.yaml"
 ingress="$RENDERED_DIR/ingress.yaml"
-if [[ ! -s "$workload" || ! -s "$ingress" ]]; then
+networkpolicy="$RENDERED_DIR/networkpolicy.yaml"
+if [[ ! -s "$workload" || ! -s "$ingress" || ! -s "$networkpolicy" ]]; then
   require_command python3
   IMAGE_REFERENCE=${IMAGE_REFERENCE:-} python3 "$SCRIPT_DIR/render_cce.py" --output-dir "$RENDERED_DIR" || die "manifest rendering failed"
 fi
-[[ -s "$workload" && -s "$ingress" ]] || die "rendered manifests are missing"
+[[ -s "$workload" && -s "$ingress" && -s "$networkpolicy" ]] || die "rendered manifests are missing"
 
 kubeconfig=$(mktemp)
 trap 'rm -f "$kubeconfig"' EXIT
@@ -98,14 +101,14 @@ kubectl get namespace "$NAMESPACE" >/dev/null || die "namespace $NAMESPACE does 
 pull_secret_type=$(kubectl -n "$NAMESPACE" get secret "$KUBE_IMAGE_PULL_SECRET" -o jsonpath='{.type}' 2>/dev/null || true)
 [[ "$pull_secret_type" == "kubernetes.io/dockerconfigjson" ]] || die "image pull secret has the wrong type"
 
-if [[ -n "${RUNTIME_SECRET_NAME:-}" ]]; then
-  kubectl -n "$NAMESPACE" get secret "$RUNTIME_SECRET_NAME" >/dev/null || die "runtime Secret is missing"
-fi
+kubectl -n "$NAMESPACE" get secret "$RUNTIME_SECRET_NAME" >/dev/null || die "runtime Secret is missing"
 if [[ -n "${RUNTIME_CONFIGMAP_NAME:-}" ]]; then
   kubectl -n "$NAMESPACE" get configmap "$RUNTIME_CONFIGMAP_NAME" >/dev/null || die "runtime ConfigMap is missing"
 fi
 
 kubectl -n "$NAMESPACE" apply --dry-run=server -f "$workload" >/dev/null || die "workload server dry-run failed"
+kubectl -n "$NAMESPACE" apply --dry-run=server -f "$networkpolicy" >/dev/null || die "NetworkPolicy server dry-run failed"
+kubectl -n "$NAMESPACE" apply -f "$networkpolicy" >/dev/null || die "NetworkPolicy apply failed"
 kubectl -n "$NAMESPACE" apply -f "$workload" >/dev/null || die "workload apply failed"
 
 service_target_port=$(kubectl -n "$NAMESPACE" get service scoringsys -o 'go-template={{range .spec.ports}}{{if eq .name "http"}}{{.targetPort}}{{end}}{{end}}')

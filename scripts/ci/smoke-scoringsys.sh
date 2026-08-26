@@ -15,6 +15,14 @@ SMOKE_HTML_MARKER=${SMOKE_HTML_MARKER:-立项评审在线打分系统}
 SMOKE_ATTEMPTS=${SMOKE_ATTEMPTS:-10}
 SMOKE_DELAY_SECONDS=${SMOKE_DELAY_SECONDS:-3}
 REQUEST_TIMEOUT_SECONDS=${REQUEST_TIMEOUT_SECONDS:-10}
+DB_HEALTH_PATH=${DB_HEALTH_PATH:-${PUBLIC_PREFIX}/api/health/db}
+SUMMARY_PATH=${SUMMARY_PATH:-${PUBLIC_PREFIX}/api/summary}
+SMOKE_SUMMARY_MEETING_ID=${SMOKE_SUMMARY_MEETING_ID:-}
+SMOKE_AUTH_COOKIE=${SMOKE_AUTH_COOKIE:-}
+
+if [[ -n "$SMOKE_SUMMARY_MEETING_ID" && "$SUMMARY_PATH" != *\?* ]]; then
+  SUMMARY_PATH="${SUMMARY_PATH}?meetingId=${SMOKE_SUMMARY_MEETING_ID}"
+fi
 
 die() {
   printf 'scoringsys smoke failed: %s\n' "$1" >&2
@@ -41,9 +49,16 @@ request_status() {
   # the exit-code fallback must REPLACE that output rather than append to it --
   # concatenating produced "000000", which no transient-status branch matches
   # and which therefore turned a retryable network blip into a hard failure.
-  status=$(curl --silent --show-error --max-time "$REQUEST_TIMEOUT_SECONDS" \
-    --dump-header "$headers_file" --output "$body_file" \
-    --write-out '%{http_code}' "$url" 2>/dev/null) || status=""
+  if [[ -n "$SMOKE_AUTH_COOKIE" ]]; then
+    status=$(curl --silent --show-error --max-time "$REQUEST_TIMEOUT_SECONDS" \
+      --header "Cookie: $SMOKE_AUTH_COOKIE" \
+      --dump-header "$headers_file" --output "$body_file" \
+      --write-out '%{http_code}' "$url" 2>/dev/null) || status=""
+  else
+    status=$(curl --silent --show-error --max-time "$REQUEST_TIMEOUT_SECONDS" \
+      --dump-header "$headers_file" --output "$body_file" \
+      --write-out '%{http_code}' "$url" 2>/dev/null) || status=""
+  fi
   case "$status" in
     [0-9][0-9][0-9]) printf '%s' "$status" ;;
     *) printf '000' ;;
@@ -129,6 +144,56 @@ check_page_and_asset() {
   [[ "$content_type" != text/html* ]] || { printf 'static asset unexpectedly returned HTML\n' >&2; return 1; }
 }
 
+check_db_health() {
+  local headers_file body_file status content_type
+  headers_file=$(mktemp)
+  body_file=$(mktemp)
+  status=$(request_status "${base_url}${DB_HEALTH_PATH}" "$headers_file" "$body_file")
+  content_type=$(read_header "$headers_file" content-type | tr '[:upper:]' '[:lower:]')
+  if [[ "$status" != "200" ]]; then
+    rm -f "$headers_file" "$body_file"
+    if is_transient_status "$status"; then return 10; fi
+    printf 'database health returned HTTP %s\n' "$status" >&2
+    return 1
+  fi
+  grep -Eq '"ok"[[:space:]]*:[[:space:]]*true' "$body_file" || {
+    rm -f "$headers_file" "$body_file"
+    printf 'database health did not report ok=true\n' >&2
+    return 1
+  }
+  [[ "$content_type" == application/json* || -z "$content_type" ]] || {
+    rm -f "$headers_file" "$body_file"
+    printf 'database health returned an unexpected content type\n' >&2
+    return 1
+  }
+  rm -f "$headers_file" "$body_file"
+}
+
+check_summary_json() {
+  local headers_file body_file status content_type
+  headers_file=$(mktemp)
+  body_file=$(mktemp)
+  status=$(request_status "${base_url}${SUMMARY_PATH}" "$headers_file" "$body_file")
+  content_type=$(read_header "$headers_file" content-type | tr '[:upper:]' '[:lower:]')
+  if [[ "$status" != "200" ]]; then
+    rm -f "$headers_file" "$body_file"
+    if is_transient_status "$status"; then return 10; fi
+    printf 'summary returned HTTP %s\n' "$status" >&2
+    return 1
+  fi
+  grep -Eq '^[[:space:]]*[\[{]' "$body_file" || {
+    rm -f "$headers_file" "$body_file"
+    printf 'summary did not return a JSON object or array\n' >&2
+    return 1
+  }
+  [[ "$content_type" == application/json* || -z "$content_type" ]] || {
+    rm -f "$headers_file" "$body_file"
+    printf 'summary returned an unexpected content type\n' >&2
+    return 1
+  }
+  rm -f "$headers_file" "$body_file"
+}
+
 run_bounded_check() {
   local check_name=$1
   shift
@@ -151,3 +216,9 @@ run_bounded_check() {
 
 run_bounded_check page-and-static-asset check_page_and_asset || die "${PUBLIC_PREFIX} did not serve the page/static asset contract"
 run_bounded_check trailing-slash-redirect check_trailing_slash_redirect || die "${PUBLIC_PREFIX}/ did not redirect to ${PUBLIC_PREFIX}"
+run_bounded_check database-health check_db_health || die "${DB_HEALTH_PATH} did not report database health"
+if [[ -n "$SMOKE_SUMMARY_MEETING_ID" ]]; then
+  run_bounded_check summary-json check_summary_json || die "${SUMMARY_PATH} did not return JSON"
+else
+  printf 'summary-json skipped: SMOKE_SUMMARY_MEETING_ID is not configured\n'
+fi

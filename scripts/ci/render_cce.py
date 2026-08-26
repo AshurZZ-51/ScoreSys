@@ -26,6 +26,11 @@ CCE_ELB_CLASS = os.environ.get("CCE_ELB_CLASS", "").strip() or "performance"
 CCE_INGRESS_CLASS = os.environ.get("CCE_INGRESS_CLASS", "").strip() or "cce"
 NAME_PATTERN = re.compile(r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$")
 TRIGGER_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,63}$")
+LABEL_KEY_PATTERN = re.compile(
+    r"^(?:[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?/)?"
+    r"[A-Za-z0-9](?:[-A-Za-z0-9_.]{0,61}[A-Za-z0-9])?$"
+)
+LABEL_VALUE_PATTERN = re.compile(r"^[A-Za-z0-9](?:[-A-Za-z0-9_.]{0,61}[A-Za-z0-9])?$")
 
 # The listener on the shared nexus-prod ELB (ports 80/443 plus the TLS certificate)
 # is owned by the master Ingress. A sub-ingress that declares these annotations
@@ -53,6 +58,18 @@ def required(name: str) -> str:
 def validate_name(name: str, value: str) -> str:
     if not NAME_PATTERN.fullmatch(value) or len(value) > 63:
         raise ValueError(f"{name} must be a DNS-compatible name")
+    return value
+
+
+def validate_label_key(value: str) -> str:
+    if not LABEL_KEY_PATTERN.fullmatch(value):
+        raise ValueError("POSTGRES_POD_LABEL_KEY must be a safe Kubernetes label key")
+    return value
+
+
+def validate_label_value(name: str, value: str) -> str:
+    if not LABEL_VALUE_PATTERN.fullmatch(value):
+        raise ValueError(f"{name} must be a safe Kubernetes label value")
     return value
 
 
@@ -110,18 +127,40 @@ def build_values() -> dict[str, str]:
     if not TRIGGER_PATTERN.fullmatch(trigger):
         raise ValueError("RECONCILE_TRIGGER must be a short alphanumeric token")
 
-    secret_name = os.environ.get("RUNTIME_SECRET_NAME", "").strip() or None
+    # Runtime credentials are always supplied out-of-band. Requiring the
+    # reference here prevents a rendered Deployment that starts without a DB
+    # URL, and keeps the renderer from ever creating or selecting a Secret.
+    secret_name = validate_name("RUNTIME_SECRET_NAME", required("RUNTIME_SECRET_NAME"))
     configmap_name = os.environ.get("RUNTIME_CONFIGMAP_NAME", "").strip() or None
-    if secret_name:
-        validate_name("RUNTIME_SECRET_NAME", secret_name)
     if configmap_name:
         validate_name("RUNTIME_CONFIGMAP_NAME", configmap_name)
+
+    migrator_secret_name = validate_name(
+        "MIGRATOR_SECRET_NAME",
+        os.environ.get("MIGRATOR_SECRET_NAME", "").strip() or "scoringsys-migrator",
+    )
+    if migrator_secret_name == secret_name:
+        raise ValueError("MIGRATOR_SECRET_NAME must be independent from RUNTIME_SECRET_NAME")
+
+    postgres_service_name = validate_name("POSTGRES_SERVICE_NAME", required("POSTGRES_SERVICE_NAME"))
+    postgres_label_key = validate_label_key(required("POSTGRES_POD_LABEL_KEY"))
+    postgres_label_value = validate_label_value("POSTGRES_POD_LABEL_VALUE", required("POSTGRES_POD_LABEL_VALUE"))
+    db_pool_max_raw = os.environ.get("DB_POOL_MAX", "10").strip() or "10"
+    if not db_pool_max_raw.isdigit() or int(db_pool_max_raw) < 1:
+        raise ValueError("DB_POOL_MAX must be a positive integer")
+    db_pool_max = int(db_pool_max_raw)
 
     return {
         "NAMESPACE": namespace,
         "IMAGE_PULL_SECRET": pull_secret,
         "IMAGE_REFERENCE": image,
+        "RUNTIME_SECRET_NAME": secret_name,
         "RUNTIME_ENV_BLOCK": render_runtime_env(secret_name, configmap_name),
+        "MIGRATOR_SECRET_NAME": migrator_secret_name,
+        "POSTGRES_SERVICE_NAME": postgres_service_name,
+        "POSTGRES_POD_LABEL_KEY": postgres_label_key,
+        "POSTGRES_POD_LABEL_VALUE": postgres_label_value,
+        "DB_POOL_MAX": str(db_pool_max),
         "RECONCILE_TRIGGER": trigger,
     }
 
@@ -173,8 +212,14 @@ def render(output_dir: Path, template_dir: Path) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     deployment = render_template((template_dir / "deployment.yaml.tmpl").read_text(encoding="utf-8"), values)
     ingress = render_template((template_dir / "ingress.yaml.tmpl").read_text(encoding="utf-8"), values)
+    migrate = render_template((template_dir / "job-migrate.yaml.tmpl").read_text(encoding="utf-8"), values)
+    importer = render_template((template_dir / "job-import.yaml.tmpl").read_text(encoding="utf-8"), values)
+    networkpolicy = render_template((template_dir / "networkpolicy.yaml.tmpl").read_text(encoding="utf-8"), values)
     deployment_docs = parse_documents(deployment, {"Deployment", "Service"})
     ingress_docs = parse_documents(ingress, {"Ingress"})
+    migrate_docs = parse_documents(migrate, {"Job"})
+    import_docs = parse_documents(importer, {"Job"})
+    networkpolicy_docs = parse_documents(networkpolicy, {"NetworkPolicy"})
 
     deployment_obj = deployment_docs[0]
     service_obj = deployment_docs[1]
@@ -182,6 +227,25 @@ def render(output_dir: Path, template_dir: Path) -> None:
         raise ValueError("workload namespace does not match KUBE_NAMESPACE")
     validate_probe_paths(deployment_obj)
     validate_service_port(service_obj)
+    if "SUPABASE" in deployment.upper():
+        raise ValueError("Deployment must not reference Supabase credentials")
+    web_container = deployment_obj["spec"]["template"]["spec"]["containers"][0]
+    web_pod_spec = deployment_obj["spec"]["template"]["spec"]
+    if web_pod_spec.get("automountServiceAccountToken") is not False:
+        raise ValueError("web Deployment must not mount a ServiceAccount token")
+    env_from = web_container.get("envFrom") or []
+    secret_refs = [ref.get("secretRef", {}).get("name") for ref in env_from if ref.get("secretRef")]
+    if secret_refs != [values["RUNTIME_SECRET_NAME"]]:
+        raise ValueError("web Deployment must reference only RUNTIME_SECRET_NAME as a Secret")
+    configmap_refs = [ref.get("configMapRef", {}).get("name") for ref in env_from if ref.get("configMapRef")]
+    expected_configmaps = [os.environ["RUNTIME_CONFIGMAP_NAME"].strip()] if os.environ.get("RUNTIME_CONFIGMAP_NAME", "").strip() else []
+    if configmap_refs != expected_configmaps:
+        raise ValueError("web Deployment ConfigMap references must match RUNTIME_CONFIGMAP_NAME")
+    if any(name == values["MIGRATOR_SECRET_NAME"] for name in secret_refs):
+        raise ValueError("web Deployment must not reference the migrator Secret")
+    replicas = deployment_obj.get("spec", {}).get("replicas", 1)
+    if not isinstance(replicas, int) or replicas < 1 or replicas * int(values["DB_POOL_MAX"]) > 40:
+        raise ValueError("replicas x DB_POOL_MAX must be a positive value no greater than 40")
 
     ingress_obj = ingress_docs[0]
     if ingress_obj["spec"].get("ingressClassName") != CCE_INGRESS_CLASS:
@@ -196,8 +260,71 @@ def render(output_dir: Path, template_dir: Path) -> None:
         raise ValueError("Ingress backend service port must be exactly {number: 3000}")
     validate_shared_elb_annotations(ingress_obj, values["RECONCILE_TRIGGER"])
 
+    for job_docs in (migrate_docs, import_docs):
+        job = job_docs[0]
+        if job["metadata"].get("namespace") != values["NAMESPACE"]:
+            raise ValueError("Job namespace does not match KUBE_NAMESPACE")
+        job_spec = job.get("spec") or {}
+        if job_spec.get("backoffLimit") != 0 or job_spec.get("ttlSecondsAfterFinished") != 86400:
+            raise ValueError("database Jobs must have backoffLimit=0 and ttlSecondsAfterFinished=86400")
+        pod_spec = (job_spec.get("template") or {}).get("spec") or {}
+        if pod_spec.get("restartPolicy") != "Never":
+            raise ValueError("database Jobs must use restartPolicy Never")
+        if pod_spec.get("automountServiceAccountToken") is not False:
+            raise ValueError("database Jobs must not mount a ServiceAccount token")
+        containers = pod_spec.get("containers") or []
+        if len(containers) != 1:
+            raise ValueError("database Jobs must have exactly one container")
+        container = containers[0]
+        security = container.get("securityContext") or {}
+        if (
+            security.get("readOnlyRootFilesystem") is not True
+            or security.get("runAsNonRoot") is not True
+            or security.get("runAsUser") != 1000
+            or security.get("allowPrivilegeEscalation") is not False
+            or security.get("capabilities", {}).get("drop") != ["ALL"]
+        ):
+            raise ValueError("database Jobs must use the non-root read-only security baseline")
+        env_from = container.get("envFrom") or []
+        if env_from != [{"secretRef": {"name": values["MIGRATOR_SECRET_NAME"]}}]:
+            raise ValueError("database Jobs must use only the independent migrator Secret")
+        resources = container.get("resources") or {}
+        if not all(resources.get(section, {}).get(key) for section in ("requests", "limits") for key in ("cpu", "memory")):
+            raise ValueError("database Jobs must declare resource requests and limits")
+        if not any(volume.get("name") == "tmp" for volume in pod_spec.get("volumes", [])):
+            raise ValueError("database Jobs must mount an emptyDir /tmp")
+
+    policy = networkpolicy_docs[0]
+    if policy["metadata"].get("namespace") != values["NAMESPACE"]:
+        raise ValueError("NetworkPolicy namespace does not match KUBE_NAMESPACE")
+    if (policy["metadata"].get("annotations") or {}).get("scoringsys.io/postgres-service") != values["POSTGRES_SERVICE_NAME"]:
+        raise ValueError("NetworkPolicy postgres Service reference is not rendered")
+    expected_selector = {values["POSTGRES_POD_LABEL_KEY"]: values["POSTGRES_POD_LABEL_VALUE"]}
+    rules = policy.get("spec", {}).get("egress") or []
+    expected_rules = [
+        {
+            "to": [{"podSelector": {"matchLabels": expected_selector}}],
+            "ports": [{"protocol": "TCP", "port": 5432}],
+        },
+        {
+            "to": [{"namespaceSelector": {}}],
+            "ports": [{"protocol": "UDP", "port": 53}],
+        },
+        {
+            "to": [{"namespaceSelector": {}}],
+            "ports": [{"protocol": "TCP", "port": 53}],
+        },
+    ]
+    if rules != expected_rules:
+        raise ValueError("NetworkPolicy must allow only postgres TCP 5432 and UDP/TCP DNS")
+    if policy.get("spec", {}).get("policyTypes") != ["Egress"]:
+        raise ValueError("NetworkPolicy must declare Egress policy type")
+
     (output_dir / "deployment.yaml").write_text(deployment, encoding="utf-8")
     (output_dir / "ingress.yaml").write_text(ingress, encoding="utf-8")
+    (output_dir / "job-migrate.yaml").write_text(migrate, encoding="utf-8")
+    (output_dir / "job-import.yaml").write_text(importer, encoding="utf-8")
+    (output_dir / "networkpolicy.yaml").write_text(networkpolicy, encoding="utf-8")
     print(f"Rendered CCE manifests to {output_dir}")
 
 

@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 CI = (ROOT / ".gitlab-ci.yml").read_text(encoding="utf-8")
 DEPLOYMENT_TEMPLATE = (ROOT / "ops/cce/deployment.yaml.tmpl").read_text(encoding="utf-8")
 INGRESS_TEMPLATE = (ROOT / "ops/cce/ingress.yaml.tmpl").read_text(encoding="utf-8")
+CCE_TEMPLATE_STEMS = ("deployment", "ingress", "job-migrate", "job-import", "networkpolicy")
 DEPLOY_SCRIPT = (ROOT / "scripts/ci/deploy-cce.sh").read_text(encoding="utf-8")
 SMOKE_SCRIPT = (ROOT / "scripts/ci/smoke-scoringsys.sh").read_text(encoding="utf-8")
 NEXT_CONFIG = (ROOT / "next.config.js").read_text(encoding="utf-8")
@@ -52,6 +53,10 @@ class CceDeliveryContractTest(unittest.TestCase):
         env = os.environ.copy()
         env["IMAGE_REFERENCE"] = "registry.example/scoringsys:test"
         env["KUBE_IMAGE_PULL_SECRET"] = "swr-pull"
+        env["RUNTIME_SECRET_NAME"] = "scoringsys-runtime"
+        env["POSTGRES_SERVICE_NAME"] = "postgres"
+        env["POSTGRES_POD_LABEL_KEY"] = "app"
+        env["POSTGRES_POD_LABEL_VALUE"] = "postgres"
         env["RECONCILE_TRIGGER"] = "test-trigger"
         for key, value in overrides.items():
             if value is None:
@@ -66,13 +71,17 @@ class CceDeliveryContractTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             return {
                 stem: parse_yaml_documents(Path(directory) / f"{stem}.yaml")
-                for stem in ("deployment", "ingress")
+                for stem in CCE_TEMPLATE_STEMS
             }
 
     def render_expecting_failure(self, template_dir: Path, **overrides) -> str:
         env = os.environ.copy()
         env["IMAGE_REFERENCE"] = "registry.example/scoringsys:test"
         env["KUBE_IMAGE_PULL_SECRET"] = "swr-pull"
+        env["RUNTIME_SECRET_NAME"] = "scoringsys-runtime"
+        env["POSTGRES_SERVICE_NAME"] = "postgres"
+        env["POSTGRES_POD_LABEL_KEY"] = "app"
+        env["POSTGRES_POD_LABEL_VALUE"] = "postgres"
         env["RECONCILE_TRIGGER"] = "test-trigger"
         env.update(overrides)
         with tempfile.TemporaryDirectory() as directory:
@@ -90,6 +99,10 @@ class CceDeliveryContractTest(unittest.TestCase):
         template_dir = Path(directory)
         (template_dir / "deployment.yaml.tmpl").write_text(DEPLOYMENT_TEMPLATE, encoding="utf-8")
         (template_dir / "ingress.yaml.tmpl").write_text(ingress_transform(INGRESS_TEMPLATE), encoding="utf-8")
+        for stem in ("job-migrate", "job-import", "networkpolicy"):
+            source = ROOT / "ops/cce" / f"{stem}.yaml.tmpl"
+            if source.exists():
+                (template_dir / f"{stem}.yaml.tmpl").write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
         return template_dir
 
     def trivy_db_setup_script(self) -> str:
@@ -296,7 +309,7 @@ class CceDeliveryContractTest(unittest.TestCase):
 
     def test_pipeline_has_ordered_stages_and_safe_workflow(self) -> None:
         pipeline = yaml.safe_load(CI)
-        self.assertEqual(pipeline["stages"], ["verify", "build", "scan", "deploy", "notify"])
+        self.assertEqual(pipeline["stages"], ["verify", "build", "scan", "db-gates", "deploy", "notify"])
         workflow_text = CI.split("workflow:", 1)[1].split("stages:", 1)[0]
         self.assertIn("merge_request_event", workflow_text)
         self.assertIn("CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH", workflow_text)
@@ -339,6 +352,10 @@ class CceDeliveryContractTest(unittest.TestCase):
             env = os.environ.copy()
             env["IMAGE_REFERENCE"] = "registry.example/scoringsys:test"
             env["KUBE_IMAGE_PULL_SECRET"] = "swr-pull"
+            env["RUNTIME_SECRET_NAME"] = "scoringsys-runtime"
+            env["POSTGRES_SERVICE_NAME"] = "postgres"
+            env["POSTGRES_POD_LABEL_KEY"] = "app"
+            env["POSTGRES_POD_LABEL_VALUE"] = "postgres"
             rendered = subprocess.run(["python3", str(renderer), "--output-dir", directory], env=env, text=True, capture_output=True)
             self.assertEqual(rendered.returncode, 0, rendered.stderr)
             documents = parse_yaml_documents(Path(directory) / "deployment.yaml")
@@ -353,6 +370,7 @@ class CceDeliveryContractTest(unittest.TestCase):
         self.assertEqual(container["livenessProbe"]["httpGet"]["path"], PUBLIC_PREFIX)
         self.assertEqual(container["startupProbe"]["httpGet"]["path"], PUBLIC_PREFIX)
         self.assertTrue(deployment["spec"]["template"]["spec"]["securityContext"]["runAsNonRoot"])
+        self.assertFalse(deployment["spec"]["template"]["spec"]["automountServiceAccountToken"])
         self.assertTrue(container["securityContext"]["readOnlyRootFilesystem"])
         self.assertEqual(deployment["spec"]["template"]["spec"]["volumes"][0]["name"], "tmp")
         self.assertEqual(container["volumeMounts"][0]["mountPath"], "/tmp")
@@ -506,6 +524,7 @@ class CceDeliveryContractTest(unittest.TestCase):
             rendered_dir.mkdir()
             (rendered_dir / "deployment.yaml").write_text("kind: Deployment\n", encoding="utf-8")
             (rendered_dir / "ingress.yaml").write_text("kind: Ingress\n", encoding="utf-8")
+            (rendered_dir / "networkpolicy.yaml").write_text("kind: NetworkPolicy\n", encoding="utf-8")
             stub_log = command_dir / "kubectl-invocations.log"
             kubectl_stub = r'''#!/bin/sh
 set -eu
@@ -628,6 +647,16 @@ case "$url" in
     printf asset >"$body"
     printf 200
     ;;
+  */scoringsys/api/health/db)
+    printf 'HTTP/1.1 200 OK\ncontent-type: application/json\n\n' >"$headers"
+    printf '{"ok":true,"pool":{}}' >"$body"
+    printf 200
+    ;;
+  */scoringsys/api/summary)
+    printf 'HTTP/1.1 200 OK\ncontent-type: application/json\n\n' >"$headers"
+    printf '{}' >"$body"
+    printf 200
+    ;;
   */scoringsys)
     printf 'HTTP/1.1 200 OK\ncontent-type: text/html\n\n' >"$headers"
     printf 'marker /scoringsys/_next/static/app.js' >"$body"
@@ -654,6 +683,7 @@ esac
                     "CCE_STUB_SERVICE_STATE": "http|3000|3000",
                     "KUBECONFIG_CCE_B64": "eA==",
                     "KUBE_IMAGE_PULL_SECRET": "swr-pull",
+                    "RUNTIME_SECRET_NAME": "scoringsys-runtime",
                     "RENDERED_DIR": str(rendered_dir),
                     "IMAGE_REFERENCE": "registry.example/scoringsys:test",
                     "RECONCILE_TRIGGER": "",
@@ -814,6 +844,10 @@ esac
             env = os.environ.copy()
             env.pop("KUBE_IMAGE_PULL_SECRET", None)
             env["IMAGE_REFERENCE"] = "registry.example/scoringsys:test"
+            env["RUNTIME_SECRET_NAME"] = "scoringsys-runtime"
+            env["POSTGRES_SERVICE_NAME"] = "postgres"
+            env["POSTGRES_POD_LABEL_KEY"] = "app"
+            env["POSTGRES_POD_LABEL_VALUE"] = "postgres"
             missing = subprocess.run(["python3", str(renderer), "--output-dir", directory], env=env, text=True, capture_output=True)
             self.assertNotEqual(missing.returncode, 0)
             self.assertNotIn("secret-value", missing.stderr)
@@ -878,8 +912,7 @@ esac
             self.assertIn("kubernetes.io/elb.id", stderr)
 
         with tempfile.TemporaryDirectory() as directory:
-            template_dir = Path(directory)
-            (template_dir / "ingress.yaml.tmpl").write_text(INGRESS_TEMPLATE, encoding="utf-8")
+            template_dir = self.mutated_templates(directory, lambda text: text)
             # A probe on the slashed form only ever sees the Next.js 308, which
             # kubelet accepts as success -- Ready without a rendered page.
             (template_dir / "deployment.yaml.tmpl").write_text(
@@ -897,8 +930,7 @@ esac
             self.assertIn("backend service port must be exactly {number: 3000}", stderr)
 
         with tempfile.TemporaryDirectory() as directory:
-            template_dir = Path(directory)
-            (template_dir / "ingress.yaml.tmpl").write_text(INGRESS_TEMPLATE, encoding="utf-8")
+            template_dir = self.mutated_templates(directory, lambda text: text)
             (template_dir / "deployment.yaml.tmpl").write_text(
                 DEPLOYMENT_TEMPLATE.replace("targetPort: 3000", "targetPort: http"), encoding="utf-8"
             )
@@ -911,8 +943,9 @@ esac
         mutated_paths = paths + ["/"]
         self.assertNotEqual(mutated_paths, ["/scoringsys"])
         self.assertNotIn("--provenance=false", CI.replace("--provenance=false", ""))
-        mutated_pipeline = CI.replace("retry: 0", "retry: 1", 1)
-        self.assertNotEqual(yaml.safe_load(mutated_pipeline)["deploy-cce"]["retry"], 0)
+        mutated_pipeline = yaml.safe_load(CI)
+        mutated_pipeline["deploy-cce"]["retry"] = 1
+        self.assertNotEqual(mutated_pipeline["deploy-cce"]["retry"], 0)
         mutated_pipeline = yaml.safe_load(CI)
         mutated_pipeline["scan-image"]["image"].pop("entrypoint")
         with self.assertRaises(AssertionError):
@@ -960,11 +993,13 @@ esac
         mutated_pipeline = yaml.safe_load(CI.replace('while [ "$attempt" -le 2 ]', "while true", 1))
         with self.assertRaises(AssertionError):
             self.assert_build_cache_contract(mutated_pipeline, DOCKERFILE)
-        mutated_pipeline = yaml.safe_load(
-            CI.replace('docker buildx build failed after 2 attempts" >&2', 'ok"', 1).replace(
-                "        exit 1\n", "        true\n", 1
+        mutated_pipeline = yaml.safe_load(CI)
+        mutated_pipeline["build-image"]["script"] = [
+            command.replace('docker buildx build failed after 2 attempts" >&2', 'ok"').replace(
+                "  exit 1\n", "  true\n"
             )
-        )
+            for command in mutated_pipeline["build-image"]["script"]
+        ]
         with self.assertRaises(AssertionError):
             self.assert_build_cache_contract(mutated_pipeline, DOCKERFILE)
         mutated_pipeline = yaml.safe_load(
@@ -1043,6 +1078,170 @@ printf 'bounded-attempts=%s\n' "$attempts"
         self.assertIn("--exit-code 1", script)
         self.assertNotIn("allow_failure", scan)
         self.assertIn({"job": "scan-image"}, pipeline["deploy-cce"]["needs"])
+
+    def test_renderer_emits_jobs_and_network_policy_as_parseable_documents(self) -> None:
+        rendered = self.render(
+            POSTGRES_SERVICE_NAME="postgres",
+            POSTGRES_POD_LABEL_KEY="app.kubernetes.io/name",
+            POSTGRES_POD_LABEL_VALUE="postgres",
+        )
+        self.assertEqual({doc["kind"] for doc in rendered["deployment"]}, {"Deployment", "Service"})
+        self.assertEqual({doc["kind"] for doc in rendered["ingress"]}, {"Ingress"})
+        self.assertEqual({doc["kind"] for doc in rendered["job-migrate"]}, {"Job"})
+        self.assertEqual({doc["kind"] for doc in rendered["job-import"]}, {"Job"})
+        self.assertEqual({doc["kind"] for doc in rendered["networkpolicy"]}, {"NetworkPolicy"})
+
+    def test_web_mounts_only_runtime_secret_and_never_migrator(self) -> None:
+        rendered = self.render(
+            RUNTIME_SECRET_NAME="runtime-custom",
+            RUNTIME_CONFIGMAP_NAME=None,
+            POSTGRES_SERVICE_NAME="postgres",
+            POSTGRES_POD_LABEL_KEY="app.kubernetes.io/name",
+            POSTGRES_POD_LABEL_VALUE="postgres",
+        )
+        deployment = rendered["deployment"][0]
+        env_from = deployment["spec"]["template"]["spec"]["containers"][0].get("envFrom", [])
+        self.assertEqual(env_from, [{"secretRef": {"name": "runtime-custom"}}])
+        encoded = json.dumps(deployment)
+        self.assertNotIn("scoringsys-migrator", encoded)
+        self.assertNotIn("SUPABASE", encoded.upper())
+        self.assertNotIn("migrat", encoded.lower())
+
+    def test_runtime_secret_is_required_and_not_created(self) -> None:
+        with self.assertRaises(AssertionError):
+            self.render(
+                RUNTIME_SECRET_NAME=None,
+                POSTGRES_SERVICE_NAME="postgres",
+                POSTGRES_POD_LABEL_KEY="app.kubernetes.io/name",
+                POSTGRES_POD_LABEL_VALUE="postgres",
+            )
+        for stem in CCE_TEMPLATE_STEMS:
+            template = (ROOT / "ops/cce" / f"{stem}.yaml.tmpl").read_text(encoding="utf-8")
+            self.assertNotIn("kind: Secret", template)
+            self.assertNotIn("kind: ConfigMap", template)
+
+    def test_migration_jobs_are_manual_safe_and_use_independent_secret(self) -> None:
+        rendered = self.render(
+            POSTGRES_SERVICE_NAME="postgres",
+            POSTGRES_POD_LABEL_KEY="app.kubernetes.io/name",
+            POSTGRES_POD_LABEL_VALUE="postgres",
+        )
+        for stem, expected_command in (("job-migrate", "scripts/db/migrate.mjs"), ("job-import", "scripts/db/import-snapshot.mjs")):
+            job = rendered[stem][0]
+            spec = job["spec"]
+            pod = spec["template"]["spec"]
+            container = pod["containers"][0]
+            self.assertEqual(spec["backoffLimit"], 0)
+            self.assertEqual(spec["ttlSecondsAfterFinished"], 86400)
+            self.assertEqual(pod["restartPolicy"], "Never")
+            self.assertFalse(pod["automountServiceAccountToken"])
+            self.assertEqual(container["command"][0:2], ["node", expected_command])
+            self.assertEqual(container["envFrom"], [{"secretRef": {"name": "scoringsys-migrator"}}])
+            self.assertTrue(container["securityContext"]["readOnlyRootFilesystem"])
+            self.assertTrue(container["securityContext"]["runAsNonRoot"])
+            self.assertEqual(container["securityContext"]["runAsUser"], 1000)
+            self.assertEqual(container["securityContext"]["capabilities"]["drop"], ["ALL"])
+            self.assertIn("resources", container)
+            self.assertIn("tmp", pod.get("volumes", [])[0]["name"])
+            self.assertNotIn("DATABASE_ADMIN", json.dumps(job))
+            self.assertNotIn("SUPABASE", json.dumps(job).upper())
+
+    def test_network_policy_uses_rendered_postgres_selector_and_dns_only(self) -> None:
+        rendered = self.render(
+            POSTGRES_SERVICE_NAME="postgres-primary",
+            POSTGRES_POD_LABEL_KEY="database",
+            POSTGRES_POD_LABEL_VALUE="postgres-16",
+        )
+        policy = rendered["networkpolicy"][0]
+        self.assertEqual(policy["spec"]["podSelector"], {"matchLabels": {"app.kubernetes.io/name": "scoringsys"}})
+        self.assertEqual(policy["metadata"]["annotations"]["scoringsys.io/postgres-service"], "postgres-primary")
+        egress = policy["spec"]["egress"]
+        postgres_rules = [rule for rule in egress if any(port.get("port") == 5432 for port in rule.get("ports", []))]
+        self.assertEqual(len(postgres_rules), 1)
+        self.assertEqual(postgres_rules[0]["to"], [{"podSelector": {"matchLabels": {"database": "postgres-16"}}}])
+        dns_ports = [port for rule in egress for port in rule.get("ports", []) if port.get("port") == 53]
+        self.assertEqual({(port["protocol"], port["port"]) for port in dns_ports}, {("UDP", 53), ("TCP", 53)})
+        self.assertNotIn("NodePort", json.dumps(policy))
+        self.assertNotIn("LoadBalancer", json.dumps(policy))
+
+    def test_network_policy_rejects_missing_or_invalid_selector_inputs(self) -> None:
+        for overrides, expected in (
+            ({"POSTGRES_POD_LABEL_KEY": None}, "POSTGRES_POD_LABEL_KEY"),
+            ({"POSTGRES_POD_LABEL_VALUE": None}, "POSTGRES_POD_LABEL_VALUE"),
+            ({"POSTGRES_SERVICE_NAME": "bad/name"}, "POSTGRES_SERVICE_NAME"),
+        ):
+            with self.subTest(overrides=overrides):
+                with self.assertRaises(AssertionError) as failure:
+                    values = {
+                        "POSTGRES_SERVICE_NAME": "postgres",
+                        "POSTGRES_POD_LABEL_KEY": "app",
+                        "POSTGRES_POD_LABEL_VALUE": "postgres",
+                    }
+                    values.update(overrides)
+                    self.render(**values)
+                self.assertIn(expected, str(failure.exception))
+        with self.assertRaises(AssertionError) as failure:
+            self.render(DB_POOL_MAX="41")
+        self.assertIn("no greater than 40", str(failure.exception))
+
+    def test_negative_manifest_mutations_are_rejected_by_renderer(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            template_dir = self.mutated_templates(directory, lambda text: text)
+            policy_path = template_dir / "networkpolicy.yaml.tmpl"
+            policy_path.write_text(policy_path.read_text(encoding="utf-8").replace("port: 53", "port: 443", 1), encoding="utf-8")
+            stderr = self.render_expecting_failure(template_dir)
+            self.assertIn("NetworkPolicy must allow only", stderr)
+
+        with tempfile.TemporaryDirectory() as directory:
+            template_dir = self.mutated_templates(directory, lambda text: text)
+            deployment_path = template_dir / "deployment.yaml.tmpl"
+            deployment_path.write_text(
+                deployment_path.read_text(encoding="utf-8").replace(
+                    "{{RUNTIME_ENV_BLOCK}}",
+                    "{{RUNTIME_ENV_BLOCK}}\n          envFrom:\n            - secretRef:\n                name: scoringsys-migrator",
+                ),
+                encoding="utf-8",
+            )
+            stderr = self.render_expecting_failure(template_dir)
+            self.assertIn("only RUNTIME_SECRET_NAME", stderr)
+
+    def test_ci_has_fail_closed_manual_database_gates_in_dependency_order(self) -> None:
+        pipeline = yaml.safe_load(CI)
+        self.assertEqual(pipeline["stages"], ["verify", "build", "scan", "db-gates", "deploy", "notify"])
+        for name, script_name in (("migrate-db", "job-migrate.yaml"), ("import-db", "job-import.yaml")):
+            job = pipeline[name]
+            self.assertEqual(job["stage"], "db-gates")
+            self.assertEqual(job["when"], "manual")
+            self.assertFalse(job.get("allow_failure", False))
+            self.assertEqual(job["retry"], 0)
+            self.assertFalse(job["interruptible"])
+            self.assertIn(script_name, "\n".join(job["script"]))
+            self.assertIn("--dry-run=server", "\n".join(job["script"]))
+            self.assertNotIn("kubectl apply", "\n".join(job["script"]))
+        self.assertIn("kubectl -n \"$KUBE_NAMESPACE\" run", "\n".join(pipeline["import-db"]["script"]))
+        self.assertIn("--rm -i", "\n".join(pipeline["import-db"]["script"]))
+        deploy = pipeline["deploy-cce"]
+        self.assertEqual(deploy["stage"], "deploy")
+        stage_index = {name: index for index, name in enumerate(pipeline["stages"])}
+        self.assertLess(stage_index[pipeline["verify-app"]["stage"]], stage_index[deploy["stage"]])
+        self.assertLess(stage_index[pipeline["scan-image"]["stage"]], stage_index["db-gates"])
+        needed = {item["job"] for item in deploy["needs"]}
+        self.assertTrue({"render-cce", "build-image", "scan-image", "migrate-db", "import-db"} <= needed)
+        self.assertIn("PRODUCTION_DB_MUTATION_APPROVED", CI)
+
+    def test_deploy_script_applies_network_policy_but_never_runs_db_mutation(self) -> None:
+        self.assertIn("networkpolicy.yaml", DEPLOY_SCRIPT)
+        self.assertNotIn("scripts/db/migrate", DEPLOY_SCRIPT)
+        self.assertNotIn("scripts/db/import", DEPLOY_SCRIPT)
+        self.assertNotIn("kubectl apply -f \"$migrate", DEPLOY_SCRIPT)
+        self.assertNotIn("kubectl apply -f \"$import", DEPLOY_SCRIPT)
+
+    def test_smoke_checks_db_health_and_summary_without_making_db_probe_liveness(self) -> None:
+        self.assertIn("/api/health/db", SMOKE_SCRIPT)
+        self.assertIn("/api/summary", SMOKE_SCRIPT)
+        self.assertIn("curl", SMOKE_SCRIPT)
+        self.assertNotIn("health/db", DEPLOYMENT_TEMPLATE)
+        self.assertNotIn("health/db", DEPLOY_SCRIPT.split("smoke-scoringsys.sh", 1)[0])
 
 
 if __name__ == "__main__":

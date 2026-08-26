@@ -17,6 +17,7 @@ spec:
       labels:
         app.kubernetes.io/name: scoringsys
     spec:
+      automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
         seccompProfile:
