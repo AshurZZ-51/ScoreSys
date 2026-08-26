@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isProjectPoolV2Enabled } from '@/lib/featureFlags';
-import { supabaseAdmin } from '@/lib/supabase';
 import { getPurgeAfter } from '@/lib/adminLifecycle';
 import { isSuperAdminSession, requireAdminSession } from '@/lib/adminSession';
+import { archiveProject } from '@/lib/db/repositories/projectPoolWorkflow';
 
 export const dynamic = 'force-dynamic';
 
@@ -19,83 +19,11 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Only admin51 can manage purge requests' }, { status: 403 });
     }
 
-    const { data: project, error: projectError } = await supabaseAdmin
-      .from('project_pool')
-      .select('status, archived_at')
-      .eq('id', id)
-      .single();
-    if (projectError) throw projectError;
     const requestedAt = new Date();
     const now = requestedAt.toISOString();
-
-    if (action === 'restore') {
-      const { data: deletionRequest, error: deletionError } = await supabaseAdmin
-        .from('project_deletion_requests')
-        .select('project_id')
-        .eq('project_id', id)
-        .is('restored_at', null)
-        .maybeSingle();
-      if (deletionError) throw deletionError;
-      if (deletionRequest) return NextResponse.json({ error: 'Restore the purge request before restoring the project' }, { status: 409 });
-      const { error: restoreError } = await supabaseAdmin
-        .from('project_pool')
-        .update({ archived_at: null, updated_at: now })
-        .eq('id', id);
-      if (restoreError) throw restoreError;
-      const { error: historyError } = await supabaseAdmin.from('project_status_history').insert({
-        project_id: id,
-        event_type: 'project_restored',
-        from_status: 'archived',
-        to_status: project.status,
-        operator_code: session.code,
-        note: 'Restored from archive'
-      });
-      if (historyError) throw historyError;
-      return NextResponse.json({ success: true });
-    }
-
-    if (action === 'request_purge') {
-      if (!project.archived_at) return NextResponse.json({ error: 'Only archived projects can be queued for purge' }, { status: 409 });
-      const { error: requestError } = await supabaseAdmin.from('project_deletion_requests').upsert({
-        project_id: id,
-        requested_by: session.code,
-        requested_at: now,
-        purge_after: getPurgeAfter(requestedAt),
-        restored_at: null,
-        restored_by: null
-      }, { onConflict: 'project_id' });
-      if (requestError) throw requestError;
-      const { error: historyError } = await supabaseAdmin.from('project_status_history').insert({
-        project_id: id,
-        event_type: 'purge_requested',
-        from_status: project.status,
-        to_status: 'archived',
-        operator_code: session.code,
-        note: 'Purge requested with a 15-day recovery window'
-      });
-      if (historyError) throw historyError;
-      return NextResponse.json({ success: true, purge_after: getPurgeAfter(requestedAt) });
-    }
-
-    const { data: restoredRequest, error: restoreRequestError } = await supabaseAdmin
-      .from('project_deletion_requests')
-      .update({ restored_at: now, restored_by: session.code })
-      .eq('project_id', id)
-      .is('restored_at', null)
-      .select('project_id')
-      .maybeSingle();
-    if (restoreRequestError) throw restoreRequestError;
-    if (!restoredRequest) return NextResponse.json({ error: 'No active purge request exists' }, { status: 404 });
-    const { error: historyError } = await supabaseAdmin.from('project_status_history').insert({
-      project_id: id,
-      event_type: 'purge_restored',
-      from_status: 'archived',
-      to_status: 'archived',
-      operator_code: session.code,
-      note: 'Purge request restored to archive'
-    });
-    if (historyError) throw historyError;
-    return NextResponse.json({ success: true });
+    const result = await archiveProject(id, action, session.code, { now, purgeAfter: getPurgeAfter(requestedAt) });
+    if (!result.success) return NextResponse.json({ error: result.error }, { status: result.status || 400 });
+    return NextResponse.json(result.purge_after ? { success: true, purge_after: result.purge_after } : { success: true });
   } catch (err: any) {
     return NextResponse.json({ error: `Archive action failed: ${err.message}` }, { status: 500 });
   }

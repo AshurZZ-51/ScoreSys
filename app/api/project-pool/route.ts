@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isProjectPoolV2Enabled } from '@/lib/featureFlags';
-import { supabaseAdmin } from '@/lib/supabase';
-import { createMaterialRows, getMaterialProgress, getMaterialStatus, makeMatchKey, normalizeProjectPart } from '@/lib/projectPoolWorkflow';
+import { getMaterialProgress, makeMatchKey, normalizeProjectPart } from '@/lib/projectPoolWorkflow';
 import { countCompletedReviews, hasCompletedReview, isPendingReviewProject } from '@/lib/adminLifecycle';
 import { requireAdminSession } from '@/lib/adminSession';
 import { listProjectPool } from '@/lib/db/repositories/projectPool';
+import { createProjectWithMaterials, updateProjectDetails } from '@/lib/db/repositories/projectPoolWorkflow';
+import { applyProjectPoolMutations } from '@/lib/db/repositories/rpc';
 
 export const dynamic = 'force-dynamic';
 
@@ -69,23 +70,16 @@ export async function POST(request: NextRequest) {
     const session = requireAdminSession(request);
     if (!session) return NextResponse.json({ error: '只有管理员可以创建项目' }, { status: 403 });
     if (!String(name || '').trim() || !String(submitter || '').trim()) return NextResponse.json({ error: '项目名称和提报人必填' }, { status: 400 });
-    const matchKey = makeMatchKey(name, submitter);
-    const { data: project, error } = await supabaseAdmin.from('project_pool').insert({
-      name: String(name).trim(), submitter: String(submitter).trim(), description: String(description).trim(),
-      normalized_name: normalizeProjectPart(name), normalized_submitter: normalizeProjectPart(submitter),
-      match_key: matchKey, status: 'materials_pending', material_status: 'incomplete'
-    }).select().single();
-    if (error) throw error;
-    const checkedAt = new Date().toISOString();
-    const materials = createMaterialRows(project.id, materialStatuses, session.code, checkedAt);
-    const { error: materialsError } = await supabaseAdmin.from('project_materials').insert(materials);
-    if (materialsError) throw materialsError;
-    const materialStatus = getMaterialStatus(materials).value;
-    const { data: savedProject, error: projectStatusError } = await supabaseAdmin.from('project_pool').update({ material_status: materialStatus, updated_at: checkedAt }).eq('id', project.id).select().single();
-    if (projectStatusError) throw projectStatusError;
-    const { error: historyError } = await supabaseAdmin.from('project_status_history').insert({ project_id: project.id, event_type: 'project_created', to_status: 'materials_pending', operator_code: session.code, note: Object.keys(materialStatuses || {}).length ? '创建项目并完成初始资料检查' : '创建待评审项目' });
-    if (historyError) throw historyError;
-    return NextResponse.json({ success: true, project: savedProject, materials });
+    const result = await createProjectWithMaterials({
+      name: String(name).trim(),
+      submitter: String(submitter).trim(),
+      description: String(description).trim(),
+      normalizedName: normalizeProjectPart(name),
+      normalizedSubmitter: normalizeProjectPart(submitter),
+      matchKey: makeMatchKey(name, submitter),
+      materialStatuses,
+    }, session.code);
+    return NextResponse.json({ success: true, project: result.project, materials: result.materials });
   } catch (err: any) {
     return NextResponse.json({ error: `创建项目失败: ${err.message}` }, { status: 500 });
   }
@@ -98,12 +92,15 @@ export async function PATCH(request: NextRequest) {
     const session = requireAdminSession(request);
     if (!session) return NextResponse.json({ error: '只有管理员可以编辑项目' }, { status: 403 });
     if (!id || !String(name || '').trim() || !String(submitter || '').trim()) return NextResponse.json({ error: '项目名称和提报人必填' }, { status: 400 });
-    const { data, error } = await supabaseAdmin.from('project_pool').update({
-      name: String(name).trim(), submitter: String(submitter).trim(), description: String(description || '').trim(),
-      normalized_name: normalizeProjectPart(name), normalized_submitter: normalizeProjectPart(submitter), match_key: makeMatchKey(name, submitter), updated_at: new Date().toISOString()
-    }).eq('id', id).select().single();
-    if (error) throw error;
-    return NextResponse.json({ success: true, project: data });
+    const project = await updateProjectDetails(id, {
+      name: String(name).trim(),
+      submitter: String(submitter).trim(),
+      description: String(description || '').trim(),
+      normalizedName: normalizeProjectPart(name),
+      normalizedSubmitter: normalizeProjectPart(submitter),
+      matchKey: makeMatchKey(name, submitter),
+    });
+    return NextResponse.json({ success: true, project });
   } catch (err: any) {
     return NextResponse.json({ error: `更新项目失败: ${err.message}` }, { status: 500 });
   }
@@ -115,11 +112,8 @@ export async function DELETE(request: NextRequest) {
     const id = new URL(request.url).searchParams.get('id');
     const session = requireAdminSession(request);
     if (!id || !session) return NextResponse.json({ error: 'Unauthorized or missing parameters' }, { status: 403 });
-    const { data: mutations, error } = await supabaseAdmin.rpc('apply_project_pool_mutations', {
-      p_project_ids: [id], p_action: 'archive', p_status: null, p_operator_code: session.code, p_note: 'Archived by administrator'
-    });
-    if (error) throw error;
-    if (!mutations?.length) return NextResponse.json({ error: '项目不存在' }, { status: 404 });
+    const mutations = await applyProjectPoolMutations([id], 'archive', null, session.code, 'Archived by administrator');
+    if (!mutations.length) return NextResponse.json({ error: '项目不存在' }, { status: 404 });
     return NextResponse.json({ success: true });
   } catch (err: any) {
     return NextResponse.json({ error: `删除项目失败: ${err.message}` }, { status: 500 });
