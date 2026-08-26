@@ -97,6 +97,9 @@ scan-image:
     - job: build-image
   cache:
     key: "trivy-0.56.2-db-v2"
+    # Keep protected and non-protected jobs on the same logical key. Cache is
+    # only an accelerator; the bounded DB acquisition below is always run.
+    unprotect: true
     paths:
       - .trivycache/
     policy: pull-push
@@ -105,31 +108,49 @@ scan-image:
     TRIVY_NO_PROGRESS: "true"
     TRIVY_CACHE_DIR: ".trivycache"
     TRIVY_DB_DOWNLOAD_TIMEOUT: "5m"
-    TRIVY_DB_REPOSITORY_PRIMARY: "mirror.gcr.io/aquasec/trivy-db:2"
-    TRIVY_DB_REPOSITORY_FALLBACK: "ghcr.io/aquasecurity/trivy-db:2"
+    # This source is proven reachable from the shared AI runner. A protected
+    # CI variable with the same name may override it when needed.
+    TRIVY_DB_REPOSITORY: "public.ecr.aws/aquasecurity/trivy-db:2"
   script:
     - ': "${SWR_REGION:?SWR_REGION is required}"'
     - ': "${SWR_AK:?SWR_AK is required}"'
     - ': "${SWR_PASSWORD:?SWR_PASSWORD is required}"'
     - export SWR_REGISTRY="${SWR_REGISTRY_OVERRIDE:-swr.${SWR_REGION}.myhuaweicloud.com}"
-    - export SWR_REGISTRY_HOST="${SWR_REGISTRY%%/*}"
     - unset TRIVY_USERNAME TRIVY_PASSWORD
     - |
-      download_trivy_db() {
-        repository="$1"
-        echo "Downloading Trivy vulnerability DB from ${repository}"
-        TRIVY_DB_REPOSITORY="$repository" trivy image \
-          --download-db-only \
-          --cache-dir "$TRIVY_CACHE_DIR" \
-          --timeout "$TRIVY_DB_DOWNLOAD_TIMEOUT"
+      cleanup_trivy_db_partial() {
+        db_dir="$TRIVY_CACHE_DIR/db"
+        [ -d "$db_dir" ] || return 0
+        # Keep valid trivy.db and metadata.json cache entries intact; remove
+        # only temporary/partial entries from Trivy's db cache directory.
+        find "$db_dir" -maxdepth 1 -type f \( \
+          -name 'trivy.db.tmp' -o -name 'metadata.json.tmp' -o -name '*.part' \
+        \) -delete
       }
 
-      if download_trivy_db "$TRIVY_DB_REPOSITORY_PRIMARY"; then
-        echo "Trivy vulnerability DB is ready from the primary repository"
-      elif download_trivy_db "$TRIVY_DB_REPOSITORY_FALLBACK"; then
-        echo "Trivy vulnerability DB is ready from the fallback repository"
-      else
-        echo "Unable to download the Trivy vulnerability DB from either repository" >&2
+      download_trivy_db() {
+        repository="$TRIVY_DB_REPOSITORY"
+        attempt=1
+        while [ "$attempt" -le 2 ]; do
+          echo "Downloading Trivy vulnerability DB from ${repository} (attempt ${attempt}/2)"
+          if TRIVY_DB_REPOSITORY="$repository" trivy image \
+            --download-db-only \
+            --cache-dir "$TRIVY_CACHE_DIR" \
+            --timeout "$TRIVY_DB_DOWNLOAD_TIMEOUT"; then
+            return 0
+          fi
+          cleanup_trivy_db_partial
+          if [ "$attempt" -lt 2 ]; then
+            sleep 2
+          fi
+          attempt=$((attempt + 1))
+        done
+        return 1
+      }
+
+      export TRIVY_DB_REPOSITORY="${TRIVY_DB_REPOSITORY:-public.ecr.aws/aquasecurity/trivy-db:2}"
+      if ! download_trivy_db; then
+        echo "Unable to download the Trivy vulnerability DB after 2 attempts" >&2
         exit 1
       fi
     - export TRIVY_USERNAME="${SWR_REGION}@${SWR_AK}"

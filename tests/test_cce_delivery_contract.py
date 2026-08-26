@@ -79,34 +79,45 @@ class CceDeliveryContractTest(unittest.TestCase):
         (template_dir / "ingress.yaml.tmpl").write_text(ingress_transform(INGRESS_TEMPLATE), encoding="utf-8")
         return template_dir
 
+    def trivy_db_setup_script(self) -> str:
+        pipeline = yaml.safe_load(CI)
+        return next(command for command in pipeline["scan-image"]["script"] if "cleanup_trivy_db_partial()" in command)
+
+    def run_trivy_db_setup(self, repository: str = "", suffix: str = "") -> subprocess.CompletedProcess:
+        script = self.trivy_db_setup_script().split("if ! download_trivy_db", 1)[0] + suffix
+        with tempfile.TemporaryDirectory() as cache_dir:
+            env = os.environ.copy()
+            env.update(
+                {
+                    "SWR_REGION": "test-region",
+                    "SWR_AK": "test-ak",
+                    "SWR_PASSWORD": "test-password",
+                    "SWR_REGISTRY": "swr.test.example",
+                    "TRIVY_CACHE_DIR": cache_dir,
+                    "TRIVY_DB_DOWNLOAD_TIMEOUT": "5m",
+                    "TRIVY_DB_REPOSITORY": repository,
+                }
+            )
+            return subprocess.run(["sh"], input=script, env=env, text=True, capture_output=True)
+
     def assert_scan_image_contract(self, pipeline: dict) -> None:
         scan = pipeline["scan-image"]
         variables = scan["variables"]
         script = scan["script"]
-        db_download = next(command for command in script if command.startswith("download_trivy_db()"))
+        db_download = next(command for command in script if "download_trivy_db()" in command)
         scan_command = next(command for command in script if command.startswith("trivy image --severity"))
         self.assertEqual(
             scan["image"],
             {"name": "aquasec/trivy:0.56.2", "entrypoint": [""]},
         )
-        self.assertEqual(
-            variables["TRIVY_DB_REPOSITORY_PRIMARY"],
-            "mirror.gcr.io/aquasec/trivy-db:2",
-        )
-        self.assertEqual(
-            variables["TRIVY_DB_REPOSITORY_FALLBACK"],
-            "ghcr.io/aquasecurity/trivy-db:2",
-        )
-        self.assertNotEqual(
-            variables["TRIVY_DB_REPOSITORY_PRIMARY"],
-            variables["TRIVY_DB_REPOSITORY_FALLBACK"],
-        )
+        self.assertEqual(variables["TRIVY_DB_REPOSITORY"], "public.ecr.aws/aquasecurity/trivy-db:2")
         self.assertEqual(variables["TRIVY_DB_DOWNLOAD_TIMEOUT"], "5m")
         self.assertEqual(variables["TRIVY_CACHE_DIR"], ".trivycache")
         self.assertEqual(
             scan["cache"],
             {
                 "key": "trivy-0.56.2-db-v2",
+                "unprotect": True,
                 "paths": [".trivycache/"],
                 "policy": "pull-push",
                 "when": "always",
@@ -115,16 +126,22 @@ class CceDeliveryContractTest(unittest.TestCase):
         self.assertNotIn("$", scan["cache"]["key"])
         self.assertNotIn("PASSWORD", json.dumps(scan["cache"]))
 
-        self.assertIn('TRIVY_DB_REPOSITORY="$repository" trivy image', db_download)
+        self.assertIn('repository="$TRIVY_DB_REPOSITORY"', db_download)
+        self.assertIn('export TRIVY_DB_REPOSITORY="${TRIVY_DB_REPOSITORY:-public.ecr.aws/aquasecurity/trivy-db:2}"', db_download)
+        self.assertIn("trivy image", db_download)
         self.assertIn("--download-db-only", db_download)
         self.assertIn('--cache-dir "$TRIVY_CACHE_DIR"', db_download)
         self.assertIn('--timeout "$TRIVY_DB_DOWNLOAD_TIMEOUT"', db_download)
-        self.assertIn('download_trivy_db "$TRIVY_DB_REPOSITORY_PRIMARY"', db_download)
-        self.assertIn('elif download_trivy_db "$TRIVY_DB_REPOSITORY_FALLBACK"', db_download)
-        self.assertLess(
-            db_download.index("TRIVY_DB_REPOSITORY_PRIMARY"),
-            db_download.index("TRIVY_DB_REPOSITORY_FALLBACK"),
-        )
+        self.assertEqual(db_download.count("--download-db-only"), 1)
+        self.assertEqual(db_download.count('--cache-dir "$TRIVY_CACHE_DIR"'), 1)
+        self.assertEqual(db_download.count('--timeout "$TRIVY_DB_DOWNLOAD_TIMEOUT"'), 1)
+        self.assertIn('while [ "$attempt" -le 2 ]', db_download)
+        self.assertIn('attempt=$((attempt + 1))', db_download)
+        self.assertIn('sleep 2', db_download)
+        self.assertIn("cleanup_trivy_db_partial", db_download)
+        self.assertIn("-name 'trivy.db.tmp'", db_download)
+        self.assertIn("-name 'metadata.json.tmp'", db_download)
+        self.assertNotIn('rm -rf "$TRIVY_CACHE_DIR"', db_download)
         self.assertIn("exit 1", db_download)
         self.assertNotIn("--skip-db-update", db_download)
 
@@ -141,6 +158,8 @@ class CceDeliveryContractTest(unittest.TestCase):
         self.assertEqual("\n".join(script).count("--skip-db-update"), 1)
         self.assertNotIn("--ignore", "\n".join(script))
         self.assertNotIn("allow_failure", scan)
+        self.assertNotIn("mirror.gcr.io", db_download)
+        self.assertNotIn("ghcr.io", db_download)
 
     def test_pipeline_has_ordered_stages_and_safe_workflow(self) -> None:
         pipeline = yaml.safe_load(CI)
@@ -164,6 +183,7 @@ class CceDeliveryContractTest(unittest.TestCase):
         self.assertEqual(deploy["retry"], 0)
         self.assertFalse(deploy["interruptible"])
         self.assertEqual(deploy["resource_group"], "scoringsys-cce")
+        self.assertIn({"job": "scan-image"}, deploy["needs"])
         self.assertEqual(pipeline["notify-failure"]["when"], "on_failure")
         self.assertTrue(pipeline["notify-failure"]["allow_failure"])
         self.assertNotIn("FEISHU_CHAT_ID", CI)
@@ -379,10 +399,6 @@ class CceDeliveryContractTest(unittest.TestCase):
         mutated_pipeline["scan-image"]["image"].pop("entrypoint")
         with self.assertRaises(AssertionError):
             self.assert_scan_image_contract(mutated_pipeline)
-        mutated_pipeline = yaml.safe_load(CI)
-        mutated_pipeline["scan-image"]["variables"]["TRIVY_DB_REPOSITORY_PRIMARY"] = "ghcr.io/aquasecurity/trivy-db:2"
-        with self.assertRaises(AssertionError):
-            self.assert_scan_image_contract(mutated_pipeline)
         mutated_pipeline = yaml.safe_load(CI.replace('--timeout "$TRIVY_DB_DOWNLOAD_TIMEOUT"', "", 1))
         with self.assertRaises(AssertionError):
             self.assert_scan_image_contract(mutated_pipeline)
@@ -396,6 +412,58 @@ class CceDeliveryContractTest(unittest.TestCase):
             self.assert_scan_image_contract(mutated_pipeline)
         self.assertNotIn("kind: Secret", DEPLOYMENT_TEMPLATE)
         self.assertNotIn("kind: ConfigMap", INGRESS_TEMPLATE)
+
+    def test_trivy_db_source_and_cache_contract_is_bounded(self) -> None:
+        pipeline = yaml.safe_load(CI)
+        scan = pipeline["scan-image"]
+        script = "\n".join(scan["script"])
+        self.assertIn("public.ecr.aws/aquasecurity/trivy-db:2", script)
+        self.assertNotIn("TRIVY_DB_REPOSITORY_PRIMARY", script)
+        self.assertNotIn("TRIVY_DB_REPOSITORY_FALLBACK", script)
+        self.assertNotIn("TRIVY_DB_REPOSITORY_ALLOWED_HOSTS", script)
+        self.assertNotIn("allowlist", script.lower())
+        self.assertEqual(script.count("--download-db-only"), 1)
+        self.assertEqual(script.count('--timeout "$TRIVY_DB_DOWNLOAD_TIMEOUT"'), 1)
+        self.assertEqual(script.count('while [ "$attempt" -le 2 ]'), 1)
+        self.assertEqual(script.count("sleep 2"), 1)
+        self.assertIn('--timeout "$TRIVY_DB_DOWNLOAD_TIMEOUT"', script)
+        self.assertIn('--cache-dir "$TRIVY_CACHE_DIR"', script)
+        self.assertEqual(scan["cache"]["paths"], [".trivycache/"])
+        self.assertTrue(scan["cache"]["unprotect"])
+
+    def test_trivy_db_runtime_attempts_the_same_source_twice(self) -> None:
+        suffix = r'''
+attempts=0
+mkdir -p "$TRIVY_CACHE_DIR/db"
+printf valid > "$TRIVY_CACHE_DIR/db/trivy.db"
+trivy() {
+  attempts=$((attempts + 1))
+  [ "$TRIVY_DB_REPOSITORY" = "public.ecr.aws/aquasecurity/trivy-db:2" ] || return 88
+  case "$*" in *--download-db-only*) ;; *) return 89 ;; esac
+  case "$*" in *--cache-dir*) ;; *) return 90 ;; esac
+  case "$*" in *--timeout\ 5m*) ;; *) return 91 ;; esac
+  printf partial > "$TRIVY_CACHE_DIR/db/trivy.db.tmp"
+  return 1
+}
+sleep() { :; }
+download_trivy_db
+[ -f "$TRIVY_CACHE_DIR/db/trivy.db" ] || exit 92
+[ ! -e "$TRIVY_CACHE_DIR/db/trivy.db.tmp" ] || exit 93
+printf 'bounded-attempts=%s\n' "$attempts"
+'''
+        result = self.run_trivy_db_setup(suffix=suffix)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("bounded-attempts=2", result.stdout)
+
+    def test_scan_failure_blocks_deploy_and_keeps_the_gate(self) -> None:
+        pipeline = yaml.safe_load(CI)
+        scan = pipeline["scan-image"]
+        script = "\n".join(scan["script"])
+        self.assertIn("exit 1", script)
+        self.assertIn("--severity HIGH,CRITICAL", script)
+        self.assertIn("--exit-code 1", script)
+        self.assertNotIn("allow_failure", scan)
+        self.assertIn({"job": "scan-image"}, pipeline["deploy-cce"]["needs"])
 
 
 if __name__ == "__main__":
