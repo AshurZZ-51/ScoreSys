@@ -26,6 +26,28 @@ require_command kubectl
 require_command base64
 require_command curl
 
+get_ingress_annotation() {
+  local namespace=$1
+  local name=$2
+  local key=$3
+  local template
+
+  # Annotation keys are fixed below; keep the template argument data-only even
+  # if this helper is reused later with a value from outside the script.
+  [[ "$key" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]] || die "invalid Ingress annotation key"
+  printf -v template '{{ with index .metadata.annotations "%s" }}{{ . }}{{ end }}' "$key"
+  kubectl -n "$namespace" get ingress "$name" -o "go-template=$template" 2>/dev/null || true
+}
+
+readonly ANNOTATION_ELB_CLASS='kubernetes.io/elb.class'
+readonly ANNOTATION_ELB_ID='kubernetes.io/elb.id'
+readonly ANNOTATION_ELB_PORT='kubernetes.io/elb.port'
+readonly ANNOTATION_ELB_LISTENER_MASTER='kubernetes.io/elb.listener-master-ingress'
+readonly ANNOTATION_RECONCILE_TRIGGER='reconcile-trigger'
+readonly ANNOTATION_FORBIDDEN_LISTEN_PORTS='kubernetes.io/elb.listen-ports'
+readonly ANNOTATION_FORBIDDEN_TLS_CERTIFICATES='kubernetes.io/elb.tls-certificate-ids'
+readonly ANNOTATION_FORBIDDEN_INGRESS_CLASS='kubernetes.io/ingress.class'
+
 [[ -n "${KUBECONFIG_CCE_B64:-}" ]] || die "KUBECONFIG_CCE_B64 is required"
 [[ -n "${KUBE_IMAGE_PULL_SECRET:-}" ]] || die "KUBE_IMAGE_PULL_SECRET is required"
 [[ ${#NAMESPACE} -le 63 && "$NAMESPACE" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]] || die "KUBE_NAMESPACE is not DNS-compatible"
@@ -104,24 +126,27 @@ expected_paths=$(printf '%s\n' "$PUBLIC_PREFIX")
 backend_port=$(kubectl -n "$NAMESPACE" get ingress scoringsys -o jsonpath='{.spec.rules[0].http.paths[0].backend.service.port.number}')
 [[ "$backend_port" == "3000" ]] || die "Ingress backend port is not 3000"
 
-child_elb_class=$(kubectl -n "$NAMESPACE" get ingress scoringsys -o "jsonpath={.metadata.annotations['kubernetes.io/elb.class']}" 2>/dev/null || true)
+child_elb_class=$(get_ingress_annotation "$NAMESPACE" scoringsys "$ANNOTATION_ELB_CLASS")
 [[ "$child_elb_class" == "$CCE_ELB_CLASS" ]] || die "Ingress ELB class does not match the shared-listener contract"
-child_elb_id=$(kubectl -n "$NAMESPACE" get ingress scoringsys -o "jsonpath={.metadata.annotations['kubernetes.io/elb.id']}" 2>/dev/null || true)
+child_elb_id=$(get_ingress_annotation "$NAMESPACE" scoringsys "$ANNOTATION_ELB_ID")
 [[ "$child_elb_id" == "$CCE_ELB_ID" ]] || die "Ingress ELB id does not match the shared-listener contract"
-child_elb_port=$(kubectl -n "$NAMESPACE" get ingress scoringsys -o "jsonpath={.metadata.annotations['kubernetes.io/elb.port']}" 2>/dev/null || true)
+child_elb_port=$(get_ingress_annotation "$NAMESPACE" scoringsys "$ANNOTATION_ELB_PORT")
 [[ "$child_elb_port" == "$CCE_ELB_PORT" ]] || die "Ingress ELB port does not match the shared-listener contract"
-child_master=$(kubectl -n "$NAMESPACE" get ingress scoringsys -o "jsonpath={.metadata.annotations['kubernetes.io/elb.listener-master-ingress']}" 2>/dev/null || true)
+child_master=$(get_ingress_annotation "$NAMESPACE" scoringsys "$ANNOTATION_ELB_LISTENER_MASTER")
 [[ "$child_master" == "$CCE_LISTENER_MASTER_INGRESS" ]] || die "Ingress listener master does not match CCE_LISTENER_MASTER_INGRESS"
 
 # The listener on the shared ELB belongs to the master Ingress. Fail closed if a
 # stale or hand-edited object still claims the listener or the deprecated class
 # selector, rather than letting it reach the ELB.
-for forbidden in kubernetes.io/elb.listen-ports kubernetes.io/elb.tls-certificate-ids kubernetes.io/ingress.class; do
-  value=$(kubectl -n "$NAMESPACE" get ingress scoringsys -o "jsonpath={.metadata.annotations['${forbidden//./\\.}']}" 2>/dev/null || true)
+for forbidden in \
+  "$ANNOTATION_FORBIDDEN_LISTEN_PORTS" \
+  "$ANNOTATION_FORBIDDEN_TLS_CERTIFICATES" \
+  "$ANNOTATION_FORBIDDEN_INGRESS_CLASS"; do
+  value=$(get_ingress_annotation "$NAMESPACE" scoringsys "$forbidden")
   [[ -z "$value" ]] || die "Ingress must not declare $forbidden on the shared listener"
 done
 
-applied_trigger=$(kubectl -n "$NAMESPACE" get ingress scoringsys -o "jsonpath={.metadata.annotations['reconcile-trigger']}" 2>/dev/null || true)
+applied_trigger=$(get_ingress_annotation "$NAMESPACE" scoringsys "$ANNOTATION_RECONCILE_TRIGGER")
 [[ "$applied_trigger" =~ ^[A-Za-z0-9._-]{1,63}$ ]] || die "Ingress has an invalid reconcile-trigger annotation"
 
 running_image=$(kubectl -n "$NAMESPACE" get deployment scoringsys -o jsonpath='{.spec.template.spec.containers[0].image}')
@@ -146,7 +171,7 @@ master_trigger=${master_trigger:-$applied_trigger}
 # annotation-only: the master manifest, TLS/listen-port settings and spec are
 # never applied, patched or deleted.
 kubectl -n "$master_namespace" annotate ingress "$master_name" "reconcile-trigger=$master_trigger" --overwrite >/dev/null || die "master Ingress reconcile annotation failed"
-master_applied_trigger=$(kubectl -n "$master_namespace" get ingress "$master_name" -o "jsonpath={.metadata.annotations['reconcile-trigger']}" 2>/dev/null || true)
+master_applied_trigger=$(get_ingress_annotation "$master_namespace" "$master_name" "$ANNOTATION_RECONCILE_TRIGGER")
 [[ "$master_applied_trigger" == "$master_trigger" ]] || die "master Ingress reconcile-trigger was not updated"
 sleep "$RECONCILE_PROPAGATION_SECONDS"
 

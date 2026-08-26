@@ -325,6 +325,163 @@ class CceDeliveryContractTest(unittest.TestCase):
         self.assertIn("Ingress must not declare $forbidden on the shared listener", DEPLOY_SCRIPT)
         self.assertIn("rolled out image does not match IMAGE_REFERENCE", DEPLOY_SCRIPT)
 
+    def test_deploy_reads_annotations_with_go_template_through_master_readback(self) -> None:
+        # kubectl 1.30 treats dots and slashes in a jsonpath map lookup as path
+        # syntax. The stub only returns annotation values for go-template reads,
+        # so a jsonpath regression fails before the master annotation step.
+        self.assertNotIn("metadata.annotations['kubernetes.io/", DEPLOY_SCRIPT)
+        self.assertNotIn("metadata.annotations[", DEPLOY_SCRIPT)
+        self.assertIn("get_ingress_annotation()", DEPLOY_SCRIPT)
+        with tempfile.TemporaryDirectory() as directory:
+            command_dir = Path(directory)
+            rendered_dir = command_dir / "rendered"
+            rendered_dir.mkdir()
+            (rendered_dir / "deployment.yaml").write_text("kind: Deployment\n", encoding="utf-8")
+            (rendered_dir / "ingress.yaml").write_text("kind: Ingress\n", encoding="utf-8")
+            stub_log = command_dir / "kubectl-invocations.log"
+            kubectl_stub = r'''#!/bin/sh
+set -eu
+printf '%s\n' "$*" >>"$COMMAND_STUB_LOG"
+format=
+previous=
+for arg in "$@"; do
+  if [ "$previous" = "-o" ]; then
+    format=$arg
+    previous=
+  elif [ "$arg" = "-o" ]; then
+    previous=-o
+  fi
+done
+case "$format" in
+  go-template=*)
+    case "$format" in
+      *'kubernetes.io/elb.class'*) printf '%s' "${CCE_ELB_CLASS:-performance}" ;;
+      *'kubernetes.io/elb.id'*) printf '%s' "${CCE_ELB_ID:-abab7533-a1c6-4138-a4bc-59d53e3446e2}" ;;
+      *'kubernetes.io/elb.port'*) printf '%s' "${CCE_ELB_PORT:-80}" ;;
+      *'kubernetes.io/elb.listener-master-ingress'*) printf '%s' "${CCE_LISTENER_MASTER_INGRESS:-nexus-prod/nexus-studio}" ;;
+      *'reconcile-trigger'*)
+        case "$*" in
+          *'get ingress nexus-studio'*) printf '%s' "2104-14012" ;;
+          *) printf '%s' "test-trigger" ;;
+        esac
+        ;;
+    esac
+    exit 0
+    ;;
+  *'metadata.annotations['*)
+    printf '%s\n' "annotation jsonpath was used" >&2
+    exit 31
+    ;;
+esac
+case "$format" in
+  'jsonpath={.type}') printf '%s' kubernetes.io/dockerconfigjson ;;
+  *'subsets'*'addresses'*'ip}') printf '%s' 10.0.0.1 ;;
+  *'spec.rules'*'host}') printf '%s' nexus.youdoogo.com ;;
+  *'http.paths'*'path}'*) printf '/scoringsys\n' ;;
+  *'backend.service.port.number}') printf '%s' 3000 ;;
+  *'spec.template.spec.containers'*'image}') printf '%s' registry.example/scoringsys:test ;;
+esac
+exit 0
+'''
+            kubectl_path = command_dir / "kubectl"
+            kubectl_path.write_text(kubectl_stub, encoding="utf-8")
+            kubectl_path.chmod(0o755)
+            base64_path = command_dir / "base64"
+            base64_path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            base64_path.chmod(0o755)
+            curl_stub = r'''#!/bin/sh
+set -eu
+headers=
+body=
+url=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --dump-header|--output)
+      target=$1
+      value=$2
+      [ "$target" = "--dump-header" ] && headers=$value || body=$value
+      shift 2
+      ;;
+    --write-out) shift 2 ;;
+    -*) shift ;;
+    *) url=$1; shift ;;
+  esac
+done
+case "$url" in
+  */scoringsys/)
+    printf 'HTTP/1.1 308 Permanent Redirect\nLocation: /scoringsys\n\n' >"$headers"
+    : >"$body"
+    printf 308
+    ;;
+  */_next/static/*)
+    printf 'HTTP/1.1 200 OK\nContent-Type: application/javascript\n\n' >"$headers"
+    printf asset >"$body"
+    printf 200
+    ;;
+  */scoringsys)
+    printf 'HTTP/1.1 200 OK\nContent-Type: text/html\n\n' >"$headers"
+    printf 'marker /scoringsys/_next/static/app.js' >"$body"
+    printf 200
+    ;;
+  *)
+    printf 'HTTP/1.1 404 Not Found\n\n' >"$headers"
+    : >"$body"
+    printf 404
+    ;;
+esac
+'''
+            curl_path = command_dir / "curl"
+            curl_path.write_text(curl_stub, encoding="utf-8")
+            curl_path.chmod(0o755)
+            env = os.environ.copy()
+            env.update(
+                {
+                    "PATH": f"{command_dir}:{env.get('PATH', '')}",
+                    "COMMAND_STUB_LOG": str(stub_log),
+                    "KUBECONFIG_CCE_B64": "eA==",
+                    "KUBE_IMAGE_PULL_SECRET": "swr-pull",
+                    "RENDERED_DIR": str(rendered_dir),
+                    "IMAGE_REFERENCE": "registry.example/scoringsys:test",
+                    "RECONCILE_TRIGGER": "",
+                    "CI_PIPELINE_ID": "2104",
+                    "CI_JOB_ID": "14012",
+                    "SMOKE_HTML_MARKER": "marker",
+                    "SMOKE_ATTEMPTS": "1",
+                    "SMOKE_DELAY_SECONDS": "0",
+                    "RECONCILE_PROPAGATION_SECONDS": "0",
+                }
+            )
+            result = subprocess.run(
+                ["bash", str(ROOT / "scripts/ci/deploy-cce.sh")],
+                env=env,
+                text=True,
+                capture_output=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            invocations = stub_log.read_text(encoding="utf-8").splitlines()
+            annotation_reads = [
+                line
+                for line in invocations
+                if "get ingress" in line and "go-template={{ with index .metadata.annotations" in line
+            ]
+            self.assertEqual(len(annotation_reads), 9)
+            self.assertTrue(all("go-template=" in line for line in annotation_reads))
+            for key in (
+                "kubernetes.io/elb.class",
+                "kubernetes.io/elb.id",
+                "kubernetes.io/elb.port",
+                "kubernetes.io/elb.listener-master-ingress",
+                "kubernetes.io/elb.listen-ports",
+                "kubernetes.io/elb.tls-certificate-ids",
+                "kubernetes.io/ingress.class",
+                "reconcile-trigger",
+            ):
+                self.assertIn(key, "\n".join(annotation_reads))
+            self.assertIn(
+                "annotate ingress nexus-studio reconcile-trigger=2104-14012 --overwrite",
+                "\n".join(invocations),
+            )
+
     def test_smoke_asserts_the_real_trailing_slash_direction(self) -> None:
         # Next.js runs with basePath=/scoringsys and trailingSlash=false, so
         # /scoringsys is the canonical 200 and /scoringsys/ is what 308s onto it.
