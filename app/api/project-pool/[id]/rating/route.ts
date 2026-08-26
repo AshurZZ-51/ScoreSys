@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isProjectPoolV2Enabled } from '@/lib/featureFlags';
-import { supabaseAdmin } from '@/lib/supabase';
 import { requireReviewerSession } from '@/lib/adminSession';
 import { isValidProjectRating } from '@/lib/initiationWorkflow';
 import { canEditFinalRating } from '@/lib/projectDetailWorkflow';
+import { applyProjectRating, findReviewerByCode } from '@/lib/db/repositories/rpc';
 
 export const dynamic = 'force-dynamic';
 
@@ -19,8 +19,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const rating = String(body?.rating || '').trim().toUpperCase();
     if (!ratingType || !isValidProjectRating(rating)) return NextResponse.json({ error: '评级必须为 S/A/B/C' }, { status: 400 });
 
-    const { data: reviewer, error: reviewerError } = await supabaseAdmin.from('reviewers').select('code, is_admin').ilike('code', session.code).single();
-    if (reviewerError) throw reviewerError;
+    const reviewer = await findReviewerByCode(session.code);
+    if (!reviewer) throw new Error('reviewer not found');
     if (ratingType === 'final' && !reviewer?.is_admin && !canEditFinalRating(reviewer.code)) {
       return NextResponse.json({ error: '只有管理员或 Walker 可以修改最终评级' }, { status: 403 });
     }
@@ -28,14 +28,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       return NextResponse.json({ error: '只有管理员或 Walker 可以修改项目评级' }, { status: 403 });
     }
 
-    const { data: rawProject, error } = await supabaseAdmin.rpc('apply_project_rating', {
-      p_project_id: id,
-      p_rating_type: ratingType,
-      p_rating: rating,
-      p_operator_code: session.code
-    });
-    if (error) throw error;
-    const project = Array.isArray(rawProject) ? rawProject[0] : rawProject;
+    const project = await applyProjectRating(id, ratingType, rating, session.code);
     return NextResponse.json({ success: true, project });
   } catch (err: any) {
     return NextResponse.json({ error: `保存项目评级失败: ${err.message}` }, { status: 500 });

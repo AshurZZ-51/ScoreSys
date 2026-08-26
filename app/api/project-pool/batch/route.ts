@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isProjectPoolV2Enabled } from '@/lib/featureFlags';
-import { supabaseAdmin } from '@/lib/supabase';
 import { requireAdminSession } from '@/lib/adminSession';
+import { applyProjectPoolMutations } from '@/lib/db/repositories/rpc';
 
 export const dynamic = 'force-dynamic';
 
@@ -20,12 +20,14 @@ export async function POST(request: NextRequest) {
     }
 
     const note = String(reason).trim() || (action === 'archive' ? 'Bulk archive' : 'Bulk status update');
-    const { data, error } = await supabaseAdmin.rpc('apply_project_pool_mutations', {
-      p_project_ids: projectIds, p_action: action, p_status: action === 'status' ? String(status).trim() : null,
-      p_operator_code: session.code, p_note: note
-    });
-    if (error) throw error;
-    return NextResponse.json({ success: true, updated: data?.length || 0 });
+    const mutations = await applyProjectPoolMutations(
+      projectIds,
+      action,
+      action === 'status' ? String(status).trim() : null,
+      session.code,
+      note,
+    );
+    return NextResponse.json({ success: true, updated: mutations.length });
   } catch (err: any) {
     return NextResponse.json({ error: `Bulk project update failed: ${err.message}` }, { status: 500 });
   }
