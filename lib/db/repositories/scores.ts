@@ -1,5 +1,5 @@
 import type { Executor } from '../client';
-import { query } from '../client';
+import { maybeOne, one, query } from '../client';
 import type { Numeric } from '../types';
 
 export interface ScoreRecord {
@@ -35,6 +35,32 @@ export interface ListProjectRatingsInput {
   meetingId: string;
   reviewerCode: string;
   projectId?: string | null;
+}
+
+export interface ProjectRatingAssignment {
+  id: string;
+  meeting_id: string;
+  round_no: number | null;
+  attempt_no: number;
+  assignment_status: string | null;
+}
+
+export interface ProjectReviewerSnapshot {
+  reviewer_code: string;
+}
+
+export interface UpsertProjectRatingInput {
+  meetingId: string;
+  projectId: string;
+  reviewerCode: string;
+  roundNo: number;
+  attemptNo: number;
+  rating: string;
+  updatedAt: string;
+}
+
+function escapeIlikeLiteral(value: string): string {
+  return value.replace(/[\\%_]/g, '\\$&');
 }
 
 export type SummaryProjectRating = Omit<ProjectRatingRecord, 'id' | 'created_at'>;
@@ -94,6 +120,61 @@ export function listMeetingProjectRatings(
        FROM project_reviewer_ratings
       WHERE meeting_id = $1`,
     [meetingId],
+    executor,
+  );
+}
+
+export function getProjectRatingAssignment(
+  meetingId: string,
+  projectId: string,
+  executor?: Executor,
+): Promise<ProjectRatingAssignment | null> {
+  return maybeOne<ProjectRatingAssignment>(
+    `SELECT id, meeting_id, round_no, attempt_no, assignment_status
+       FROM projects
+      WHERE id = $1 AND meeting_id = $2`,
+    [projectId, meetingId],
+    executor,
+  );
+}
+
+export function findMeetingReviewerSnapshot(
+  meetingId: string,
+  reviewerCode: string,
+  executor?: Executor,
+): Promise<ProjectReviewerSnapshot | null> {
+  return maybeOne<ProjectReviewerSnapshot>(
+    `SELECT reviewer_code
+       FROM meeting_reviewers
+      WHERE meeting_id = $1
+        AND reviewer_code ILIKE $2 ESCAPE '\\'`,
+    [meetingId, escapeIlikeLiteral(reviewerCode)],
+    executor,
+  );
+}
+
+export function upsertProjectRating(
+  input: UpsertProjectRatingInput,
+  executor?: Executor,
+): Promise<ProjectRatingRecord> {
+  return one<ProjectRatingRecord>(
+    `INSERT INTO project_reviewer_ratings (
+       meeting_id, project_id, reviewer_code, round_no, attempt_no, rating, updated_at
+     ) VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7::timestamptz)
+     ON CONFLICT (meeting_id, project_id, reviewer_code, round_no, attempt_no) DO UPDATE
+       SET rating = EXCLUDED.rating,
+           updated_at = EXCLUDED.updated_at
+     RETURNING id, meeting_id, project_id, reviewer_code, round_no, attempt_no,
+               rating, created_at, updated_at`,
+    [
+      input.meetingId,
+      input.projectId,
+      input.reviewerCode,
+      input.roundNo,
+      input.attemptNo,
+      input.rating,
+      input.updatedAt,
+    ],
     executor,
   );
 }

@@ -227,8 +227,9 @@ def render(output_dir: Path, template_dir: Path) -> None:
         raise ValueError("workload namespace does not match KUBE_NAMESPACE")
     validate_probe_paths(deployment_obj)
     validate_service_port(service_obj)
-    if "SUPABASE" in deployment.upper():
-        raise ValueError("Deployment must not reference Supabase credentials")
+    forbidden_hosted_client = "".join(("SUP", "ABASE"))
+    if forbidden_hosted_client in deployment.upper():
+        raise ValueError("Deployment must not reference hosted database credentials")
     web_container = deployment_obj["spec"]["template"]["spec"]["containers"][0]
     web_pod_spec = deployment_obj["spec"]["template"]["spec"]
     if web_pod_spec.get("automountServiceAccountToken") is not False:

@@ -1,22 +1,21 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isProjectPoolV2Enabled } from '@/lib/featureFlags';
-import { supabaseAdmin } from '@/lib/supabase';
 import { isSameReviewerCode, requireReviewerSession } from '@/lib/adminSession';
 import { normalizeProjectRating } from '@/lib/projectReviewerRating';
 import { findReviewerByCode } from '@/lib/db/repositories/reviewers';
-import { listProjectRatings } from '@/lib/db/repositories/scores';
+import {
+  findMeetingReviewerSnapshot,
+  getProjectRatingAssignment,
+  listProjectRatings,
+  upsertProjectRating,
+} from '@/lib/db/repositories/scores';
 
 export const dynamic = 'force-dynamic';
 
 async function getReviewer(request: NextRequest) {
   const session = requireReviewerSession(request);
   if (!session) return null;
-  const { data: reviewer, error } = await supabaseAdmin
-    .from('reviewers')
-    .select('code, is_admin')
-    .ilike('code', session.code)
-    .single();
-  if (error) throw error;
+  const reviewer = await findReviewerByCode(session.code);
   if (!reviewer || reviewer.is_admin) return null;
   return reviewer;
 }
@@ -60,37 +59,21 @@ export async function POST(request: NextRequest) {
     const rating = normalizeProjectRating(body?.rating);
     if (!meetingId || !projectId || !rating) return NextResponse.json({ error: 'meeting_id、project_id 和 S/A/B/C 评级必填' }, { status: 400 });
 
-    const { data: assignment, error: assignmentError } = await supabaseAdmin
-      .from('projects')
-      .select('id, meeting_id, round_no, attempt_no, assignment_status')
-      .eq('id', projectId)
-      .eq('meeting_id', meetingId)
-      .single();
-    if (assignmentError) throw assignmentError;
+    const assignment = await getProjectRatingAssignment(meetingId, projectId);
     if (!assignment?.round_no) return NextResponse.json({ error: '项目尚未绑定评审轮次' }, { status: 400 });
 
-    const { data: snapshot } = await supabaseAdmin
-      .from('meeting_reviewers')
-      .select('reviewer_code')
-      .eq('meeting_id', meetingId)
-      .ilike('reviewer_code', reviewer.code)
-      .maybeSingle();
+    const snapshot = await findMeetingReviewerSnapshot(meetingId, reviewer.code);
     if (!snapshot) return NextResponse.json({ error: '您不在本场评审会的评委名单中' }, { status: 403 });
 
-    const { data, error } = await supabaseAdmin
-      .from('project_reviewer_ratings')
-      .upsert({
-        meeting_id: meetingId,
-        project_id: projectId,
-        reviewer_code: reviewer.code,
-        round_no: assignment.round_no,
-        attempt_no: assignment.attempt_no || 1,
-        rating,
-        updated_at: new Date().toISOString()
-      }, { onConflict: 'meeting_id,project_id,reviewer_code,round_no,attempt_no' })
-      .select()
-      .single();
-    if (error) throw error;
+    const data = await upsertProjectRating({
+      meetingId,
+      projectId,
+      reviewerCode: reviewer.code,
+      roundNo: assignment.round_no,
+      attemptNo: assignment.attempt_no || 1,
+      rating,
+      updatedAt: new Date().toISOString(),
+    });
     return NextResponse.json({ success: true, rating: data });
   } catch (error: any) {
     return NextResponse.json({ error: `保存个人评级失败: ${error.message}` }, { status: 500 });

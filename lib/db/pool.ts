@@ -66,6 +66,21 @@ export const pool: Pick<Pool, 'connect' | 'query'> = {
   }) as Pool['query'],
 };
 
+export interface PoolStats {
+  totalCount: number;
+  idleCount: number;
+  waitingCount: number;
+}
+
+export function getPoolStats(): PoolStats {
+  const active = getPool();
+  return {
+    totalCount: active.totalCount,
+    idleCount: active.idleCount,
+    waitingCount: active.waitingCount,
+  };
+}
+
 export async function closePool(): Promise<void> {
   const current = globalThis.__scoringsysPool;
   if (!current) return;

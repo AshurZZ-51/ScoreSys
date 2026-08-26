@@ -1,8 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { supabaseAdmin } from '@/lib/supabase';
 import { requireAdminSession } from '@/lib/adminSession';
-import { buildInitiationProjectPayload, buildMeetingReportPayload, nextSnapshotVersion } from '@/lib/reportSnapshots';
-import { listReportSnapshots } from '@/lib/db/repositories/reports';
+import { buildInitiationProjectPayload, buildMeetingReportPayload } from '@/lib/reportSnapshots';
+import { createReportSnapshot, getProjectReportData, listReportSnapshots } from '@/lib/db/repositories/reports';
 
 export const dynamic = 'force-dynamic';
 
@@ -48,27 +47,19 @@ export async function POST(request: NextRequest) {
       const summary = await readSummary(request, scopeId);
       payload = buildMeetingReportPayload(summary, summary.meeting, reportType);
     } else {
-      const [{ data: project, error: projectError }, { data: assignments, error: assignmentError }, { data: timeline, error: historyError }] = await Promise.all([
-        supabaseAdmin.from('project_pool').select('id, project_code, name, submitter, description, status, preliminary_rating, final_rating, initiation_announcement').eq('id', scopeId).single(),
-        supabaseAdmin.from('projects').select('meeting_id').eq('pool_project_id', scopeId),
-        supabaseAdmin.from('project_status_history').select('event_type, from_status, to_status, note, created_at').eq('project_id', scopeId).order('created_at')
-      ]);
-      if (projectError || !project) throw projectError || new Error('项目不存在');
-      if (assignmentError) throw assignmentError;
-      if (historyError) throw historyError;
+      const { project, assignments, timeline } = await getProjectReportData(scopeId);
       const meetingIds = Array.from(new Set((assignments || []).map((item: any) => item.meeting_id).filter(Boolean)));
       const summaries = await Promise.all(meetingIds.map((meetingId) => readSummary(request, meetingId)));
       payload = buildInitiationProjectPayload(project, summaries, timeline || []);
     }
 
-    const { data: existing, error: existingError } = await supabaseAdmin.from('report_snapshots')
-      .select('version').eq('scope_type', scopeType).eq('scope_id', scopeId).eq('report_type', reportType);
-    if (existingError) throw existingError;
-    const version = nextSnapshotVersion(existing || []);
-    const { data: snapshot, error } = await supabaseAdmin.from('report_snapshots').insert({
-      scope_type: scopeType, scope_id: scopeId, report_type: reportType, version, payload, generated_by: session.code
-    }).select('id, scope_type, scope_id, report_type, version, payload, generated_by, generated_at').single();
-    if (error) throw error;
+    const snapshot = await createReportSnapshot({
+      scopeType,
+      scopeId,
+      reportType,
+      payload,
+      generatedBy: session.code,
+    });
     return NextResponse.json({ snapshot }, { status: 201 });
   } catch (error: any) {
     return NextResponse.json({ error: error.message || '生成报告快照失败' }, { status: 500 });

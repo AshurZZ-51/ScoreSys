@@ -25,7 +25,7 @@
 | 框架 | Next.js (App Router) | 14.2.5 |
 | 语言 | TypeScript | 5.4.5 |
 | UI | React (纯 inline style, 无 CSS 框架) | 18.3.1 |
-| 数据库 | Supabase (PostgreSQL) | 云服务 |
+| 数据库 | PostgreSQL | 独立数据库服务 |
 | 部署 | 腾讯云 CloudBase 容器 (Docker) | node:20-alpine |
 | 构建输出 | standalone 模式 | - |
 
@@ -37,15 +37,15 @@
 
 ```
 scoring-system/
-├── .env.local                  # 本地环境变量（Supabase URL + Keys）
+├── .env.local                  # 本地环境变量（DATABASE_URL 等）
 ├── next.config.js              # Next.js 配置（standalone 输出 + @ alias）
-├── package.json                # 依赖（next, react, @supabase/supabase-js）
+├── package.json                # 依赖（next, react, pg）
 ├── tsconfig.json               # TypeScript 配置
 ├── MIGRATION.sql               # 数据库迁移脚本
 ├── cloudbaserc.json            # 腾讯云 CloudBase 配置（参考用）
 │
 ├── lib/
-│   └── supabase.ts             # Supabase 客户端（service_role + anon）
+│   └── db/                     # PostgreSQL 连接池、事务与 repositories
 │
 ├── app/
 │   ├── globals.css             # 全局样式（极简）
@@ -79,7 +79,7 @@ scoring-system/
 
 ---
 
-## 四、数据库设计 (Supabase PostgreSQL)
+## 四、数据库设计 (PostgreSQL)
 
 ### 4.1 表结构
 
@@ -174,7 +174,7 @@ scores 表复用 dim_name 字段存储非评分数据：
 
 所有 API 路径都在 `/api/` 下，使用 Next.js Route Handler。  
 所有接口都设置 `export const dynamic = 'force-dynamic'`。  
-所有数据库操作使用 `supabaseAdmin`（service_role key，绕过 RLS）。
+所有运行时数据库操作使用 `DATABASE_URL` 连接 PostgreSQL，并通过 `scoringsys_app` 受限角色执行。迁移由独立的 `scoringsys_migrator` 角色完成。
 
 ### 5.1 POST /api/auth/login
 
@@ -382,24 +382,25 @@ scores 表复用 dim_name 字段存储非评分数据：
 ### 开发环境 (.env.local)
 
 ```env
-NEXT_PUBLIC_SUPABASE_URL=https://你的项目.supabase.co
-NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJ...（anon key 或 service_role key）
-SUPABASE_SERVICE_KEY=eyJ...（service_role key）
+DATABASE_URL=postgresql://scoringsys_app:<password>@localhost:5432/scoringsys
+ADMIN_SESSION_SECRET=<local-only-random-value>
+DB_POOL_MAX=10
+DB_CONNECT_TIMEOUT_MS=5000
+DB_IDLE_TIMEOUT_MS=30000
+DB_QUERY_TIMEOUT_MS=15000
+DB_STATEMENT_TIMEOUT_MS=15000
+DB_SSL=
 ```
 
 ### 生产环境 (.env 位于部署目录)
 
 ```env
-NEXT_PUBLIC_SUPABASE_URL=https://你的项目.supabase.co
-NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJ...
-SUPABASE_SERVICE_KEY=eyJ...
+DATABASE_URL=postgresql://scoringsys_app:<password>@db.example.internal:5432/scoringsys
+ADMIN_SESSION_SECRET=<provisioned-secret>
 ```
 
-**注意：** `lib/supabase.ts` 会按优先级查找：
-- URL: `NEXT_PUBLIC_SUPABASE_URL` > `SUPABASE_URL`
-- Key: `SUPABASE_SERVICE_ROLE_KEY` > `SUPABASE_SERVICE_KEY` > `NEXT_PUBLIC_SUPABASE_ANON_KEY`
-
-**当前项目使用 service_role key 绕过 RLS**，所有数据库操作都通过服务端 API 路由。
+运行时只读取 `DATABASE_URL`。该连接必须使用 `scoringsys_app`，不要把迁移器凭据或任何真实 secret 提交到仓库。
+数据库结构变更使用独立的 `MIGRATOR_DATABASE_URL`，由 `scripts/db/migrate.mjs` 在受控环境中执行。
 
 ---
 
@@ -475,7 +476,7 @@ CMD ["node", "server.js"]
 
 ## 九、数据库初始化
 
-### 9.1 创建表（在 Supabase SQL Editor 执行）
+### 9.1 创建表（使用迁移器连接执行）
 
 ```sql
 -- 评委表
@@ -609,7 +610,7 @@ INSERT INTO reviewer_dims (reviewer_code, dim_name, max_score) VALUES
 
 ### 添加实时刷新
 - 方案 A: 定时轮询（setInterval + loadData）
-- 方案 B: Supabase Realtime（监听 scores 表变更）
+- 方案 B: PostgreSQL 变更通知或受控轮询（监听 scores 表变更）
 - 方案 C: 添加 WebSocket
 
 ### 加强安全性
@@ -620,11 +621,11 @@ INSERT INTO reviewer_dims (reviewer_code, dim_name, max_score) VALUES
 
 ---
 
-## 十二、Supabase 配置要点
+## 十二、PostgreSQL 配置要点
 
-- **项目 URL:** https://zrmosaqeyguopumteeut.supabase.co
-- **RLS 状态:** 所有表的 RLS 可以**关闭**（因为全走 service_role key）或者保持开启但通过 service_role 绕过
-- **API 限制:** 免费版限 500 MB 数据库 + 50,000 请求/月
+- 运行时连接角色：`scoringsys_app`，仅授予应用所需的表、序列和函数权限。
+- 迁移连接角色：`scoringsys_migrator`，只在迁移/导入作业中使用，不注入 Web 进程。
+- 运行时和迁移连接字符串分别通过 `DATABASE_URL`、`MIGRATOR_DATABASE_URL` 提供；文档和日志不得包含真实凭据。
 
 ---
 
@@ -645,3 +646,8 @@ INSERT INTO reviewer_dims (reviewer_code, dim_name, max_score) VALUES
 | POST | /api/scores | 提交/更新评分 |
 | DELETE | /api/scores | 删除评分 |
 | GET | /api/summary | 获取汇总数据 |
+| GET | /api/reports | 获取报告快照 |
+| POST | /api/reports | 生成报告快照 |
+| GET | /api/project-ratings | 获取个人评级 |
+| POST | /api/project-ratings | 保存个人评级 |
+| GET | /api/health/db | 诊断数据库连接（不用于存活探针） |
