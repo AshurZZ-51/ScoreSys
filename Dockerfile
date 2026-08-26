@@ -3,10 +3,20 @@ FROM node:20-alpine3.23
 
 WORKDIR /app
 
-RUN apk upgrade --no-cache libcrypto3 libssl3
+# The build runs on a persistent BuildKit builder, so this layer would other-
+# wise be reused forever and stop picking up new OpenSSL patches. CI passes a
+# fresh APK_UPGRADE_DATE each day; referencing it here busts the layer.
+ARG APK_UPGRADE_DATE=unset
+RUN echo "apk upgrade ${APK_UPGRADE_DATE}" >/dev/null \
+ && apk upgrade --no-cache libcrypto3 libssl3
 
 COPY package.json package-lock.json ./
-RUN npm ci
+# The cache mount keeps npm's package tarballs between builds, so a lockfile
+# change re-links from disk instead of re-downloading every dependency (737s
+# in job 14117). `npm ci` still wipes node_modules and installs exactly what
+# package-lock.json pins. sharing=locked serialises concurrent builds.
+RUN --mount=type=cache,target=/root/.npm,sharing=locked \
+    npm ci --prefer-offline --no-audit --no-fund
 
 COPY . .
 

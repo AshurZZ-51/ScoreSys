@@ -28,8 +28,22 @@ default:
 verify-app:
   stage: verify
   image: node:20-alpine
+  variables:
+    # Keep the npm download cache inside the project directory so GitLab can
+    # carry it between pipelines. Job 14108 spent most of its 433s re-fetching
+    # the same 46 packages the image build had already downloaded.
+    npm_config_cache: "$CI_PROJECT_DIR/.npm"
+  cache:
+    key:
+      files:
+        - package-lock.json
+    paths:
+      - .npm/
+    policy: pull-push
   script:
-    - npm ci
+    # --prefer-offline reuses the restored cache; it never relaxes the lockfile
+    # check, so `npm ci` still fails on a package-lock.json/package.json drift.
+    - npm ci --prefer-offline --no-audit --no-fund
     - npm test
     - npm run build
 
@@ -63,7 +77,12 @@ build-image:
   rules:
     - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
   variables:
-    BUILDX_BUILDER: "scoringsys-ci-${CI_JOB_ID}"
+    # A stable builder name keeps the BuildKit layer cache alive across
+    # pipelines. With the previous per-job name the builder was created and
+    # torn down every run, so job 14117 rebuilt `npm ci` from zero (737s of a
+    # 941s job). Base-image freshness is preserved by --pull and the apk
+    # upgrade layer is busted daily by APK_UPGRADE_DATE below.
+    BUILDX_BUILDER: "scoringsys-ci"
     BUILDKITD_CONFIG: "$CI_PROJECT_DIR/.buildkitd.toml"
   script:
     - ': "${SWR_REGION:?SWR_REGION is required}"'
@@ -79,12 +98,20 @@ build-image:
       [registry."docker.io"]
         mirrors = ["docker.m.daocloud.io", "mirror.ccs.tencentyun.com", "hub-mirror.c.163.com"]
       EOF
-    - docker buildx create --name "$BUILDX_BUILDER" --driver docker-container --buildkitd-config "$BUILDKITD_CONFIG" --use
+    - |
+      docker buildx create --name "$BUILDX_BUILDER" --driver docker-container \
+        --buildkitd-config "$BUILDKITD_CONFIG" --use \
+        || docker buildx use "$BUILDX_BUILDER"
     - docker buildx inspect --bootstrap
-    - docker buildx build --platform linux/amd64 --provenance=false --push --tag "${SWR_REGISTRY}/scoringsys:${CI_COMMIT_SHA}" .
+    # --pull re-resolves node:20-alpine3.23 and APK_UPGRADE_DATE busts the apk
+    # upgrade layer once a day, so the reused cache cannot pin the image to
+    # stale libcrypto3/libssl3 packages.
+    - docker buildx build --platform linux/amd64 --provenance=false --push --pull --build-arg "APK_UPGRADE_DATE=$(date -u +%Y-%m-%d)" --tag "${SWR_REGISTRY}/scoringsys:${CI_COMMIT_SHA}" .
     - docker logout "$SWR_REGISTRY_HOST" >/dev/null 2>&1 || true
   after_script:
-    - docker buildx rm "${BUILDX_BUILDER:-}" >/dev/null 2>&1 || true
+    # The builder is deliberately kept so its layer cache survives the job.
+    # buildkitd's own GC policy bounds the disk it may use.
+    - rm -f "${BUILDKITD_CONFIG:-}" >/dev/null 2>&1 || true
 
 scan-image:
   stage: scan

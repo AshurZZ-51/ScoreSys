@@ -20,6 +20,7 @@ INGRESS_TEMPLATE = (ROOT / "ops/cce/ingress.yaml.tmpl").read_text(encoding="utf-
 DEPLOY_SCRIPT = (ROOT / "scripts/ci/deploy-cce.sh").read_text(encoding="utf-8")
 SMOKE_SCRIPT = (ROOT / "scripts/ci/smoke-scoringsys.sh").read_text(encoding="utf-8")
 NEXT_CONFIG = (ROOT / "next.config.js").read_text(encoding="utf-8")
+DOCKERFILE = (ROOT / "Dockerfile").read_text(encoding="utf-8")
 RENDERER = ROOT / "scripts/ci/render_cce.py"
 PUBLIC_PREFIX = "/scoringsys"
 FORBIDDEN_SUB_INGRESS_ANNOTATIONS = (
@@ -162,6 +163,53 @@ class CceDeliveryContractTest(unittest.TestCase):
         self.assertNotIn("allow_failure", scan)
         self.assertNotIn("mirror.gcr.io", db_download)
         self.assertNotIn("ghcr.io", db_download)
+
+    def assert_build_cache_contract(self, pipeline: dict, dockerfile: str) -> None:
+        """The CI caches must cut download time without weakening any gate."""
+        verify = pipeline["verify-app"]
+        verify_script = "\n".join(verify["script"])
+        build = pipeline["build-image"]
+        build_script = "\n".join(build["script"])
+        after_script = "\n".join(build.get("after_script", []))
+
+        # verify-app keeps a real lockfile-keyed npm cache and still runs the
+        # full test and build commands.
+        self.assertEqual(verify["variables"]["npm_config_cache"], "$CI_PROJECT_DIR/.npm")
+        self.assertEqual(verify["cache"]["key"], {"files": ["package-lock.json"]})
+        self.assertEqual(verify["cache"]["paths"], [".npm/"])
+        self.assertEqual(verify["cache"]["policy"], "pull-push")
+        self.assertIn("npm ci --prefer-offline", verify_script)
+        self.assertIn("npm test", verify_script)
+        self.assertIn("npm run build", verify_script)
+        # A cache must never be allowed to stand in for the lockfile check.
+        self.assertNotIn("npm install", verify_script)
+        self.assertNotIn("--no-package-lock", verify_script)
+        self.assertNotIn("allow_failure", verify)
+
+        # The BuildKit layer cache only survives if the builder is stable and
+        # is not torn down after the job.
+        self.assertNotIn("CI_JOB_ID", build["variables"]["BUILDX_BUILDER"])
+        self.assertNotIn("docker buildx rm", build_script)
+        self.assertNotIn("docker buildx rm", after_script)
+        self.assertIn('docker buildx use "$BUILDX_BUILDER"', build_script)
+
+        # A reused cache must not be able to pin the image to a stale base
+        # layer or to stale OpenSSL packages.
+        self.assertIn("--pull", build_script)
+        self.assertIn("APK_UPGRADE_DATE=$(date -u +%Y-%m-%d)", build_script)
+        self.assertIn("ARG APK_UPGRADE_DATE", dockerfile)
+        self.assertIn("${APK_UPGRADE_DATE}", dockerfile)
+        self.assertIn("apk upgrade --no-cache libcrypto3 libssl3", dockerfile)
+
+        # The image build reuses npm's download cache but still installs from
+        # the lockfile.
+        self.assertIn("--mount=type=cache,target=/root/.npm,sharing=locked", dockerfile)
+        self.assertIn("npm ci --prefer-offline", dockerfile)
+        self.assertNotIn("npm install", dockerfile)
+        self.assertIn("npm run build", dockerfile)
+
+    def test_build_caches_are_fast_without_weakening_the_gates(self) -> None:
+        self.assert_build_cache_contract(yaml.safe_load(CI), DOCKERFILE)
 
     def test_pipeline_has_ordered_stages_and_safe_workflow(self) -> None:
         pipeline = yaml.safe_load(CI)
@@ -797,6 +845,26 @@ esac
         mutated_pipeline["scan-image"]["allow_failure"] = True
         with self.assertRaises(AssertionError):
             self.assert_scan_image_contract(mutated_pipeline)
+        mutated_pipeline = yaml.safe_load(CI)
+        mutated_pipeline["build-image"]["variables"]["BUILDX_BUILDER"] = "scoringsys-ci-${CI_JOB_ID}"
+        with self.assertRaises(AssertionError):
+            self.assert_build_cache_contract(mutated_pipeline, DOCKERFILE)
+        mutated_pipeline = yaml.safe_load(CI.replace("--push --pull ", "--push ", 1))
+        with self.assertRaises(AssertionError):
+            self.assert_build_cache_contract(mutated_pipeline, DOCKERFILE)
+        with self.assertRaises(AssertionError):
+            self.assert_build_cache_contract(
+                yaml.safe_load(CI),
+                DOCKERFILE.replace("apk upgrade --no-cache libcrypto3 libssl3", "true"),
+            )
+        with self.assertRaises(AssertionError):
+            self.assert_build_cache_contract(
+                yaml.safe_load(CI), DOCKERFILE.replace("npm ci --prefer-offline", "npm install")
+            )
+        mutated_pipeline = yaml.safe_load(CI)
+        mutated_pipeline["verify-app"]["script"] = ["npm ci --prefer-offline", "npm run build"]
+        with self.assertRaises(AssertionError):
+            self.assert_build_cache_contract(mutated_pipeline, DOCKERFILE)
         self.assertNotIn("kind: Secret", DEPLOYMENT_TEMPLATE)
         self.assertNotIn("kind: ConfigMap", INGRESS_TEMPLATE)
 

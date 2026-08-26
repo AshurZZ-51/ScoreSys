@@ -2,6 +2,7 @@
 .env.*
 !.env.example
 node_modules
+.npm
 .next
 .git
 .DS_Store
