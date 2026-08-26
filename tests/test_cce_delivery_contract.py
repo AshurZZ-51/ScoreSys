@@ -253,10 +253,19 @@ class CceDeliveryContractTest(unittest.TestCase):
         self.assertNotIn("delete service", DEPLOY_SCRIPT)
         self.assertIn("backend_port=", DEPLOY_SCRIPT)
         self.assertIn("backend.service.port.number", DEPLOY_SCRIPT)
+        self.assertIn("service_target_port=", DEPLOY_SCRIPT)
+        self.assertIn("annotate service scoringsys ingress.kubernetes.io/named-ports- --overwrite", DEPLOY_SCRIPT)
+        self.assertIn("Service server dry-run failed", DEPLOY_SCRIPT)
         self.assertIn("service_ports=", DEPLOY_SCRIPT)
         self.assertIn("metadata.generation", DEPLOY_SCRIPT)
         self.assertIn("Ingress generation is not a positive integer", DEPLOY_SCRIPT)
 
+        workload_apply = DEPLOY_SCRIPT.index('apply -f "$workload"')
+        service_annotation_delete = DEPLOY_SCRIPT.index(
+            "annotate service scoringsys ingress.kubernetes.io/named-ports- --overwrite"
+        )
+        service_server_dry_run = DEPLOY_SCRIPT.index('apply --dry-run=server -f "$workload"', workload_apply + 1)
+        service_readback = DEPLOY_SCRIPT.index("service_ports=", service_server_dry_run)
         ingress_dry_run = DEPLOY_SCRIPT.index('apply --dry-run=server -f "$ingress"')
         endpoints_ready = DEPLOY_SCRIPT.index('[[ -n "${addresses:-}" ]] || die "Service has no ready endpoints"')
         ingress_apply = DEPLOY_SCRIPT.index('apply -f "$ingress"')
@@ -266,6 +275,10 @@ class CceDeliveryContractTest(unittest.TestCase):
         master_trigger_check = DEPLOY_SCRIPT.index("master_applied_trigger=")
         propagation = DEPLOY_SCRIPT.index('sleep "$RECONCILE_PROPAGATION_SECONDS"')
         smoke = DEPLOY_SCRIPT.index("smoke-scoringsys.sh")
+        self.assertLess(workload_apply, service_annotation_delete)
+        self.assertLess(service_annotation_delete, service_server_dry_run)
+        self.assertLess(service_server_dry_run, service_readback)
+        self.assertLess(service_readback, ingress_dry_run)
         self.assertLess(endpoints_ready, ingress_dry_run)
         self.assertLess(ingress_dry_run, ingress_apply)
         self.assertLess(ingress_apply, child_contract)
@@ -367,12 +380,31 @@ done
 case "$format" in
   go-template=*)
     case "$format" in
+      *'if eq .name "http"'*'targetPort'*) printf '%s' "${CCE_STUB_TARGET_PORT:-3000}" ;;
       *'range .spec.ports'*) printf '%s' "${CCE_STUB_SERVICE_STATE:-http|3000|3000}" ;;
       *'kubernetes.io/elb.class'*) printf '%s' "${CCE_ELB_CLASS:-performance}" ;;
       *'kubernetes.io/elb.id'*) printf '%s' "${CCE_ELB_ID:-abab7533-a1c6-4138-a4bc-59d53e3446e2}" ;;
       *'kubernetes.io/elb.port'*) printf '%s' "${CCE_ELB_PORT:-80}" ;;
       *'kubernetes.io/elb.listener-master-ingress'*) printf '%s' "${CCE_LISTENER_MASTER_INGRESS:-nexus-prod/nexus-studio}" ;;
-      *'ingress.kubernetes.io/named-ports'*) printf '%s' "${CCE_STUB_NAMED_PORTS:-}" ;;
+      *'ingress.kubernetes.io/named-ports'*)
+        case "$*" in
+          *'get service scoringsys'*)
+            service_annotation_reads_file=${CCE_STUB_SERVICE_ANNOTATION_READS_FILE:?}
+            service_annotation_reads=0
+            if [ -f "$service_annotation_reads_file" ]; then
+              service_annotation_reads=$(cat "$service_annotation_reads_file")
+            fi
+            service_annotation_reads=$((service_annotation_reads + 1))
+            printf '%s' "$service_annotation_reads" >"$service_annotation_reads_file"
+            if [ "$service_annotation_reads" -eq 1 ]; then
+              printf '%s' "${CCE_STUB_SERVICE_NAMED_PORTS_BEFORE:-}"
+            else
+              printf '%s' "${CCE_STUB_SERVICE_NAMED_PORTS_AFTER:-}"
+            fi
+            ;;
+          *) printf '%s' "${CCE_STUB_NAMED_PORTS:-}" ;;
+        esac
+        ;;
       *'reconcile-trigger'*)
         case "$*" in
           *'get ingress nexus-studio'*) printf '%s' "2104-14012" ;;
@@ -390,6 +422,14 @@ esac
 case "$*" in
   *' apply -f '*ingress.yaml)
     printf '%s' applied >"$CCE_STUB_STATE_FILE"
+    ;;
+esac
+case "$*" in
+  *' annotate service scoringsys ingress.kubernetes.io/named-ports- '*--overwrite*)
+    if [ "${CCE_STUB_SERVICE_ANNOTATE_DELETE_STATUS:-0}" != 0 ]; then
+      printf '%s\n' 'error: annotation "ingress.kubernetes.io/named-ports" not found' >&2
+      exit "${CCE_STUB_SERVICE_ANNOTATE_DELETE_STATUS}"
+    fi
     ;;
 esac
 case "$format" in
@@ -466,6 +506,7 @@ esac
                     "PATH": f"{command_dir}:{base_env.get('PATH', '')}",
                     "COMMAND_STUB_LOG": str(stub_log),
                     "CCE_STUB_STATE_FILE": str(command_dir / "ingress-applied"),
+                    "CCE_STUB_SERVICE_ANNOTATION_READS_FILE": str(command_dir / "service-annotation-reads"),
                     "CCE_STUB_OLD_INGRESS_EXISTS": "1",
                     "CCE_STUB_SERVICE_STATE": "http|3000|3000",
                     "KUBECONFIG_CCE_B64": "eA==",
@@ -482,16 +523,30 @@ esac
                 }
             )
             scenarios = (
-                ("2||http", "3000|", "3", "http|3000|3000", "", 0, ""),
-                ("3|3000|", "3000|", "3", "http|3000|3000", '{"http":"3000"}', 0, ""),
-                ("2||http", "3000|", "2", "http|3000|3000", "", 1, "generation did not increase"),
-                ("3|3000|", "|http", "4", "http|3000|3000", '{"http":"3000"}', 1, "must be exactly number=3000"),
-                ("3|3000|", "3000|", "3", "http|3000|http", "", 1, "targetPort=3000"),
+                ("2||http", "3000|", "3", "http|3000|3000", "", "", "", "", 0, ""),
+                ("3|3000|", "3000|", "3", "http|3000|3000", "", '{"http":"3000"}', "", "", 0, ""),
+                ("3|3000|", "3000|", "3", "http|3000|3000", '{"http":"3000"}', '{"http":"3000"}', '{"http":"3000"}', "", 1, "rewritten by"),
+                ("3|3000|", "3000|", "3", "http|3000|3000", "", "", "", "1", 0, ""),
+                ("2||http", "3000|", "2", "http|3000|3000", "", "", "", "", 1, "generation did not increase"),
+                ("3|3000|", "|http", "4", "http|3000|3000", '{"http":"3000"}', "", "", "", 1, "must be exactly number=3000"),
+                ("3|3000|", "3000|", "3", "http|3000|http", "", "", "", "", 1, "targetPort=3000"),
             )
-            for old_state, backend_state, generation, service_state, named_ports, expected_returncode, expected_error in scenarios:
+            for (
+                old_state,
+                backend_state,
+                generation,
+                service_state,
+                named_ports,
+                service_named_ports_before,
+                service_named_ports_after,
+                service_annotate_delete_status,
+                expected_returncode,
+                expected_error,
+            ) in scenarios:
                 with self.subTest(old_state=old_state, backend_state=backend_state, generation=generation, service_state=service_state):
                     state_file = command_dir / "ingress-applied"
                     state_file.unlink(missing_ok=True)
+                    (command_dir / "service-annotation-reads").unlink(missing_ok=True)
                     stub_log.write_text("", encoding="utf-8")
                     env = base_env | {
                         "CCE_STUB_OLD_INGRESS_STATE": old_state,
@@ -499,6 +554,9 @@ esac
                         "CCE_STUB_NEW_GENERATION": generation,
                         "CCE_STUB_SERVICE_STATE": service_state,
                         "CCE_STUB_NAMED_PORTS": named_ports,
+                        "CCE_STUB_SERVICE_NAMED_PORTS_BEFORE": service_named_ports_before,
+                        "CCE_STUB_SERVICE_NAMED_PORTS_AFTER": service_named_ports_after,
+                        "CCE_STUB_SERVICE_ANNOTATE_DELETE_STATUS": service_annotate_delete_status,
                     }
                     result = subprocess.run(
                         ["bash", str(ROOT / "scripts/ci/deploy-cce.sh")],
@@ -511,6 +569,8 @@ esac
                         self.assertIn(expected_error, result.stderr)
                         if named_ports:
                             self.assertIn("must not rely on it", result.stderr)
+                        if service_named_ports_after:
+                            self.assertIn("strict smoke must fail", result.stderr)
                         continue
                     if named_ports:
                         self.assertIn("ignoring it in favor of the numeric backend contract", result.stderr)
@@ -538,6 +598,17 @@ esac
                         "annotate ingress nexus-studio reconcile-trigger=2104-14012 --overwrite",
                         "\n".join(invocations),
                     )
+                    self.assertIn(
+                        "annotate service scoringsys ingress.kubernetes.io/named-ports- --overwrite",
+                        "\n".join(invocations),
+                    )
+                    service_annotation_reads = [
+                        line
+                        for line in invocations
+                        if "get service scoringsys" in line
+                        and "ingress.kubernetes.io/named-ports" in line
+                    ]
+                    self.assertEqual(len(service_annotation_reads), 3 if service_annotate_delete_status else 2)
 
     def test_smoke_asserts_the_real_trailing_slash_direction(self) -> None:
         # Next.js runs with basePath=/scoringsys and trailingSlash=false, so

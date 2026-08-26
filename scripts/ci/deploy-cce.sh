@@ -39,6 +39,17 @@ get_ingress_annotation() {
   kubectl -n "$namespace" get ingress "$name" -o "go-template=$template" 2>/dev/null || true
 }
 
+get_service_annotation() {
+  local namespace=$1
+  local name=$2
+  local key=$3
+  local template
+
+  [[ "$key" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]] || die "invalid Service annotation key"
+  printf -v template '{{ with index .metadata.annotations "%s" }}{{ . }}{{ end }}' "$key"
+  kubectl -n "$namespace" get service "$name" -o "go-template=$template"
+}
+
 readonly ANNOTATION_ELB_CLASS='kubernetes.io/elb.class'
 readonly ANNOTATION_ELB_ID='kubernetes.io/elb.id'
 readonly ANNOTATION_ELB_PORT='kubernetes.io/elb.port'
@@ -96,6 +107,46 @@ fi
 
 kubectl -n "$NAMESPACE" apply --dry-run=server -f "$workload" >/dev/null || die "workload server dry-run failed"
 kubectl -n "$NAMESPACE" apply -f "$workload" >/dev/null || die "workload apply failed"
+
+service_target_port=$(kubectl -n "$NAMESPACE" get service scoringsys -o 'go-template={{range .spec.ports}}{{if eq .name "http"}}{{.targetPort}}{{end}}{{end}}')
+[[ "$service_target_port" =~ ^[0-9]+$ ]] || die "Service targetPort must be numeric"
+
+service_named_ports_before=$(get_service_annotation "$NAMESPACE" scoringsys "$ANNOTATION_CCE_NAMED_PORTS")
+service_named_ports_after=""
+service_named_ports_delete_error=""
+if ! service_named_ports_delete_error=$(kubectl -n "$NAMESPACE" annotate service scoringsys ingress.kubernetes.io/named-ports- --overwrite 2>&1); then
+  service_named_ports_after=$(get_service_annotation "$NAMESPACE" scoringsys "$ANNOTATION_CCE_NAMED_PORTS")
+  if [[ -z "$service_named_ports_after" ]]; then
+    if [[ "$service_named_ports_delete_error" != *[Nn]ot[Ff]ound*
+      && "$service_named_ports_delete_error" != *"not found"*
+      && "$service_named_ports_delete_error" != *"Not Found"*
+      && "$service_named_ports_delete_error" != *"does not exist"* ]]; then
+      die "Service named-ports annotation removal failed: $service_named_ports_delete_error"
+    fi
+    if [[ -n "$service_named_ports_before" ]]; then
+      printf 'CCE deploy notice: Service named-ports annotation disappeared before deletion; continuing idempotently\n' >&2
+    else
+      printf 'CCE deploy notice: Service named-ports annotation was already absent; continuing idempotently\n' >&2
+    fi
+  fi
+fi
+
+if [[ -z "$service_named_ports_after" ]]; then
+  service_named_ports_after=$(get_service_annotation "$NAMESPACE" scoringsys "$ANNOTATION_CCE_NAMED_PORTS")
+fi
+service_named_ports_rewritten=false
+if [[ -n "$service_named_ports_after" ]]; then
+  service_named_ports_rewritten=true
+  printf 'CCE deploy evidence: CCE controller rewrote Service %s after deletion (%s); strict smoke must fail if the stale named-port path remains active\n' "$ANNOTATION_CCE_NAMED_PORTS" "$service_named_ports_after" >&2
+fi
+
+# Revalidate the applied Service after metadata cleanup. This server dry-run is
+# deliberately before the child Ingress apply so a malformed Service cannot
+# trigger a shared-listener reconcile.
+kubectl -n "$NAMESPACE" apply --dry-run=server -f "$workload" >/dev/null || die "Service server dry-run failed"
+service_ports=$(kubectl -n "$NAMESPACE" get service scoringsys -o 'go-template={{range .spec.ports}}{{.name}}|{{.port}}|{{.targetPort}}{{"\n"}}{{end}}')
+[[ "$service_ports" == "http|3000|3000" ]] || die "Service port must be exactly name=http, port=3000, targetPort=3000"
+
 kubectl -n "$NAMESPACE" rollout status deployment/scoringsys --timeout=180s >/dev/null || die "deployment rollout failed"
 
 deadline=$((SECONDS + 120))
@@ -151,12 +202,9 @@ named_ports_annotation=$(get_ingress_annotation "$NAMESPACE" scoringsys "$ANNOTA
 named_ports_hint=""
 if [[ -n "$named_ports_annotation" ]]; then
   named_ports_hint="; live Ingress still has controller-generated $ANNOTATION_CCE_NAMED_PORTS and must not rely on it"
-  printf 'CCE deploy warning: live Ingress still has controller-generated %s; ignoring it in favor of the numeric backend contract, and treat it as stale CCE state if strict smoke fails\n' "$ANNOTATION_CCE_NAMED_PORTS" >&2
+  printf 'CCE deploy warning: live Ingress still has controller-generated %s; must not rely on it, ignoring it in favor of the numeric backend contract, and treat it as stale CCE state if strict smoke fails\n' "$ANNOTATION_CCE_NAMED_PORTS" >&2
 fi
 [[ "$backend_port" == "3000|" ]] || die "Ingress backend port must be exactly number=3000${named_ports_hint}"
-
-service_ports=$(kubectl -n "$NAMESPACE" get service scoringsys -o 'go-template={{range .spec.ports}}{{.name}}|{{.port}}|{{.targetPort}}{{"\n"}}{{end}}')
-[[ "$service_ports" == "http|3000|3000" ]] || die "Service port must be exactly name=http, port=3000, targetPort=3000"
 
 ingress_generation=$(kubectl -n "$NAMESPACE" get ingress scoringsys -o jsonpath='{.metadata.generation}')
 [[ "$ingress_generation" =~ ^[1-9][0-9]*$ ]] || die "Ingress generation is not a positive integer"
@@ -214,3 +262,6 @@ master_applied_trigger=$(get_ingress_annotation "$master_namespace" "$master_nam
 sleep "$RECONCILE_PROPAGATION_SECONDS"
 
 PUBLIC_HOST="$PUBLIC_HOST" PUBLIC_PREFIX="$PUBLIC_PREFIX" "$SCRIPT_DIR/smoke-scoringsys.sh"
+if [[ "$service_named_ports_rewritten" == true ]]; then
+  die "Service named-ports annotation was rewritten by the CCE controller"
+fi
