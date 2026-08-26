@@ -3,6 +3,7 @@ import { isProjectPoolV2Enabled } from '@/lib/featureFlags';
 import { supabaseAdmin } from '@/lib/supabase';
 import { getMissingTemplateProjects } from '@/lib/projectSlots';
 import { requireAdminSession, requireReviewerSession } from '@/lib/adminSession';
+import { listMeetingProjects } from '@/lib/db/repositories/projects';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -18,36 +19,17 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'meetingId 必填' }, { status: 400 });
     }
 
-    if (!isProjectPoolV2Enabled()) {
-      const { data: existingProjects, error: existingError } = await supabaseAdmin
-        .from('projects').select('seq_no').eq('meeting_id', meetingId);
-      if (existingError) throw existingError;
-      const missingProjects = getMissingTemplateProjects(existingProjects || [], meetingId);
-      if (missingProjects.length > 0) {
-        const { error: insertError } = await supabaseAdmin.from('projects').insert(missingProjects);
-        if (insertError) throw insertError;
-      }
-    }
-
-    let query = supabaseAdmin
-      .from('projects')
-      .select('id, meeting_id, seq_no, name, submitter, description, problems, actions, is_pending, is_template, created_at, pool_project_id, round_no, attempt_no, scoring_version, assignment_status')
-      .eq('meeting_id', meetingId)
-      .order('seq_no');
-
-    // 评委只看到已填的（name + submitter 都不为空）
-    if (role === 'reviewer') {
-      query = query
-        .neq('name', '')
-        .neq('submitter', '');
-    }
-
-    const { data: projects, error } = await query;
-
-    if (error) throw error;
+    const storedProjects = await listMeetingProjects({
+      meetingId,
+      reviewerOnly: role === 'reviewer',
+    });
+    const projects = !isProjectPoolV2Enabled() && role !== 'reviewer'
+      ? [...storedProjects, ...getMissingTemplateProjects(storedProjects, meetingId)]
+        .sort((left: any, right: any) => Number(left.seq_no) - Number(right.seq_no))
+      : storedProjects;
 
     return NextResponse.json(
-      { projects: projects || [] },
+      { projects },
       { headers: { 'Cache-Control': 'no-store, max-age=0' } }
     );
   } catch (err: any) {

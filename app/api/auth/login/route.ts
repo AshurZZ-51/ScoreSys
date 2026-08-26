@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { supabaseAdmin } from '@/lib/supabase';
 import { adminSessionCookie, createReviewerSession } from '@/lib/adminSession';
+import { findReviewerByCode, listReviewerDimensions } from '@/lib/db/repositories/reviewers';
 
 export const dynamic = 'force-dynamic';
 
@@ -15,15 +15,9 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // 查询评委账号（真实字段：password_hash）
-    // 大小写不敏感搜索（ilike），让 admin/W/N/S/J/G 都可登录
-    const { data: reviewer, error } = await supabaseAdmin
-      .from('reviewers')
-      .select('code, name, role, is_admin, password_hash')
-      .ilike('code', code)
-      .single();
+    const reviewer = await findReviewerByCode(code);
 
-    if (error || !reviewer) {
+    if (!reviewer) {
       return NextResponse.json(
         { error: '账号不存在' },
         { status: 401 }
@@ -37,12 +31,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // 查询该评委负责的维度（真实表：reviewer_dims）
-    const { data: dims } = await supabaseAdmin
-      .from('reviewer_dims')
-      .select('dim_name, max_score')
-      .eq('reviewer_code', reviewer.code)
-      .order('max_score', { ascending: false });
+    const dims = await listReviewerDimensions(reviewer.code);
 
     const sessionToken = createReviewerSession(reviewer);
     const response = NextResponse.json({
@@ -53,7 +42,7 @@ export async function POST(request: NextRequest) {
         name: reviewer.name,
         role: reviewer.role,
         is_admin: reviewer.is_admin,
-        dimensions: dims || []
+        dimensions: dims
       }
     });
     const cookie = adminSessionCookie(sessionToken);

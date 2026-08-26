@@ -3,6 +3,8 @@ import { isProjectPoolV2Enabled } from '@/lib/featureFlags';
 import { supabaseAdmin } from '@/lib/supabase';
 import { isSameReviewerCode, requireReviewerSession } from '@/lib/adminSession';
 import { normalizeProjectRating } from '@/lib/projectReviewerRating';
+import { findReviewerByCode } from '@/lib/db/repositories/reviewers';
+import { listProjectRatings } from '@/lib/db/repositories/scores';
 
 export const dynamic = 'force-dynamic';
 
@@ -19,24 +21,25 @@ async function getReviewer(request: NextRequest) {
   return reviewer;
 }
 
+async function getReadReviewer(request: NextRequest) {
+  const session = requireReviewerSession(request);
+  if (!session) return null;
+  const reviewer = await findReviewerByCode(session.code);
+  if (!reviewer || reviewer.is_admin) return null;
+  return reviewer;
+}
+
 export async function GET(request: NextRequest) {
   if (!isProjectPoolV2Enabled()) return NextResponse.json({ error: '项目池功能尚未启用' }, { status: 404 });
   try {
-    const reviewer = await getReviewer(request);
+    const reviewer = await getReadReviewer(request);
     if (!reviewer) return NextResponse.json({ error: '请使用评委账号登录' }, { status: 403 });
     const { searchParams } = new URL(request.url);
     const meetingId = searchParams.get('meetingId');
     const projectId = searchParams.get('projectId');
     if (!meetingId) return NextResponse.json({ error: 'meetingId 必填' }, { status: 400 });
-    let query = supabaseAdmin
-      .from('project_reviewer_ratings')
-      .select('id, meeting_id, project_id, reviewer_code, round_no, attempt_no, rating, created_at, updated_at')
-      .eq('meeting_id', meetingId)
-      .eq('reviewer_code', reviewer.code);
-    if (projectId) query = query.eq('project_id', projectId);
-    const { data, error } = await query;
-    if (error) throw error;
-    return NextResponse.json({ ratings: data || [] }, { headers: { 'Cache-Control': 'no-store, max-age=0' } });
+    const ratings = await listProjectRatings({ meetingId, reviewerCode: reviewer.code, projectId });
+    return NextResponse.json({ ratings }, { headers: { 'Cache-Control': 'no-store, max-age=0' } });
   } catch (error: any) {
     return NextResponse.json({ error: `获取个人评级失败: ${error.message}` }, { status: 500 });
   }

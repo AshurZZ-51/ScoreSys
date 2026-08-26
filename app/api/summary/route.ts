@@ -1,8 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isProjectPoolV2Enabled } from '@/lib/featureFlags';
-import { supabaseAdmin } from '@/lib/supabase';
 import { getMissingTemplateProjects } from '@/lib/projectSlots';
 import { requireReviewerSession } from '@/lib/adminSession';
+import { getMeetingSummary, listMeetingReviewers } from '@/lib/db/repositories/meetings';
+import { listSummaryProjects } from '@/lib/db/repositories/projects';
+import { listAllReviewerDimensions, listReviewers } from '@/lib/db/repositories/reviewers';
+import { listMeetingProjectRatings, listMeetingScores } from '@/lib/db/repositories/scores';
 import {
   SCORING_DIMENSIONS,
   REVIEW_ROUNDS,
@@ -46,29 +49,16 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'meetingId 必填' }, { status: 400 });
     }
 
-    if (!isProjectPoolV2Enabled()) {
-      const { data: existingProjects, error: existingProjectsError } = await supabaseAdmin.from('projects').select('seq_no').eq('meeting_id', meetingId);
-      if (existingProjectsError) throw existingProjectsError;
-      const missingProjects = getMissingTemplateProjects(existingProjects || [], meetingId);
-      if (missingProjects.length > 0) {
-        const { error: insertMissingError } = await supabaseAdmin.from('projects').insert(missingProjects);
-        if (insertMissingError) throw insertMissingError;
-      }
-    }
-
-    const [meetingRes, projectsRes, scoresRes, reviewersRes, meetingReviewersRes, reviewerDimsRes, reviewerRatingsRes] = await Promise.all([
-      supabaseAdmin.from('meetings').select('id, name, meeting_date, deadline, status, notes').eq('id', meetingId).single(),
-      supabaseAdmin.from('projects').select('id, meeting_id, seq_no, name, submitter, description, problems, actions, is_pending, pool_project_id, round_no, attempt_no, scoring_version, assignment_status').eq('meeting_id', meetingId).order('seq_no'),
-      supabaseAdmin.from('scores').select('id, meeting_id, project_id, reviewer_code, dim_name, score, comment, updated_at').eq('meeting_id', meetingId),
-      supabaseAdmin.from('reviewers').select('code, name, role, is_admin').order('code'),
-      supabaseAdmin.from('meeting_reviewers').select('reviewer_code, reviewer_name, reviewer_role').eq('meeting_id', meetingId),
-      supabaseAdmin.from('reviewer_dims').select('reviewer_code, dim_name, max_score'),
-      supabaseAdmin.from('project_reviewer_ratings').select('meeting_id, project_id, reviewer_code, round_no, attempt_no, rating, updated_at').eq('meeting_id', meetingId)
+    const [meeting, fetchedProjects, scores, allReviewers, meetingReviewers, reviewerDims, reviewerRatings] = await Promise.all([
+      getMeetingSummary(meetingId),
+      listSummaryProjects(meetingId),
+      listMeetingScores(meetingId),
+      listReviewers(),
+      listMeetingReviewers(meetingId),
+      listAllReviewerDimensions(),
+      listMeetingProjectRatings(meetingId).catch(() => []),
     ]);
 
-    if (meetingRes.error) throw meetingRes.error;
-
-    const fetchedProjects = projectsRes.data || [];
     const summaryMissingProjects = isProjectPoolV2Enabled() ? [] : getMissingTemplateProjects(fetchedProjects, meetingId).map((project: any) => ({
       ...project,
       id: `missing-slot-${meetingId}-${project.seq_no}`,
@@ -76,10 +66,6 @@ export async function GET(request: NextRequest) {
     }));
     const projects = [...fetchedProjects, ...summaryMissingProjects]
       .sort((a: any, b: any) => Number(a.seq_no) - Number(b.seq_no));
-    const scores = scoresRes.data || [];
-    const reviewerRatings = reviewerRatingsRes?.error ? [] : (reviewerRatingsRes?.data || []);
-    const allReviewers = reviewersRes.data || [];
-    const meetingReviewers = meetingReviewersRes?.data || [];
     const scoredReviewerCodes = new Set(scores.filter((score: any) => score.reviewer_code).map((score: any) => String(score.reviewer_code).toLowerCase()));
     const reviewers = meetingReviewers.length
       ? meetingReviewers.map((snapshot: any) => ({
@@ -91,7 +77,6 @@ export async function GET(request: NextRequest) {
       : allReviewers.filter((reviewer: any) => reviewer.is_admin
         || scoredReviewerCodes.has(String(reviewer.code).toLowerCase())
         || !['o', 'si'].includes(String(reviewer.code).toLowerCase()));
-    const reviewerDims = reviewerDimsRes.data || [];
 
     const reviewerDimNames: Record<string, string[]> = {};
     reviewerDims.forEach((rd: any) => {
@@ -350,7 +335,7 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json(
       {
-        meeting: meetingRes.data,
+        meeting,
         projects: projectsWithScores,
         scores,
         reviewers: reviewerStats,

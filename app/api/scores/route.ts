@@ -11,6 +11,7 @@ import {
   stripRoundPrefix
 } from '@/lib/reviewWorkflow';
 import { shouldAdvanceProjectWorkflow } from '@/lib/reviewerBlindReview';
+import { listScores } from '@/lib/db/repositories/scores';
 
 export const dynamic = 'force-dynamic';
 
@@ -25,18 +26,9 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'meetingId 必填' }, { status: 400 });
     }
 
-    let query = supabaseAdmin
-      .from('scores')
-      .select('id, meeting_id, project_id, reviewer_code, dim_name, score, comment, updated_at')
-      .eq('meeting_id', meetingId);
+    const scores = await listScores({ meetingId, reviewerCode, projectId });
 
-    if (reviewerCode) query = query.eq('reviewer_code', reviewerCode);
-    if (projectId) query = query.eq('project_id', projectId);
-
-    const { data: scores, error } = await query;
-    if (error) throw error;
-
-    return NextResponse.json({ scores: scores || [] });
+    return NextResponse.json({ scores });
   } catch (err: any) {
     return NextResponse.json({ error: '获取评分失败: ' + err.message }, { status: 500 });
   }
