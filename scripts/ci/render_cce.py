@@ -96,12 +96,14 @@ def build_values() -> dict[str, str]:
     if any(char.isspace() for char in image) or "\n" in image:
         raise ValueError("IMAGE_REFERENCE must not contain whitespace")
 
-    trigger = (
-        os.environ.get("RECONCILE_TRIGGER", "").strip()
-        or os.environ.get("CI_PIPELINE_ID", "").strip()
-        or os.environ.get("CI_COMMIT_SHA", "").strip()
-        or "local"
-    )
+    trigger = os.environ.get("RECONCILE_TRIGGER", "").strip()
+    if not trigger:
+        pipeline_id = os.environ.get("CI_PIPELINE_ID", "").strip()
+        job_id = os.environ.get("CI_JOB_ID", "").strip()
+        if pipeline_id and job_id:
+            trigger = f"{pipeline_id}-{job_id}"
+        else:
+            trigger = pipeline_id or os.environ.get("CI_COMMIT_SHA", "").strip() or "local"
     if not TRIGGER_PATTERN.fullmatch(trigger):
         raise ValueError("RECONCILE_TRIGGER must be a short alphanumeric token")
 

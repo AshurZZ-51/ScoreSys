@@ -250,12 +250,68 @@ class CceDeliveryContractTest(unittest.TestCase):
         ingress_dry_run = DEPLOY_SCRIPT.index('apply --dry-run=server -f "$ingress"')
         endpoints_ready = DEPLOY_SCRIPT.index('[[ -n "${addresses:-}" ]] || die "Service has no ready endpoints"')
         ingress_apply = DEPLOY_SCRIPT.index('apply -f "$ingress"')
+        child_contract = DEPLOY_SCRIPT.index("child_master=")
         trigger_check = DEPLOY_SCRIPT.index("applied_trigger=")
+        master_annotate = DEPLOY_SCRIPT.index('annotate ingress "$master_name"')
+        master_trigger_check = DEPLOY_SCRIPT.index("master_applied_trigger=")
+        propagation = DEPLOY_SCRIPT.index('sleep "$RECONCILE_PROPAGATION_SECONDS"')
         smoke = DEPLOY_SCRIPT.index("smoke-scoringsys.sh")
         self.assertLess(endpoints_ready, ingress_dry_run)
         self.assertLess(ingress_dry_run, ingress_apply)
-        self.assertLess(ingress_apply, trigger_check)
-        self.assertLess(trigger_check, smoke)
+        self.assertLess(ingress_apply, child_contract)
+        self.assertLess(child_contract, trigger_check)
+        self.assertLess(trigger_check, master_annotate)
+        self.assertLess(master_annotate, master_trigger_check)
+        self.assertLess(master_trigger_check, propagation)
+        self.assertLess(propagation, smoke)
+
+    def test_deploy_reconciles_master_by_annotation_only(self) -> None:
+        self.assertIn(
+            'annotate ingress "$master_name" "reconcile-trigger=$master_trigger" --overwrite',
+            DEPLOY_SCRIPT,
+        )
+        self.assertIn('kubectl -n "$master_namespace" annotate ingress "$master_name"', DEPLOY_SCRIPT)
+        self.assertNotIn("annotate ingress nexus-studio", DEPLOY_SCRIPT)
+        self.assertIn('master_trigger="${CI_PIPELINE_ID}-${CI_JOB_ID}"', DEPLOY_SCRIPT)
+        self.assertIn("master_trigger=${master_trigger:-$applied_trigger}", DEPLOY_SCRIPT)
+        self.assertIn("master Ingress reconcile annotation failed", DEPLOY_SCRIPT)
+        self.assertIn("master Ingress reconcile-trigger was not updated", DEPLOY_SCRIPT)
+        self.assertNotIn("patch ingress", DEPLOY_SCRIPT)
+        self.assertNotIn("apply -f \"$master", DEPLOY_SCRIPT)
+        self.assertNotIn("delete ingress \"$master", DEPLOY_SCRIPT)
+        self.assertNotIn("tls-certificate-ids", DEPLOY_SCRIPT.split("annotate ingress", 1)[1])
+
+    def test_deploy_validates_frozen_master_reference_before_cluster_mutation(self) -> None:
+        self.assertIn("CCE_LISTENER_MASTER_INGRESS must be namespace/name", DEPLOY_SCRIPT)
+        self.assertIn("master Ingress namespace is not DNS-compatible", DEPLOY_SCRIPT)
+        self.assertIn("master Ingress name is not DNS-compatible", DEPLOY_SCRIPT)
+        self.assertIn('[[ "$master_namespace" == "$NAMESPACE" ]]', DEPLOY_SCRIPT)
+
+        # Execute only the preflight path with a command stub. Unsafe references
+        # must fail before a rendered manifest or kubectl mutation is inspected.
+        for reference, expected in (
+            ("nexus-prod/nexus-studio/extra", "namespace/name"),
+            ("nexus-prod/nexus-studio;touch", "master Ingress name"),
+            ("other-prod/nexus-studio", "must match KUBE_NAMESPACE"),
+        ):
+            with self.subTest(reference=reference), tempfile.TemporaryDirectory() as directory:
+                command_dir = Path(directory)
+                kubectl_stub = command_dir / "kubectl"
+                kubectl_stub.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+                kubectl_stub.chmod(0o755)
+                env = os.environ.copy()
+                env.update(
+                    {
+                        "PATH": f"{command_dir}:{env.get('PATH', '')}",
+                        "KUBECONFIG_CCE_B64": "eA==",
+                        "KUBE_IMAGE_PULL_SECRET": "swr-pull",
+                        "CCE_LISTENER_MASTER_INGRESS": reference,
+                        "RENDERED_DIR": str(command_dir / "rendered"),
+                    }
+                )
+                result = subprocess.run(["bash", str(ROOT / "scripts/ci/deploy-cce.sh")], env=env, text=True, capture_output=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(expected, result.stderr)
 
     def test_deploy_gates_forbidden_shared_listener_annotations(self) -> None:
         for forbidden in FORBIDDEN_SUB_INGRESS_ANNOTATIONS:
@@ -349,6 +405,16 @@ class CceDeliveryContractTest(unittest.TestCase):
         self.assertEqual(annotations["reconcile-trigger"], "test-trigger")
         for forbidden in FORBIDDEN_SUB_INGRESS_ANNOTATIONS:
             self.assertNotIn(forbidden, annotations)
+
+    def test_renderer_uses_a_pipeline_job_trigger_when_no_override_is_given(self) -> None:
+        rendered = self.render(RECONCILE_TRIGGER=None, CI_PIPELINE_ID="2102", CI_JOB_ID="13998")
+        annotations = rendered["ingress"][0]["metadata"]["annotations"]
+        self.assertEqual(annotations["reconcile-trigger"], "2102-13998")
+        self.assertRegex(annotations["reconcile-trigger"], r"^[A-Za-z0-9._-]{1,63}$")
+
+    def test_renderer_never_emits_an_empty_trigger_without_ci_identifiers(self) -> None:
+        rendered = self.render(RECONCILE_TRIGGER="", CI_PIPELINE_ID="", CI_JOB_ID="", CI_COMMIT_SHA="")
+        self.assertEqual(rendered["ingress"][0]["metadata"]["annotations"]["reconcile-trigger"], "local")
 
     def test_renderer_rejects_sub_ingress_claiming_the_shared_listener(self) -> None:
         injections = {
