@@ -187,8 +187,20 @@ class CceDeliveryContractTest(unittest.TestCase):
         self.assertEqual(deploy["resource_group"], "scoringsys-cce")
         self.assertIn({"job": "scan-image"}, deploy["needs"])
         self.assertEqual(pipeline["notify-failure"]["when"], "on_failure")
-        self.assertTrue(pipeline["notify-failure"]["allow_failure"])
-        self.assertNotIn("FEISHU_CHAT_ID", CI)
+        self.assertEqual(pipeline["notify-success"]["when"], "on_success")
+        self.assertEqual(pipeline["notify-success"]["needs"], [{"job": "deploy-cce"}])
+        for job_name, status in (("notify-failure", "failure"), ("notify-success", "success")):
+            job = pipeline[job_name]
+            self.assertEqual(job["image"], "python:3.12-alpine")
+            self.assertTrue(job["allow_failure"])
+            script = "\n".join(job["script"])
+            self.assertIn("FEISHU_APP_ID", script)
+            self.assertIn("FEISHU_APP_SECRET", script)
+            self.assertIn("FEISHU_CHAT_ID", script)
+            self.assertIn(f"python3 scripts/ci/notify_feishu.py --status {status}", script)
+            self.assertNotIn("|| true", script)
+            self.assertIn("CI_PIPELINE_SOURCE != \"merge_request_event\"", job["rules"][0]["if"])
+        self.assertNotIn("FEISHU_WEBHOOK_URL", CI)
 
     def test_workload_is_single_non_root_service_with_real_probes(self) -> None:
         renderer = ROOT / "scripts/ci/render_cce.py"

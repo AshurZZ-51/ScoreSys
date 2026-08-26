@@ -181,17 +181,30 @@ deploy-cce:
 
 notify-failure:
   stage: notify
-  image: alpine:3.20
+  image: python:3.12-alpine
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CI_PIPELINE_SOURCE != "merge_request_event"'
+    - when: never
   when: on_failure
   allow_failure: true
   script:
-    - apk add --no-cache ca-certificates curl
-    - |
-      if [ -z "${FEISHU_WEBHOOK_URL:-}" ]; then
-        echo "Notification endpoint is not configured; continuing."
-        exit 0
-      fi
-      payload=$(printf '{"msg_type":"text","content":{"text":"scoringsys pipeline failed: %s"}}' "${CI_PIPELINE_URL:-unknown}")
-      curl --fail --silent --show-error --output /dev/null \
-        -H 'Content-Type: application/json' \
-        --data "$payload" "$FEISHU_WEBHOOK_URL"
+    - ': "${FEISHU_APP_ID:?FEISHU_APP_ID is required}"'
+    - ': "${FEISHU_APP_SECRET:?FEISHU_APP_SECRET is required}"'
+    - ': "${FEISHU_CHAT_ID:?FEISHU_CHAT_ID is required}"'
+    - python3 scripts/ci/notify_feishu.py --status failure
+
+notify-success:
+  stage: notify
+  image: python:3.12-alpine
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CI_PIPELINE_SOURCE != "merge_request_event"'
+    - when: never
+  when: on_success
+  allow_failure: true
+  needs:
+    - job: deploy-cce
+  script:
+    - ': "${FEISHU_APP_ID:?FEISHU_APP_ID is required}"'
+    - ': "${FEISHU_APP_SECRET:?FEISHU_APP_SECRET is required}"'
+    - ': "${FEISHU_CHAT_ID:?FEISHU_CHAT_ID is required}"'
+    - python3 scripts/ci/notify_feishu.py --status success
