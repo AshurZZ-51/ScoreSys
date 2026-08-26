@@ -77,13 +77,17 @@ build-image:
   rules:
     - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
   variables:
-    # A stable builder name keeps the BuildKit layer cache alive across
-    # pipelines. With the previous per-job name the builder was created and
-    # torn down every run, so job 14117 rebuilt `npm ci` from zero (737s of a
-    # 941s job). Base-image freshness is handled by APK_UPGRADE_DATE below
-    # plus the Trivy gate in scan-image; see CI_SPEED_REPORT.md.
-    BUILDX_BUILDER: "scoringsys-ci"
+    # Per-job builder. A shared name bought nothing: in jobs 14147 and 14164
+    # `docker buildx create --name scoringsys-ci` succeeded outright with a
+    # fresh Last Activity instead of reporting an existing instance, so the
+    # builder does not survive between jobs on this runner. Isolating it also
+    # avoids concurrent jobs sharing one buildkitd and its config.
+    BUILDX_BUILDER: "scoringsys-ci-${CI_JOB_ID}"
     BUILDKITD_CONFIG: "$CI_PROJECT_DIR/.buildkitd.toml"
+    # The cross-pipeline cache lives in SWR instead, which is authenticated and
+    # proven reachable (login, push and the Trivy pull all succeed there). This
+    # tag is deliberately distinct from the immutable commit tag.
+    BUILD_CACHE_TAG: "buildcache-${CI_COMMIT_REF_SLUG}"
   script:
     - ': "${SWR_REGION:?SWR_REGION is required}"'
     - ': "${SWR_AK:?SWR_AK is required}"'
@@ -98,22 +102,48 @@ build-image:
       [registry."docker.io"]
         mirrors = ["docker.m.daocloud.io", "mirror.ccs.tencentyun.com", "hub-mirror.c.163.com"]
       EOF
-    - |
-      docker buildx create --name "$BUILDX_BUILDER" --driver docker-container \
-        --buildkitd-config "$BUILDKITD_CONFIG" --use \
-        || docker buildx use "$BUILDX_BUILDER"
+    - export BUILD_CACHE_REF="${SWR_REGISTRY}/scoringsys:${BUILD_CACHE_TAG}"
+    - docker buildx create --name "$BUILDX_BUILDER" --driver docker-container --buildkitd-config "$BUILDKITD_CONFIG" --use
     - docker buildx inspect --bootstrap
-    # No --pull here: it forced a fresh registry resolution of the base image
-    # that fell through the configured mirrors to registry-1.docker.io, which
-    # this runner cannot reach (job 14147: "dial tcp 108.160.167.159:443:
-    # connect: connection refused"). APK_UPGRADE_DATE still busts the apk
-    # upgrade layer once a day so OpenSSL patches keep landing, and scan-image
-    # remains the blocking gate on any base-image CVE.
-    - docker buildx build --platform linux/amd64 --provenance=false --push --build-arg "APK_UPGRADE_DATE=$(date -u +%Y-%m-%d)" --tag "${SWR_REGISTRY}/scoringsys:${CI_COMMIT_SHA}" .
+    - |
+      # No --pull: it forces a fresh base-image resolution. But --pull was only
+      # part of it -- job 14164 fell through the configured mirrors to
+      # registry-1.docker.io without --pull too. Jobs 14147 and 14164 hit
+      # different blocked addresses (108.160.167.159, 162.125.32.13) while job
+      # 14139 resolved the same tag in 2.3s, so the mirror path is
+      # intermittent. Retry the whole build at most twice; never mask a
+      # failure. APK_UPGRADE_DATE still busts the apk upgrade layer daily and
+      # scan-image remains the blocking gate on any base-image CVE.
+      build_image() {
+        docker buildx build --platform linux/amd64 --provenance=false --push \
+          --build-arg "APK_UPGRADE_DATE=$(date -u +%Y-%m-%d)" \
+          --cache-from "type=registry,ref=${BUILD_CACHE_REF}" \
+          --cache-to "type=registry,ref=${BUILD_CACHE_REF},mode=max,image-manifest=true,oci-mediatypes=true,ignore-error=true" \
+          --tag "${SWR_REGISTRY}/scoringsys:${CI_COMMIT_SHA}" .
+      }
+
+      attempt=1
+      build_ok=""
+      while [ "$attempt" -le 2 ]; do
+        echo "docker buildx build (attempt ${attempt}/2)"
+        if build_image; then
+          build_ok=yes
+          break
+        fi
+        if [ "$attempt" -lt 2 ]; then
+          echo "Build failed; retrying in 10s" >&2
+          sleep 10
+        fi
+        attempt=$((attempt + 1))
+      done
+
+      if [ -z "$build_ok" ]; then
+        echo "docker buildx build failed after 2 attempts" >&2
+        exit 1
+      fi
     - docker logout "$SWR_REGISTRY_HOST" >/dev/null 2>&1 || true
   after_script:
-    # The builder is deliberately kept so its layer cache survives the job.
-    # buildkitd's own GC policy bounds the disk it may use.
+    - docker buildx rm "${BUILDX_BUILDER:-}" >/dev/null 2>&1 || true
     - rm -f "${BUILDKITD_CONFIG:-}" >/dev/null 2>&1 || true
 
 scan-image:

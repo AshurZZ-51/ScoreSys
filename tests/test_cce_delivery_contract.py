@@ -36,6 +36,16 @@ def parse_yaml_documents(path: Path) -> list[dict]:
     return [doc for doc in yaml.safe_load_all(path.read_text(encoding="utf-8")) if doc]
 
 
+def shell_commands(script: list[str]) -> str:
+    """Join a job's script, dropping comment lines.
+
+    Assertions must describe what the runner executes. A comment that merely
+    names a forbidden flag is not a use of it.
+    """
+    lines = "\n".join(script).splitlines()
+    return "\n".join(line for line in lines if not line.lstrip().startswith("#"))
+
+
 class CceDeliveryContractTest(unittest.TestCase):
     def render(self, template_dir: Path | None = None, **overrides) -> dict[str, list[dict]]:
         """Render the manifests and return the parsed documents by file stem."""
@@ -103,6 +113,45 @@ class CceDeliveryContractTest(unittest.TestCase):
             )
             return subprocess.run(["sh"], input=script, env=env, text=True, capture_output=True)
 
+    def run_build_retry(self, docker_stub: str) -> subprocess.CompletedProcess:
+        """Execute the real retry loop against a stubbed `docker`."""
+        pipeline = yaml.safe_load(CI)
+        block = next(c for c in pipeline["build-image"]["script"] if "build_image()" in c)
+        with tempfile.TemporaryDirectory() as directory:
+            stub = Path(directory) / "docker"
+            stub.write_text(docker_stub, encoding="utf-8")
+            stub.chmod(0o755)
+            env = os.environ.copy()
+            env.update(
+                {
+                    "PATH": f"{directory}:{env['PATH']}",
+                    "SWR_REGISTRY": "swr.test.example",
+                    "BUILD_CACHE_REF": "swr.test.example/scoringsys:buildcache-main",
+                    "CI_COMMIT_SHA": "deadbeef",
+                    "ATTEMPT_LOG": str(Path(directory) / "attempts"),
+                }
+            )
+            # `sleep` is stubbed out so the test does not actually wait.
+            return subprocess.run(
+                ["sh"], input="sleep() { :; }\n" + block, env=env, text=True, capture_output=True
+            )
+
+    def test_build_retry_is_bounded_and_still_fails_the_job(self) -> None:
+        always_fails = '#!/bin/sh\nprintf x >> "$ATTEMPT_LOG"\nexit 1\n'
+        result = self.run_build_retry(always_fails)
+        self.assertEqual(result.returncode, 1, "an unbuildable image must fail the job")
+        self.assertIn("failed after 2 attempts", result.stderr)
+        self.assertEqual(result.stdout.count("docker buildx build (attempt"), 2)
+
+        recovers = (
+            '#!/bin/sh\nprintf x >> "$ATTEMPT_LOG"\n'
+            '[ "$(wc -c < "$ATTEMPT_LOG")" -ge 2 ] || exit 1\nexit 0\n'
+        )
+        result = self.run_build_retry(recovers)
+        self.assertEqual(result.returncode, 0, "a transient mirror failure must be retried")
+        self.assertEqual(result.stdout.count("docker buildx build (attempt"), 2)
+        self.assertNotIn("failed after 2 attempts", result.stderr)
+
     def assert_scan_image_contract(self, pipeline: dict) -> None:
         scan = pipeline["scan-image"]
         variables = scan["variables"]
@@ -167,10 +216,10 @@ class CceDeliveryContractTest(unittest.TestCase):
     def assert_build_cache_contract(self, pipeline: dict, dockerfile: str) -> None:
         """The CI caches must cut download time without weakening any gate."""
         verify = pipeline["verify-app"]
-        verify_script = "\n".join(verify["script"])
+        verify_script = shell_commands(verify["script"])
         build = pipeline["build-image"]
-        build_script = "\n".join(build["script"])
-        after_script = "\n".join(build.get("after_script", []))
+        build_script = shell_commands(build["script"])
+        after_script = shell_commands(build.get("after_script", []))
 
         # verify-app keeps a real lockfile-keyed npm cache and still runs the
         # full test and build commands.
@@ -186,17 +235,37 @@ class CceDeliveryContractTest(unittest.TestCase):
         self.assertNotIn("--no-package-lock", verify_script)
         self.assertNotIn("allow_failure", verify)
 
-        # The BuildKit layer cache only survives if the builder is stable and
-        # is not torn down after the job.
-        self.assertNotIn("CI_JOB_ID", build["variables"]["BUILDX_BUILDER"])
-        self.assertNotIn("docker buildx rm", build_script)
-        self.assertNotIn("docker buildx rm", after_script)
-        self.assertIn('docker buildx use "$BUILDX_BUILDER"', build_script)
+        # The builder is per-job and is torn down again: jobs 14147 and 14164
+        # showed a shared name does not survive between jobs on this runner,
+        # so it bought no cache and only risked concurrent config drift.
+        self.assertIn("${CI_JOB_ID}", build["variables"]["BUILDX_BUILDER"])
+        self.assertIn('docker buildx rm "${BUILDX_BUILDER:-}"', after_script)
 
-        # --pull is forbidden: it forces a fresh base-image resolution that
-        # falls through the configured mirrors to registry-1.docker.io, which
-        # this runner cannot reach (job 14147 died there in 25.6s).
+        # The cross-pipeline cache is a registry cache in SWR, on a tag that is
+        # distinct from the immutable commit tag it must never overwrite.
+        cache_tag = build["variables"]["BUILD_CACHE_TAG"]
+        self.assertNotIn("CI_COMMIT_SHA", cache_tag)
+        self.assertIn('export BUILD_CACHE_REF="${SWR_REGISTRY}/scoringsys:${BUILD_CACHE_TAG}"', build_script)
+        self.assertIn('--cache-from "type=registry,ref=${BUILD_CACHE_REF}"', build_script)
+        self.assertIn("--cache-to \"type=registry,ref=${BUILD_CACHE_REF},mode=max,", build_script)
+        self.assertIn('--tag "${SWR_REGISTRY}/scoringsys:${CI_COMMIT_SHA}"', build_script)
+        # The cache must never be written to the commit tag.
+        self.assertNotIn("ref=${SWR_REGISTRY}/scoringsys:${CI_COMMIT_SHA}", build_script)
+
+        # --pull is forbidden: it forces a fresh base-image resolution. It was
+        # not the only cause -- job 14164 fell through to registry-1.docker.io
+        # without it -- but it removes one guaranteed upstream request.
         self.assertNotIn("--pull", build_script)
+
+        # The whole build is retried at most twice for the intermittent mirror,
+        # and a final failure must still fail the job.
+        self.assertIn('while [ "$attempt" -le 2 ]', build_script)
+        self.assertIn("attempt=$((attempt + 1))", build_script)
+        self.assertIn("sleep 10", build_script)
+        self.assertIn("exit 1", build_script)
+        # Retrying must never turn into swallowing the failure.
+        self.assertNotIn("docker buildx build --platform linux/amd64 --provenance=false --push || true", build_script)
+        self.assertNotIn("|| true", build_script.split("build_image()")[1].split("docker logout")[0])
 
         # Because the cache may now hold the base image for a long time, the
         # two controls that keep a stale base from shipping must both hold.
@@ -859,11 +928,43 @@ esac
         mutated_pipeline["scan-image"]["allow_failure"] = True
         with self.assertRaises(AssertionError):
             self.assert_scan_image_contract(mutated_pipeline)
+        # A shared builder name buys no cache on this runner and is forbidden.
         mutated_pipeline = yaml.safe_load(CI)
-        mutated_pipeline["build-image"]["variables"]["BUILDX_BUILDER"] = "scoringsys-ci-${CI_JOB_ID}"
+        mutated_pipeline["build-image"]["variables"]["BUILDX_BUILDER"] = "scoringsys-ci"
         with self.assertRaises(AssertionError):
             self.assert_build_cache_contract(mutated_pipeline, DOCKERFILE)
-        mutated_pipeline = yaml.safe_load(CI.replace("--push --build-arg", "--push --pull --build-arg", 1))
+        # The per-job builder must be cleaned up again.
+        mutated_pipeline = yaml.safe_load(CI)
+        mutated_pipeline["build-image"]["after_script"] = ["true"]
+        with self.assertRaises(AssertionError):
+            self.assert_build_cache_contract(mutated_pipeline, DOCKERFILE)
+        # The registry cache must never be written to the immutable commit tag.
+        mutated_pipeline = yaml.safe_load(CI)
+        mutated_pipeline["build-image"]["variables"]["BUILD_CACHE_TAG"] = "${CI_COMMIT_SHA}"
+        with self.assertRaises(AssertionError):
+            self.assert_build_cache_contract(mutated_pipeline, DOCKERFILE)
+        # mode=max must stay: a min-mode cache drops the intermediate layers.
+        mutated_pipeline = yaml.safe_load(CI.replace("},mode=max,", "},mode=min,", 1))
+        with self.assertRaises(AssertionError):
+            self.assert_build_cache_contract(mutated_pipeline, DOCKERFILE)
+        # Dropping either half of the registry cache breaks the contract.
+        for removed in ('--cache-from "type=registry,ref=${BUILD_CACHE_REF}" \\\n', "--cache-to "):
+            mutated_pipeline = yaml.safe_load(CI.replace(removed, "", 1))
+            with self.assertRaises(AssertionError):
+                self.assert_build_cache_contract(mutated_pipeline, DOCKERFILE)
+        # Re-adding --pull, unbounding the retry, or swallowing the final
+        # failure must each fail the contract.
+        mutated_pipeline = yaml.safe_load(CI.replace("--push \\\n", "--push --pull \\\n", 1))
+        with self.assertRaises(AssertionError):
+            self.assert_build_cache_contract(mutated_pipeline, DOCKERFILE)
+        mutated_pipeline = yaml.safe_load(CI.replace('while [ "$attempt" -le 2 ]', "while true", 1))
+        with self.assertRaises(AssertionError):
+            self.assert_build_cache_contract(mutated_pipeline, DOCKERFILE)
+        mutated_pipeline = yaml.safe_load(
+            CI.replace('docker buildx build failed after 2 attempts" >&2', 'ok"', 1).replace(
+                "        exit 1\n", "        true\n", 1
+            )
+        )
         with self.assertRaises(AssertionError):
             self.assert_build_cache_contract(mutated_pipeline, DOCKERFILE)
         mutated_pipeline = yaml.safe_load(
