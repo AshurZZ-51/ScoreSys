@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isProjectPoolV2Enabled } from '@/lib/featureFlags';
-import { supabaseAdmin } from '@/lib/supabase';
 import { transitionForVerdict } from '@/lib/projectPoolWorkflow';
 import { getScoreMax, isValidScoreValue, parseScoreKey } from '@/lib/scoringRules';
 import { isSameReviewerCode, requireReviewerSession } from '@/lib/adminSession';
@@ -12,6 +11,15 @@ import {
 } from '@/lib/reviewWorkflow';
 import { shouldAdvanceProjectWorkflow } from '@/lib/reviewerBlindReview';
 import { listScores } from '@/lib/db/repositories/scores';
+import {
+  deleteScores,
+  getScoringAssignment,
+  getScoringMeeting,
+  getScoringReviewer,
+  hasReviewerDimension,
+  isMeetingReviewer,
+  submitScoreWorkflow
+} from '@/lib/db/repositories/scoreWorkflow';
 
 export const dynamic = 'force-dynamic';
 
@@ -48,11 +56,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '参数不完整' }, { status: 400 });
     }
 
-    const { data: meeting } = await supabaseAdmin
-      .from('meetings')
-      .select('deadline, status')
-      .eq('id', meeting_id)
-      .single();
+    const meeting = await getScoringMeeting(meeting_id);
 
     if (!meeting) return NextResponse.json({ error: '评审会不存在' }, { status: 404 });
 
@@ -64,23 +68,14 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '已超过打分截止日期' }, { status: 403 });
     }
 
-    const { data: assignment } = await supabaseAdmin
-      .from('projects')
-      .select('id, pool_project_id, round_no, attempt_no, scoring_version, assignment_status')
-      .eq('id', project_id)
-      .eq('meeting_id', meeting_id)
-      .maybeSingle();
+    const assignment = await getScoringAssignment(meeting_id, project_id);
     if (!assignment) return NextResponse.json({ error: '评审项目不存在' }, { status: 404 });
     const isV2Assignment = isProjectPoolV2Enabled() && ['two_round_v2', 'two_round_v3', 'two_round_v4'].includes(assignment.scoring_version);
     const scoringVersion = ['two_round_v2', 'two_round_v3', 'two_round_v4'].includes(assignment.scoring_version)
       ? assignment.scoring_version
       : 'two_round_v2';
 
-    const { data: reviewerInfo } = await supabaseAdmin
-      .from('reviewers')
-      .select('is_admin')
-      .eq('code', reviewer_code)
-      .single();
+    const reviewerInfo = await getScoringReviewer(reviewer_code);
 
     const baseDimName = stripRoundPrefix(dim_name);
     const parsedScore = parseScoreKey(dim_name, scoringVersion);
@@ -89,8 +84,9 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '该项目不属于当前评分轮次' }, { status: 400 });
     }
     if (isV2Assignment && !reviewerInfo?.is_admin) {
-      const { data: snapshot } = await supabaseAdmin.from('meeting_reviewers').select('reviewer_code').eq('meeting_id', meeting_id).eq('reviewer_code', reviewer_code).maybeSingle();
-      if (!snapshot) return NextResponse.json({ error: '您不在本场评审会的评委名单中' }, { status: 403 });
+      if (!await isMeetingReviewer(meeting_id, reviewer_code)) {
+        return NextResponse.json({ error: '您不在本场评审会的评委名单中' }, { status: 403 });
+      }
     }
 
     if (baseDimName === '__bonus__') {
@@ -113,14 +109,8 @@ export async function POST(request: NextRequest) {
       }
     } else {
       const parentDimension = parsedScore?.dimensionName || dim_name;
-      const { data: reviewerDim } = await supabaseAdmin
-        .from('reviewer_dims')
-        .select('max_score')
-        .eq('reviewer_code', reviewer_code)
-        .in('dim_name', parentDimension === '风险评估' ? [parentDimension, '风险性'] : [parentDimension])
-        .maybeSingle();
-
-      if (!reviewerDim) {
+      const dimensions = parentDimension === '风险评估' ? [parentDimension, '风险性'] : [parentDimension];
+      if (!await hasReviewerDimension(reviewer_code, dimensions)) {
         return NextResponse.json({ error: '您没有该维度的评分权限' }, { status: 403 });
       }
     }
@@ -139,82 +129,76 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: hint }, { status: 400 });
     }
 
-    const { data, error } = await supabaseAdmin
-      .from('scores')
-      .upsert({
-        meeting_id,
-        project_id,
-        reviewer_code,
-        dim_name,
-        score: scoreNum,
-        comment: comment || null,
-        updated_at: new Date().toISOString()
-      }, { onConflict: 'meeting_id,project_id,reviewer_code,dim_name' })
-      .select()
-      .single();
-
-    if (error) throw error;
-
+    let followUp: Parameters<typeof submitScoreWorkflow>[0]['followUp'] = { type: 'none' };
     if (baseDimName === '__verdict__' && comment && isV2Assignment && shouldAdvanceProjectWorkflow(reviewer_code)) {
       const transition = transitionForVerdict(Number(assignment.round_no), Number(assignment.attempt_no), comment);
       if (!transition.ok) return NextResponse.json({ error: transition.error }, { status: 400 });
-      const nextAssignmentStatus = 'completed';
-      const { error: assignmentError } = await supabaseAdmin.from('projects').update({ assignment_status: nextAssignmentStatus }).eq('id', project_id);
-      if (assignmentError) throw assignmentError;
-      const { error: poolError } = await supabaseAdmin.from('project_pool').update({
-        status: transition.status, current_round: transition.currentRound, current_attempt: transition.currentAttempt,
-        latest_verdict: transition.verdict, updated_at: new Date().toISOString()
-      }).eq('id', assignment.pool_project_id);
-      if (poolError) throw poolError;
-      const { error: historyError } = await supabaseAdmin.from('project_status_history').insert({
-        project_id: assignment.pool_project_id, meeting_project_id: project_id, meeting_id,
-        event_type: 'walker_verdict', to_status: transition.status, operator_code: reviewer_code, note: comment
-      });
-      if (historyError) throw historyError;
+      followUp = {
+        type: 'project_pool_verdict',
+        assignmentId: project_id,
+        poolProjectId: assignment.pool_project_id!,
+        status: transition.status,
+        currentRound: transition.currentRound,
+        currentAttempt: transition.currentAttempt,
+        verdict: transition.verdict,
+        meetingId: meeting_id,
+        operatorCode: reviewer_code,
+        note: comment
+      };
     } else if (baseDimName === '__verdict__' && comment && !isV2Assignment) {
       const verdictRound = getRoundFromDimName(dim_name);
       if (verdictRound) {
         const nextStatus = nextStatusForVerdict(verdictRound, comment);
         const nextRound = verdictRound === 'r1' && comment === 'approved' ? 'r2' : verdictRound;
-        const trackingRows = [
+        const trackingScores = [
           {
-            meeting_id,
-            project_id,
-            reviewer_code,
-            dim_name: '__review_status__',
+            meetingId: meeting_id,
+            projectId: project_id,
+            reviewerCode: reviewer_code,
+            dimName: '__review_status__',
             score: 0,
             comment: nextStatus,
-            updated_at: new Date().toISOString()
+            updatedAt: new Date().toISOString()
           },
           {
-            meeting_id,
-            project_id,
-            reviewer_code,
-            dim_name: '__current_round__',
+            meetingId: meeting_id,
+            projectId: project_id,
+            reviewerCode: reviewer_code,
+            dimName: '__current_round__',
             score: 0,
             comment: nextRound,
-            updated_at: new Date().toISOString()
+            updatedAt: new Date().toISOString()
           }
         ];
         if (comment === 'recheck') {
-          trackingRows.push({
-            meeting_id,
-            project_id,
-            reviewer_code,
-            dim_name: verdictRound === 'r1' ? '__r1_retry_count__' : '__r2_retry_count__',
+          trackingScores.push({
+            meetingId: meeting_id,
+            projectId: project_id,
+            reviewerCode: reviewer_code,
+            dimName: verdictRound === 'r1' ? '__r1_retry_count__' : '__r2_retry_count__',
             score: 0,
             comment: '1',
-            updated_at: new Date().toISOString()
+            updatedAt: new Date().toISOString()
           });
         }
-        const { error: trackingError } = await supabaseAdmin
-          .from('scores')
-          .upsert(trackingRows, { onConflict: 'meeting_id,project_id,reviewer_code,dim_name' });
-        if (trackingError) throw trackingError;
+        followUp = { type: 'legacy_verdict', trackingScores };
       }
     }
 
-    return NextResponse.json({ success: true, score: data });
+    const savedScore = await submitScoreWorkflow({
+      score: {
+        meetingId: meeting_id,
+        projectId: project_id,
+        reviewerCode: reviewer_code,
+        dimName: dim_name,
+        score: scoreNum,
+        comment: comment || null,
+        updatedAt: new Date().toISOString()
+      },
+      followUp
+    });
+
+    return NextResponse.json({ success: true, score: savedScore });
   } catch (err: any) {
     console.error('Submit score error:', err);
     return NextResponse.json({ error: '提交评分失败: ' + err.message }, { status: 500 });
@@ -230,12 +214,7 @@ export async function DELETE(request: NextRequest) {
 
     if (!meetingId) return NextResponse.json({ error: 'meetingId 必填' }, { status: 400 });
 
-    let query = supabaseAdmin.from('scores').delete().eq('meeting_id', meetingId);
-    if (reviewerCode) query = query.eq('reviewer_code', reviewerCode);
-    if (projectId) query = query.eq('project_id', projectId);
-
-    const { error } = await query;
-    if (error) throw error;
+    await deleteScores({ meetingId, reviewerCode, projectId });
 
     return NextResponse.json({ success: true });
   } catch (err: any) {
