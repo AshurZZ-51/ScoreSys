@@ -24,6 +24,7 @@ CCE_LISTENER_MASTER_INGRESS = (
 CCE_ELB_PORT = os.environ.get("CCE_ELB_PORT", "").strip() or "80"
 CCE_ELB_CLASS = os.environ.get("CCE_ELB_CLASS", "").strip() or "performance"
 CCE_INGRESS_CLASS = os.environ.get("CCE_INGRESS_CLASS", "").strip() or "cce"
+DEFAULT_POSTGRES_SERVICE_NAME = "postgres"
 NAME_PATTERN = re.compile(r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$")
 TRIGGER_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,63}$")
 LABEL_KEY_PATTERN = re.compile(
@@ -142,7 +143,13 @@ def build_values() -> dict[str, str]:
     if migrator_secret_name == secret_name:
         raise ValueError("MIGRATOR_SECRET_NAME must be independent from RUNTIME_SECRET_NAME")
 
-    postgres_service_name = validate_name("POSTGRES_SERVICE_NAME", required("POSTGRES_SERVICE_NAME"))
+    # This is an informational annotation; the enforced database destination is
+    # the required pod selector below. Keep the established service convention
+    # usable when the render job has no project-level service-name variable.
+    postgres_service_name = validate_name(
+        "POSTGRES_SERVICE_NAME",
+        os.environ.get("POSTGRES_SERVICE_NAME", "").strip() or DEFAULT_POSTGRES_SERVICE_NAME,
+    )
     postgres_label_key = validate_label_key(required("POSTGRES_POD_LABEL_KEY"))
     postgres_label_value = validate_label_value("POSTGRES_POD_LABEL_VALUE", required("POSTGRES_POD_LABEL_VALUE"))
     db_pool_max_raw = os.environ.get("DB_POOL_MAX", "10").strip() or "10"

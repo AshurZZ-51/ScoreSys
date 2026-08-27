@@ -433,6 +433,52 @@ exit "${CURL_EXIT:-0}"
             )
         self.assertIn("independent", str(failure.exception))
 
+    def test_render_job_shape_defaults_migrator_and_service_name(self) -> None:
+        pipeline = yaml.safe_load(CI)
+        render_script = shell_commands(pipeline["render-cce"]["script"])
+        self.assertNotIn(': "${MIGRATOR_SECRET_NAME:?MIGRATOR_SECRET_NAME is required}"', render_script)
+        self.assertNotIn(': "${POSTGRES_SERVICE_NAME:?POSTGRES_SERVICE_NAME is required}"', render_script)
+
+        env = os.environ.copy()
+        env.pop("MIGRATOR_SECRET_NAME", None)
+        env.pop("POSTGRES_SERVICE_NAME", None)
+        env.update(
+            {
+                "SWR_REGION": "test-region",
+                "CI_COMMIT_SHA": "deadbeef",
+                "KUBE_IMAGE_PULL_SECRET": "swr-pull",
+                "RUNTIME_SECRET_NAME": "scoringsys-runtime",
+                "POSTGRES_POD_LABEL_KEY": "app.kubernetes.io/name",
+                "POSTGRES_POD_LABEL_VALUE": "postgres",
+            }
+        )
+        script = "\n".join(
+            command
+            for command in pipeline["render-cce"]["script"]
+            if not command.startswith("python -m pip install")
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            script = script.replace(
+                "python scripts/ci/render_cce.py --output-dir .rendered/cce",
+                f"python {RENDERER} --output-dir {directory}",
+            )
+            result = subprocess.run(["sh"], input=script, env=env, text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            policy = parse_yaml_documents(Path(directory) / "networkpolicy.yaml")[0]
+        self.assertEqual(policy["metadata"]["annotations"]["scoringsys.io/postgres-service"], "postgres")
+
+        env.pop("POSTGRES_POD_LABEL_VALUE")
+        env["IMAGE_REFERENCE"] = "swr.test-region.myhuaweicloud.com/scoringsys:deadbeef"
+        with tempfile.TemporaryDirectory() as directory:
+            result = subprocess.run(
+                ["python3", str(RENDERER), "--output-dir", directory],
+                env=env,
+                text=True,
+                capture_output=True,
+            )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("POSTGRES_POD_LABEL_VALUE", result.stderr)
+
     def test_ci_lint_accepts_valid_project_response_with_job_token(self) -> None:
         result = self.run_ci_lint('{"valid":true}')
         self.assertEqual(result.returncode, 0, result.stderr)

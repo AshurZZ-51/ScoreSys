@@ -115,7 +115,6 @@ render-cce:
     - ': "${SWR_REGION:?SWR_REGION is required}"'
     - ': "${KUBE_IMAGE_PULL_SECRET:?KUBE_IMAGE_PULL_SECRET is required}"'
     - ': "${RUNTIME_SECRET_NAME:?RUNTIME_SECRET_NAME is required}"'
-    - ': "${POSTGRES_SERVICE_NAME:?POSTGRES_SERVICE_NAME is required}"'
     - ': "${POSTGRES_POD_LABEL_KEY:?POSTGRES_POD_LABEL_KEY is required}"'
     - ': "${POSTGRES_POD_LABEL_VALUE:?POSTGRES_POD_LABEL_VALUE is required}"'
     - export SWR_REGISTRY="${SWR_REGISTRY_OVERRIDE:-swr.${SWR_REGION}.myhuaweicloud.com}"
