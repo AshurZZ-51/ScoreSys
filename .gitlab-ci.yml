@@ -14,6 +14,10 @@ stages:
 
 variables:
   KUBE_NAMESPACE: "nexus-prod"
+  # The egress policy targets only the existing postgres-0 StatefulSet Pod.
+  # Keep both values explicit so the renderer never infers a broader selector.
+  POSTGRES_POD_LABEL_KEY: "statefulset.kubernetes.io/pod-name"
+  POSTGRES_POD_LABEL_VALUE: "postgres-0"
   PUBLIC_HOST: "nexus.youdoogo.com"
   PUBLIC_PREFIX: "/scoringsys"
   CCE_ELB_ID: "abab7533-a1c6-4138-a4bc-59d53e3446e2"

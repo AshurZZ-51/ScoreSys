@@ -433,23 +433,27 @@ exit "${CURL_EXIT:-0}"
             )
         self.assertIn("independent", str(failure.exception))
 
-    def test_render_job_shape_defaults_migrator_and_service_name(self) -> None:
+    def test_render_job_is_self_contained_for_known_postgres_selector(self) -> None:
         pipeline = yaml.safe_load(CI)
         render_script = shell_commands(pipeline["render-cce"]["script"])
         self.assertNotIn(': "${MIGRATOR_SECRET_NAME:?MIGRATOR_SECRET_NAME is required}"', render_script)
         self.assertNotIn(': "${POSTGRES_SERVICE_NAME:?POSTGRES_SERVICE_NAME is required}"', render_script)
 
         env = os.environ.copy()
-        env.pop("MIGRATOR_SECRET_NAME", None)
-        env.pop("POSTGRES_SERVICE_NAME", None)
+        for name in (
+            "MIGRATOR_SECRET_NAME",
+            "POSTGRES_SERVICE_NAME",
+            "POSTGRES_POD_LABEL_KEY",
+            "POSTGRES_POD_LABEL_VALUE",
+        ):
+            env.pop(name, None)
+        env.update({name: str(value) for name, value in pipeline["variables"].items()})
         env.update(
             {
                 "SWR_REGION": "test-region",
                 "CI_COMMIT_SHA": "deadbeef",
                 "KUBE_IMAGE_PULL_SECRET": "swr-pull",
                 "RUNTIME_SECRET_NAME": "scoringsys-runtime",
-                "POSTGRES_POD_LABEL_KEY": "app.kubernetes.io/name",
-                "POSTGRES_POD_LABEL_VALUE": "postgres",
             }
         )
         script = "\n".join(
@@ -466,18 +470,25 @@ exit "${CURL_EXIT:-0}"
             self.assertEqual(result.returncode, 0, result.stderr)
             policy = parse_yaml_documents(Path(directory) / "networkpolicy.yaml")[0]
         self.assertEqual(policy["metadata"]["annotations"]["scoringsys.io/postgres-service"], "postgres")
+        postgres_rule = next(rule for rule in policy["spec"]["egress"] if rule["ports"][0]["port"] == 5432)
+        self.assertEqual(
+            postgres_rule["to"],
+            [{"podSelector": {"matchLabels": {"statefulset.kubernetes.io/pod-name": "postgres-0"}}}],
+        )
 
-        env.pop("POSTGRES_POD_LABEL_VALUE")
         env["IMAGE_REFERENCE"] = "swr.test-region.myhuaweicloud.com/scoringsys:deadbeef"
-        with tempfile.TemporaryDirectory() as directory:
-            result = subprocess.run(
-                ["python3", str(RENDERER), "--output-dir", directory],
-                env=env,
-                text=True,
-                capture_output=True,
-            )
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("POSTGRES_POD_LABEL_VALUE", result.stderr)
+        for missing_name in ("POSTGRES_POD_LABEL_KEY", "POSTGRES_POD_LABEL_VALUE"):
+            with self.subTest(missing_name=missing_name), tempfile.TemporaryDirectory() as directory:
+                renderer_env = env.copy()
+                renderer_env.pop(missing_name)
+                result = subprocess.run(
+                    ["python3", str(RENDERER), "--output-dir", directory],
+                    env=renderer_env,
+                    text=True,
+                    capture_output=True,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(missing_name, result.stderr)
 
     def test_ci_lint_accepts_valid_project_response_with_job_token(self) -> None:
         result = self.run_ci_lint('{"valid":true}')
