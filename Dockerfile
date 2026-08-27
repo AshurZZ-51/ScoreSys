@@ -12,7 +12,7 @@ RUN echo "apk upgrade ${APK_UPGRADE_DATE}" >/dev/null \
 
 # Database migration and import jobs execute psql from this same final image.
 # Pin the client package so the job contract does not drift with the Alpine repo.
-RUN apk add --no-cache postgresql16-client=16.10-r0 \
+RUN apk add --no-cache postgresql16-client=16.15-r0 \
  && command -v psql
 
 COPY package.json package-lock.json ./
