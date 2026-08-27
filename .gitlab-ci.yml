@@ -67,16 +67,41 @@ ci-lint:
         echo "GitLab CI Lint API is unavailable; offline delivery contract remains required"
         exit 0
       fi
-      lint_response=$(curl --fail --silent --show-error --request POST \
+
+      # The project-level endpoint accepts the CI job token and keeps linting
+      # scoped to this repository. The offline delivery contract remains the
+      # deterministic gate when the API is unavailable to the runner.
+      lint_endpoint="${CI_API_V4_URL%/}/projects/${CI_PROJECT_ID}/ci/lint"
+      lint_body=$(mktemp)
+      trap 'rm -f "$lint_body"' EXIT
+      lint_status=$(curl --silent --show-error --request POST \
         --header "JOB-TOKEN: $CI_JOB_TOKEN" \
         --form "content=<.gitlab-ci.yml" \
-        "$CI_API_V4_URL/projects/$CI_PROJECT_ID/ci/lint") || {
-        echo "GitLab CI Lint API request failed" >&2
-        exit 1
+        --output "$lint_body" \
+        --write-out '%{http_code}' \
+        "$lint_endpoint" 2>/dev/null) || {
+        echo "GitLab CI Lint API is unavailable; offline delivery contract remains required" >&2
+        exit 0
       }
-      compact_response=$(printf '%s' "$lint_response" | tr -d '[:space:]')
+
+      compact_response=$(tr -d '[:space:]' < "$lint_body")
       case "$compact_response" in
-        *'"valid":true'*) ;;
+        *'"valid":false,'*|*'"valid":false}'*)
+          echo "GitLab CI Lint rejected .gitlab-ci.yml" >&2
+          exit 1
+          ;;
+      esac
+
+      case "$lint_status" in
+        2??) ;;
+        *)
+          echo "GitLab CI Lint API is unavailable (HTTP $lint_status); offline delivery contract remains required" >&2
+          exit 0
+          ;;
+      esac
+
+      case "$compact_response" in
+        *'"valid":true,'*|*'"valid":true}'*) ;;
         *) echo "GitLab CI Lint rejected .gitlab-ci.yml" >&2; exit 1 ;;
       esac
 
@@ -90,7 +115,6 @@ render-cce:
     - ': "${SWR_REGION:?SWR_REGION is required}"'
     - ': "${KUBE_IMAGE_PULL_SECRET:?KUBE_IMAGE_PULL_SECRET is required}"'
     - ': "${RUNTIME_SECRET_NAME:?RUNTIME_SECRET_NAME is required}"'
-    - ': "${MIGRATOR_SECRET_NAME:?MIGRATOR_SECRET_NAME is required}"'
     - ': "${POSTGRES_SERVICE_NAME:?POSTGRES_SERVICE_NAME is required}"'
     - ': "${POSTGRES_POD_LABEL_KEY:?POSTGRES_POD_LABEL_KEY is required}"'
     - ': "${POSTGRES_POD_LABEL_VALUE:?POSTGRES_POD_LABEL_VALUE is required}"'

@@ -94,6 +94,55 @@ class CceDeliveryContractTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0, "renderer accepted a manifest it should have rejected")
         return result.stderr
 
+    def ci_lint_script(self) -> str:
+        pipeline = yaml.safe_load(CI)
+        return "\n".join(pipeline["ci-lint"]["script"])
+
+    def run_ci_lint(self, body: str, status: str = "200", curl_exit: int = 0) -> subprocess.CompletedProcess:
+        """Run the CI-lint job script against a deterministic curl stub."""
+        curl_stub = r'''#!/bin/sh
+set -eu
+args_file=${CURL_ARGS_FILE:?}
+printf '%s\n' "$@" > "$args_file"
+output=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --output) output=$2; shift 2 ;;
+    --write-out|--header|--form) shift 2 ;;
+    *) shift ;;
+  esac
+done
+if [ -n "$output" ]; then
+  printf '%s' "${CURL_BODY:-}" > "$output"
+else
+  printf '%s' "${CURL_BODY:-}"
+fi
+printf '%s' "$CURL_STATUS"
+exit "${CURL_EXIT:-0}"
+'''
+        with tempfile.TemporaryDirectory() as directory:
+            command_dir = Path(directory)
+            curl_path = command_dir / "curl"
+            curl_path.write_text(curl_stub, encoding="utf-8")
+            curl_path.chmod(0o755)
+            args_file = command_dir / "curl-args"
+            env = os.environ.copy()
+            env.update(
+                {
+                    "PATH": f"{command_dir}:{env.get('PATH', '')}",
+                    "CI_API_V4_URL": "https://gitlab.example/api/v4",
+                    "CI_PROJECT_ID": "123",
+                    "CI_JOB_TOKEN": "runner-secret",
+                    "CURL_ARGS_FILE": str(args_file),
+                    "CURL_BODY": body,
+                    "CURL_STATUS": status,
+                    "CURL_EXIT": str(curl_exit),
+                }
+            )
+            result = subprocess.run(["sh"], input=self.ci_lint_script(), env=env, text=True, capture_output=True)
+            result.curl_args = args_file.read_text(encoding="utf-8") if args_file.exists() else ""
+            return result
+
     def mutated_templates(self, directory: str, ingress_transform) -> Path:
         """Copy the real templates into `directory`, rewriting the Ingress."""
         template_dir = Path(directory)
@@ -345,6 +394,67 @@ class CceDeliveryContractTest(unittest.TestCase):
             self.assertNotIn("|| true", script)
             self.assertIn("CI_PIPELINE_SOURCE != \"merge_request_event\"", job["rules"][0]["if"])
         self.assertNotIn("FEISHU_WEBHOOK_URL", CI)
+
+    def test_render_requires_runtime_secret_but_defaults_independent_migrator(self) -> None:
+        pipeline = yaml.safe_load(CI)
+        render_script = shell_commands(pipeline["render-cce"]["script"])
+        self.assertIn(': "${RUNTIME_SECRET_NAME:?RUNTIME_SECRET_NAME is required}"', render_script)
+        self.assertNotIn(': "${MIGRATOR_SECRET_NAME:?MIGRATOR_SECRET_NAME is required}"', render_script)
+
+        rendered = self.render(
+            MIGRATOR_SECRET_NAME=None,
+            POSTGRES_SERVICE_NAME="postgres",
+            POSTGRES_POD_LABEL_KEY="app.kubernetes.io/name",
+            POSTGRES_POD_LABEL_VALUE="postgres",
+        )
+        for stem in ("job-migrate", "job-import"):
+            self.assertEqual(
+                rendered[stem][0]["spec"]["template"]["spec"]["containers"][0]["envFrom"],
+                [{"secretRef": {"name": "scoringsys-migrator"}}],
+            )
+
+        with self.assertRaises(AssertionError) as failure:
+            self.render(
+                RUNTIME_SECRET_NAME=None,
+                MIGRATOR_SECRET_NAME=None,
+                POSTGRES_SERVICE_NAME="postgres",
+                POSTGRES_POD_LABEL_KEY="app.kubernetes.io/name",
+                POSTGRES_POD_LABEL_VALUE="postgres",
+            )
+        self.assertIn("RUNTIME_SECRET_NAME", str(failure.exception))
+
+        with self.assertRaises(AssertionError) as failure:
+            self.render(
+                RUNTIME_SECRET_NAME="scoringsys-runtime",
+                MIGRATOR_SECRET_NAME="scoringsys-runtime",
+                POSTGRES_SERVICE_NAME="postgres",
+                POSTGRES_POD_LABEL_KEY="app.kubernetes.io/name",
+                POSTGRES_POD_LABEL_VALUE="postgres",
+            )
+        self.assertIn("independent", str(failure.exception))
+
+    def test_ci_lint_accepts_valid_project_response_with_job_token(self) -> None:
+        result = self.run_ci_lint('{"valid":true}')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("https://gitlab.example/api/v4/projects/123/ci/lint", result.curl_args)
+        self.assertIn("JOB-TOKEN: runner-secret", result.curl_args)
+        self.assertNotIn("runner-secret", result.stdout + result.stderr)
+
+    def test_ci_lint_fails_when_reachable_api_rejects_yaml(self) -> None:
+        for status in ("200", "400"):
+            with self.subTest(status=status):
+                result = self.run_ci_lint('{"valid":false,"errors":["invalid config"]}', status=status)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("rejected", result.stderr)
+                self.assertNotIn("invalid config", result.stdout + result.stderr)
+
+    def test_ci_lint_marks_404_and_transport_failure_as_unavailable(self) -> None:
+        for status, curl_exit in (("404", 0), ("000", 7)):
+            with self.subTest(status=status, curl_exit=curl_exit):
+                result = self.run_ci_lint('{"message":"unavailable"}', status=status, curl_exit=curl_exit)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("unavailable", result.stderr)
+                self.assertNotIn("rejected", result.stderr)
 
     def test_workload_is_single_non_root_service_with_real_probes(self) -> None:
         renderer = ROOT / "scripts/ci/render_cce.py"
