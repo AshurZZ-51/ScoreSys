@@ -10,8 +10,9 @@ ARG APK_UPGRADE_DATE=unset
 RUN echo "apk upgrade ${APK_UPGRADE_DATE}" >/dev/null \
  && apk upgrade --no-cache libcrypto3 libssl3
 
-# Database migration and import jobs execute psql from this same final image.
-# Pin the client package so the job contract does not drift with the Alpine repo.
+# Offline one-shot database migration and import tooling uses psql from this
+# final image when an operator runs it outside CI. Pin the client package so
+# that manual tooling does not drift with the Alpine repository.
 RUN apk add --no-cache postgresql16-client=16.15-r0 \
  && command -v psql
 

@@ -406,6 +406,8 @@ ADMIN_SESSION_SECRET=<provisioned-secret>
 
 ## 八、构建 & 部署流程
 
+数据库 bootstrap、迁移和导入属于 out-of-band operator procedure，必须在第一次应用部署前完成。GitLab CI/CD never mutates the database；需要变更时由运维在受控环境中手动执行仓库中的离线脚本。
+
 ### 8.1 本地开发
 
 ```bash

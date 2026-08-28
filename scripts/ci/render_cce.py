@@ -136,13 +136,6 @@ def build_values() -> dict[str, str]:
     if configmap_name:
         validate_name("RUNTIME_CONFIGMAP_NAME", configmap_name)
 
-    migrator_secret_name = validate_name(
-        "MIGRATOR_SECRET_NAME",
-        os.environ.get("MIGRATOR_SECRET_NAME", "").strip() or "scoringsys-migrator",
-    )
-    if migrator_secret_name == secret_name:
-        raise ValueError("MIGRATOR_SECRET_NAME must be independent from RUNTIME_SECRET_NAME")
-
     # This is an informational annotation; the enforced database destination is
     # the required pod selector below. Keep the established service convention
     # usable when the render job has no project-level service-name variable.
@@ -163,7 +156,6 @@ def build_values() -> dict[str, str]:
         "IMAGE_REFERENCE": image,
         "RUNTIME_SECRET_NAME": secret_name,
         "RUNTIME_ENV_BLOCK": render_runtime_env(secret_name, configmap_name),
-        "MIGRATOR_SECRET_NAME": migrator_secret_name,
         "POSTGRES_SERVICE_NAME": postgres_service_name,
         "POSTGRES_POD_LABEL_KEY": postgres_label_key,
         "POSTGRES_POD_LABEL_VALUE": postgres_label_value,
@@ -219,13 +211,9 @@ def render(output_dir: Path, template_dir: Path) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     deployment = render_template((template_dir / "deployment.yaml.tmpl").read_text(encoding="utf-8"), values)
     ingress = render_template((template_dir / "ingress.yaml.tmpl").read_text(encoding="utf-8"), values)
-    migrate = render_template((template_dir / "job-migrate.yaml.tmpl").read_text(encoding="utf-8"), values)
-    importer = render_template((template_dir / "job-import.yaml.tmpl").read_text(encoding="utf-8"), values)
     networkpolicy = render_template((template_dir / "networkpolicy.yaml.tmpl").read_text(encoding="utf-8"), values)
     deployment_docs = parse_documents(deployment, {"Deployment", "Service"})
     ingress_docs = parse_documents(ingress, {"Ingress"})
-    migrate_docs = parse_documents(migrate, {"Job"})
-    import_docs = parse_documents(importer, {"Job"})
     networkpolicy_docs = parse_documents(networkpolicy, {"NetworkPolicy"})
 
     deployment_obj = deployment_docs[0]
@@ -249,8 +237,6 @@ def render(output_dir: Path, template_dir: Path) -> None:
     expected_configmaps = [os.environ["RUNTIME_CONFIGMAP_NAME"].strip()] if os.environ.get("RUNTIME_CONFIGMAP_NAME", "").strip() else []
     if configmap_refs != expected_configmaps:
         raise ValueError("web Deployment ConfigMap references must match RUNTIME_CONFIGMAP_NAME")
-    if any(name == values["MIGRATOR_SECRET_NAME"] for name in secret_refs):
-        raise ValueError("web Deployment must not reference the migrator Secret")
     replicas = deployment_obj.get("spec", {}).get("replicas", 1)
     if not isinstance(replicas, int) or replicas < 1 or replicas * int(values["DB_POOL_MAX"]) > 40:
         raise ValueError("replicas x DB_POOL_MAX must be a positive value no greater than 40")
@@ -267,40 +253,6 @@ def render(output_dir: Path, template_dir: Path) -> None:
     if backend_port != {"number": 3000}:
         raise ValueError("Ingress backend service port must be exactly {number: 3000}")
     validate_shared_elb_annotations(ingress_obj, values["RECONCILE_TRIGGER"])
-
-    for job_docs in (migrate_docs, import_docs):
-        job = job_docs[0]
-        if job["metadata"].get("namespace") != values["NAMESPACE"]:
-            raise ValueError("Job namespace does not match KUBE_NAMESPACE")
-        job_spec = job.get("spec") or {}
-        if job_spec.get("backoffLimit") != 0 or job_spec.get("ttlSecondsAfterFinished") != 86400:
-            raise ValueError("database Jobs must have backoffLimit=0 and ttlSecondsAfterFinished=86400")
-        pod_spec = (job_spec.get("template") or {}).get("spec") or {}
-        if pod_spec.get("restartPolicy") != "Never":
-            raise ValueError("database Jobs must use restartPolicy Never")
-        if pod_spec.get("automountServiceAccountToken") is not False:
-            raise ValueError("database Jobs must not mount a ServiceAccount token")
-        containers = pod_spec.get("containers") or []
-        if len(containers) != 1:
-            raise ValueError("database Jobs must have exactly one container")
-        container = containers[0]
-        security = container.get("securityContext") or {}
-        if (
-            security.get("readOnlyRootFilesystem") is not True
-            or security.get("runAsNonRoot") is not True
-            or security.get("runAsUser") != 1000
-            or security.get("allowPrivilegeEscalation") is not False
-            or security.get("capabilities", {}).get("drop") != ["ALL"]
-        ):
-            raise ValueError("database Jobs must use the non-root read-only security baseline")
-        env_from = container.get("envFrom") or []
-        if env_from != [{"secretRef": {"name": values["MIGRATOR_SECRET_NAME"]}}]:
-            raise ValueError("database Jobs must use only the independent migrator Secret")
-        resources = container.get("resources") or {}
-        if not all(resources.get(section, {}).get(key) for section in ("requests", "limits") for key in ("cpu", "memory")):
-            raise ValueError("database Jobs must declare resource requests and limits")
-        if not any(volume.get("name") == "tmp" for volume in pod_spec.get("volumes", [])):
-            raise ValueError("database Jobs must mount an emptyDir /tmp")
 
     policy = networkpolicy_docs[0]
     if policy["metadata"].get("namespace") != values["NAMESPACE"]:
@@ -330,8 +282,6 @@ def render(output_dir: Path, template_dir: Path) -> None:
 
     (output_dir / "deployment.yaml").write_text(deployment, encoding="utf-8")
     (output_dir / "ingress.yaml").write_text(ingress, encoding="utf-8")
-    (output_dir / "job-migrate.yaml").write_text(migrate, encoding="utf-8")
-    (output_dir / "job-import.yaml").write_text(importer, encoding="utf-8")
     (output_dir / "networkpolicy.yaml").write_text(networkpolicy, encoding="utf-8")
     print(f"Rendered CCE manifests to {output_dir}")
 

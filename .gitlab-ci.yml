@@ -8,7 +8,6 @@ stages:
   - verify
   - build
   - scan
-  - db-gates
   - deploy
   - notify
 
@@ -128,94 +127,6 @@ render-cce:
     expire_in: 1 day
     paths:
       - .rendered/cce/
-
-migrate-db:
-  stage: db-gates
-  image: alpine:3.20
-  rules:
-    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
-      when: manual
-    - when: never
-  when: manual
-  allow_failure: false
-  retry: 0
-  interruptible: false
-  resource_group: scoringsys-db-mutation
-  needs:
-    - job: render-cce
-      artifacts: true
-    - job: build-image
-    - job: scan-image
-  before_script:
-    - apk add --no-cache ca-certificates kubectl
-  script:
-    # A production DB mutation is never implicit. The manual action must carry
-    # an explicit approval variable and a migrator Secret already created by
-    # the cluster administrator; this job never creates or prints either one.
-    - ': "${PRODUCTION_DB_MUTATION_APPROVED:?set PRODUCTION_DB_MUTATION_APPROVED=true to run a production DB mutation}"'
-    - '[ "$PRODUCTION_DB_MUTATION_APPROVED" = true ] || { echo "production DB mutation is not approved" >&2; exit 1; }'
-    - ': "${KUBECONFIG_CCE_B64:?KUBECONFIG_CCE_B64 is required}"'
-    - ': "${MIGRATOR_SECRET_NAME:?MIGRATOR_SECRET_NAME is required}"'
-    - printf '%s' "$KUBECONFIG_CCE_B64" | base64 -d > kubeconfig
-    - export KUBECONFIG="$CI_PROJECT_DIR/kubeconfig"
-    - trap 'rm -f "$KUBECONFIG"' EXIT
-    - kubectl -n "$KUBE_NAMESPACE" get secret "$MIGRATOR_SECRET_NAME" >/dev/null
-    - kubectl -n "$KUBE_NAMESPACE" create --dry-run=server -f .rendered/cce/job-migrate.yaml >/dev/null
-    - kubectl -n "$KUBE_NAMESPACE" create -f .rendered/cce/job-migrate.yaml
-    - kubectl -n "$KUBE_NAMESPACE" wait --for=condition=complete job/scoringsys-migrate --timeout=1800s
-
-import-db:
-  stage: db-gates
-  image: alpine:3.20
-  rules:
-    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
-      when: manual
-    - when: never
-  when: manual
-  allow_failure: false
-  retry: 0
-  interruptible: false
-  resource_group: scoringsys-db-mutation
-  needs:
-    - job: render-cce
-      artifacts: true
-    - job: build-image
-    - job: scan-image
-    - job: migrate-db
-  before_script:
-    - apk add --no-cache ca-certificates kubectl jq
-  script:
-    # Import is a separate, explicit gate. Snapshot bytes are supplied at run
-    # time; they are not committed, put in an image, or stored in a ConfigMap.
-    - ': "${PRODUCTION_DB_MUTATION_APPROVED:?set PRODUCTION_DB_MUTATION_APPROVED=true to run a production DB mutation}"'
-    - '[ "$PRODUCTION_DB_MUTATION_APPROVED" = true ] || { echo "production DB mutation is not approved" >&2; exit 1; }'
-    - ': "${KUBECONFIG_CCE_B64:?KUBECONFIG_CCE_B64 is required}"'
-    - ': "${MIGRATOR_SECRET_NAME:?MIGRATOR_SECRET_NAME is required}"'
-    - ': "${SNAPSHOT_FILE:?SNAPSHOT_FILE must point to an operator-provided snapshot}"'
-    - ': "${MANIFEST_FILE:?MANIFEST_FILE must point to an operator-provided manifest}"'
-    - test -s "$SNAPSHOT_FILE"
-    - test -s "$MANIFEST_FILE"
-    - jq -e 'type == "object" and (.tables | type == "object")' "$SNAPSHOT_FILE" >/dev/null
-    - jq -e 'type == "object" and (.table_count == 16) and (.row_count | type == "number") and (.tables | type == "object") and (.errors | type == "array" and length == 0)' "$MANIFEST_FILE" >/dev/null
-    - printf '%s' "$KUBECONFIG_CCE_B64" | base64 -d > kubeconfig
-    - export KUBECONFIG="$CI_PROJECT_DIR/kubeconfig"
-    - trap 'rm -f "$KUBECONFIG"' EXIT
-    - kubectl -n "$KUBE_NAMESPACE" get secret "$MIGRATOR_SECRET_NAME" >/dev/null
-    - kubectl -n "$KUBE_NAMESPACE" create --dry-run=server -f .rendered/cce/job-import.yaml >/dev/null
-    # Validate the reviewed Job shape, then stream bytes into a one-shot Pod.
-    # The Pod is removed by --rm, so the snapshot never lands in a ConfigMap,
-    # Secret, image layer, or long-lived Kubernetes object.
-    - |
-      set -eu -o pipefail
-      [[ "$MIGRATOR_SECRET_NAME" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]] || { echo "MIGRATOR_SECRET_NAME is not DNS-compatible" >&2; exit 1; }
-      pod_name="scoringsys-import-${CI_PIPELINE_ID:-manual}-${CI_JOB_ID:-run}"
-      [[ "$pod_name" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ && ${#pod_name} -le 63 ]] || { echo "generated import Pod name is not DNS-compatible" >&2; exit 1; }
-      jq -cn --slurpfile snapshot "$SNAPSHOT_FILE" --slurpfile manifest "$MANIFEST_FILE" \
-        '{snapshot: $snapshot[0], manifest: $manifest[0]}' |
-        kubectl -n "$KUBE_NAMESPACE" run "$pod_name" --rm -i --restart=Never \
-          --image="$IMAGE_REFERENCE" \
-          --overrides="{\"apiVersion\":\"v1\",\"spec\":{\"automountServiceAccountToken\":false,\"securityContext\":{\"runAsNonRoot\":true,\"seccompProfile\":{\"type\":\"RuntimeDefault\"}},\"containers\":[{\"name\":\"$pod_name\",\"envFrom\":[{\"secretRef\":{\"name\":\"$MIGRATOR_SECRET_NAME\"}}],\"securityContext\":{\"allowPrivilegeEscalation\":false,\"readOnlyRootFilesystem\":true,\"runAsNonRoot\":true,\"runAsUser\":1000,\"runAsGroup\":1000,\"capabilities\":{\"drop\":[\"ALL\"]}},\"resources\":{\"requests\":{\"cpu\":\"100m\",\"memory\":\"256Mi\"},\"limits\":{\"cpu\":\"500m\",\"memory\":\"512Mi\"}},\"volumeMounts\":[{\"name\":\"tmp\",\"mountPath\":\"/tmp\"}]}],\"volumes\":[{\"name\":\"tmp\",\"emptyDir\":{}}]}}" \
-          --command -- node scripts/db/import-snapshot.mjs --force --file -
 
 build-image:
   stage: build
@@ -373,8 +284,6 @@ deploy-cce:
       artifacts: true
     - job: build-image
     - job: scan-image
-    - job: migrate-db
-    - job: import-db
   retry: 0
   interruptible: false
   resource_group: scoringsys-cce

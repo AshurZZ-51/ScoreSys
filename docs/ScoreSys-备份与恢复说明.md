@@ -31,6 +31,8 @@
 
 ## 3. 恢复步骤
 
+数据库 bootstrap、迁移和导入均为 out-of-band operator procedure，必须在第一次应用部署前完成。GitLab CI/CD never mutates the database；数据库操作只由运维在受控环境中手动执行。
+
 1. 解压源码归档到 D 盘工作目录。
 2. 安装 Node.js 和 pnpm，执行 `pnpm install`。
 3. 根据 `.env.example` 恢复本地环境变量；真实生产密钥从密码管理工具或 Vercel 项目环境变量中取得，不从源码归档恢复。

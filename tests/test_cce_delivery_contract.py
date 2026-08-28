@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 CI = (ROOT / ".gitlab-ci.yml").read_text(encoding="utf-8")
 DEPLOYMENT_TEMPLATE = (ROOT / "ops/cce/deployment.yaml.tmpl").read_text(encoding="utf-8")
 INGRESS_TEMPLATE = (ROOT / "ops/cce/ingress.yaml.tmpl").read_text(encoding="utf-8")
-CCE_TEMPLATE_STEMS = ("deployment", "ingress", "job-migrate", "job-import", "networkpolicy")
+CCE_TEMPLATE_STEMS = ("deployment", "ingress", "networkpolicy")
 DEPLOY_SCRIPT = (ROOT / "scripts/ci/deploy-cce.sh").read_text(encoding="utf-8")
 SMOKE_SCRIPT = (ROOT / "scripts/ci/smoke-scoringsys.sh").read_text(encoding="utf-8")
 NEXT_CONFIG = (ROOT / "next.config.js").read_text(encoding="utf-8")
@@ -148,7 +148,7 @@ exit "${CURL_EXIT:-0}"
         template_dir = Path(directory)
         (template_dir / "deployment.yaml.tmpl").write_text(DEPLOYMENT_TEMPLATE, encoding="utf-8")
         (template_dir / "ingress.yaml.tmpl").write_text(ingress_transform(INGRESS_TEMPLATE), encoding="utf-8")
-        for stem in ("job-migrate", "job-import", "networkpolicy"):
+        for stem in ("networkpolicy",):
             source = ROOT / "ops/cce" / f"{stem}.yaml.tmpl"
             if source.exists():
                 (template_dir / f"{stem}.yaml.tmpl").write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
@@ -358,7 +358,7 @@ exit "${CURL_EXIT:-0}"
 
     def test_pipeline_has_ordered_stages_and_safe_workflow(self) -> None:
         pipeline = yaml.safe_load(CI)
-        self.assertEqual(pipeline["stages"], ["verify", "build", "scan", "db-gates", "deploy", "notify"])
+        self.assertEqual(pipeline["stages"], ["verify", "build", "scan", "deploy", "notify"])
         workflow_text = CI.split("workflow:", 1)[1].split("stages:", 1)[0]
         self.assertIn("merge_request_event", workflow_text)
         self.assertIn("CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH", workflow_text)
@@ -395,45 +395,23 @@ exit "${CURL_EXIT:-0}"
             self.assertIn("CI_PIPELINE_SOURCE != \"merge_request_event\"", job["rules"][0]["if"])
         self.assertNotIn("FEISHU_WEBHOOK_URL", CI)
 
-    def test_render_requires_runtime_secret_but_defaults_independent_migrator(self) -> None:
+    def test_render_requires_runtime_secret_without_migrator_inputs(self) -> None:
         pipeline = yaml.safe_load(CI)
         render_script = shell_commands(pipeline["render-cce"]["script"])
         self.assertIn(': "${RUNTIME_SECRET_NAME:?RUNTIME_SECRET_NAME is required}"', render_script)
         self.assertNotIn(': "${MIGRATOR_SECRET_NAME:?MIGRATOR_SECRET_NAME is required}"', render_script)
-
-        rendered = self.render(
-            MIGRATOR_SECRET_NAME=None,
-            POSTGRES_SERVICE_NAME="postgres",
-            POSTGRES_POD_LABEL_KEY="app.kubernetes.io/name",
-            POSTGRES_POD_LABEL_VALUE="postgres",
-        )
-        for stem in ("job-migrate", "job-import"):
-            self.assertEqual(
-                rendered[stem][0]["spec"]["template"]["spec"]["containers"][0]["envFrom"],
-                [{"secretRef": {"name": "scoringsys-migrator"}}],
-            )
+        self.assertNotIn("MIGRATOR_SECRET_NAME", RENDERER.read_text(encoding="utf-8"))
 
         with self.assertRaises(AssertionError) as failure:
             self.render(
                 RUNTIME_SECRET_NAME=None,
-                MIGRATOR_SECRET_NAME=None,
                 POSTGRES_SERVICE_NAME="postgres",
                 POSTGRES_POD_LABEL_KEY="app.kubernetes.io/name",
                 POSTGRES_POD_LABEL_VALUE="postgres",
             )
         self.assertIn("RUNTIME_SECRET_NAME", str(failure.exception))
 
-        with self.assertRaises(AssertionError) as failure:
-            self.render(
-                RUNTIME_SECRET_NAME="scoringsys-runtime",
-                MIGRATOR_SECRET_NAME="scoringsys-runtime",
-                POSTGRES_SERVICE_NAME="postgres",
-                POSTGRES_POD_LABEL_KEY="app.kubernetes.io/name",
-                POSTGRES_POD_LABEL_VALUE="postgres",
-            )
-        self.assertIn("independent", str(failure.exception))
-
-    def test_render_job_is_self_contained_for_known_postgres_selector(self) -> None:
+    def test_render_is_self_contained_for_known_postgres_selector(self) -> None:
         pipeline = yaml.safe_load(CI)
         render_script = shell_commands(pipeline["render-cce"]["script"])
         self.assertNotIn(': "${MIGRATOR_SECRET_NAME:?MIGRATOR_SECRET_NAME is required}"', render_script)
@@ -441,7 +419,6 @@ exit "${CURL_EXIT:-0}"
 
         env = os.environ.copy()
         for name in (
-            "MIGRATOR_SECRET_NAME",
             "POSTGRES_SERVICE_NAME",
             "POSTGRES_POD_LABEL_KEY",
             "POSTGRES_POD_LABEL_VALUE",
@@ -1246,7 +1223,7 @@ printf 'bounded-attempts=%s\n' "$attempts"
         self.assertNotIn("allow_failure", scan)
         self.assertIn({"job": "scan-image"}, pipeline["deploy-cce"]["needs"])
 
-    def test_renderer_emits_jobs_and_network_policy_as_parseable_documents(self) -> None:
+    def test_renderer_emits_workload_ingress_and_network_policy_as_parseable_documents(self) -> None:
         rendered = self.render(
             POSTGRES_SERVICE_NAME="postgres",
             POSTGRES_POD_LABEL_KEY="app.kubernetes.io/name",
@@ -1254,11 +1231,12 @@ printf 'bounded-attempts=%s\n' "$attempts"
         )
         self.assertEqual({doc["kind"] for doc in rendered["deployment"]}, {"Deployment", "Service"})
         self.assertEqual({doc["kind"] for doc in rendered["ingress"]}, {"Ingress"})
-        self.assertEqual({doc["kind"] for doc in rendered["job-migrate"]}, {"Job"})
-        self.assertEqual({doc["kind"] for doc in rendered["job-import"]}, {"Job"})
         self.assertEqual({doc["kind"] for doc in rendered["networkpolicy"]}, {"NetworkPolicy"})
+        self.assertEqual(set(rendered), {"deployment", "ingress", "networkpolicy"})
+        for stem in ("job-migrate", "job-import"):
+            self.assertFalse((ROOT / "ops/cce" / f"{stem}.yaml.tmpl").exists())
 
-    def test_web_mounts_only_runtime_secret_and_never_migrator(self) -> None:
+    def test_web_mounts_only_runtime_secret(self) -> None:
         rendered = self.render(
             RUNTIME_SECRET_NAME="runtime-custom",
             RUNTIME_CONFIGMAP_NAME=None,
@@ -1286,32 +1264,6 @@ printf 'bounded-attempts=%s\n' "$attempts"
             template = (ROOT / "ops/cce" / f"{stem}.yaml.tmpl").read_text(encoding="utf-8")
             self.assertNotIn("kind: Secret", template)
             self.assertNotIn("kind: ConfigMap", template)
-
-    def test_migration_jobs_are_manual_safe_and_use_independent_secret(self) -> None:
-        rendered = self.render(
-            POSTGRES_SERVICE_NAME="postgres",
-            POSTGRES_POD_LABEL_KEY="app.kubernetes.io/name",
-            POSTGRES_POD_LABEL_VALUE="postgres",
-        )
-        for stem, expected_command in (("job-migrate", "scripts/db/migrate.mjs"), ("job-import", "scripts/db/import-snapshot.mjs")):
-            job = rendered[stem][0]
-            spec = job["spec"]
-            pod = spec["template"]["spec"]
-            container = pod["containers"][0]
-            self.assertEqual(spec["backoffLimit"], 0)
-            self.assertEqual(spec["ttlSecondsAfterFinished"], 86400)
-            self.assertEqual(pod["restartPolicy"], "Never")
-            self.assertFalse(pod["automountServiceAccountToken"])
-            self.assertEqual(container["command"][0:2], ["node", expected_command])
-            self.assertEqual(container["envFrom"], [{"secretRef": {"name": "scoringsys-migrator"}}])
-            self.assertTrue(container["securityContext"]["readOnlyRootFilesystem"])
-            self.assertTrue(container["securityContext"]["runAsNonRoot"])
-            self.assertEqual(container["securityContext"]["runAsUser"], 1000)
-            self.assertEqual(container["securityContext"]["capabilities"]["drop"], ["ALL"])
-            self.assertIn("resources", container)
-            self.assertIn("tmp", pod.get("volumes", [])[0]["name"])
-            self.assertNotIn("DATABASE_ADMIN", json.dumps(job))
-            self.assertNotIn("SUPABASE", json.dumps(job).upper())
 
     def test_network_policy_uses_rendered_postgres_selector_and_dns_only(self) -> None:
         rendered = self.render(
@@ -1372,29 +1324,27 @@ printf 'bounded-attempts=%s\n' "$attempts"
             stderr = self.render_expecting_failure(template_dir)
             self.assertIn("only RUNTIME_SECRET_NAME", stderr)
 
-    def test_ci_has_fail_closed_manual_database_gates_in_dependency_order(self) -> None:
+    def test_ci_has_no_database_jobs_or_mutations(self) -> None:
         pipeline = yaml.safe_load(CI)
-        self.assertEqual(pipeline["stages"], ["verify", "build", "scan", "db-gates", "deploy", "notify"])
-        for name, script_name in (("migrate-db", "job-migrate.yaml"), ("import-db", "job-import.yaml")):
-            job = pipeline[name]
-            self.assertEqual(job["stage"], "db-gates")
-            self.assertEqual(job["when"], "manual")
-            self.assertFalse(job.get("allow_failure", False))
-            self.assertEqual(job["retry"], 0)
-            self.assertFalse(job["interruptible"])
-            self.assertIn(script_name, "\n".join(job["script"]))
-            self.assertIn("--dry-run=server", "\n".join(job["script"]))
-            self.assertNotIn("kubectl apply", "\n".join(job["script"]))
-        self.assertIn("kubectl -n \"$KUBE_NAMESPACE\" run", "\n".join(pipeline["import-db"]["script"]))
-        self.assertIn("--rm -i", "\n".join(pipeline["import-db"]["script"]))
+        self.assertEqual(pipeline["stages"], ["verify", "build", "scan", "deploy", "notify"])
+        for forbidden in (
+            "db-gates",
+            "migrate-db",
+            "import-db",
+            "PRODUCTION_DB_MUTATION_APPROVED",
+            "MIGRATOR_SECRET_NAME",
+            "SNAPSHOT_FILE",
+            "MANIFEST_FILE",
+            "scripts/db/",
+            "scoringsys-db-mutation",
+        ):
+            self.assertNotIn(forbidden, CI)
         deploy = pipeline["deploy-cce"]
         self.assertEqual(deploy["stage"], "deploy")
-        stage_index = {name: index for index, name in enumerate(pipeline["stages"])}
-        self.assertLess(stage_index[pipeline["verify-app"]["stage"]], stage_index[deploy["stage"]])
-        self.assertLess(stage_index[pipeline["scan-image"]["stage"]], stage_index["db-gates"])
         needed = {item["job"] for item in deploy["needs"]}
-        self.assertTrue({"render-cce", "build-image", "scan-image", "migrate-db", "import-db"} <= needed)
-        self.assertIn("PRODUCTION_DB_MUTATION_APPROVED", CI)
+        self.assertEqual(needed, {"render-cce", "build-image", "scan-image"})
+        self.assertEqual(deploy["rules"], [{"if": "$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH"}])
+        self.assertNotIn("when", deploy)
 
     def test_deploy_script_applies_network_policy_but_never_runs_db_mutation(self) -> None:
         self.assertIn("networkpolicy.yaml", DEPLOY_SCRIPT)
