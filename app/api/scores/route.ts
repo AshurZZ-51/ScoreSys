@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isProjectPoolV2Enabled, supabaseAdmin } from '@/lib/supabase';
-import { transitionForVerdict } from '@/lib/projectPoolWorkflow';
 import { getScoreMax, isValidScoreValue, parseScoreKey } from '@/lib/scoringRules';
 import { isSameReviewerCode, requireReviewerSession } from '@/lib/adminSession';
 import {
@@ -9,7 +8,6 @@ import {
   nextStatusForVerdict,
   stripRoundPrefix
 } from '@/lib/reviewWorkflow';
-import { shouldAdvanceProjectWorkflow } from '@/lib/reviewerBlindReview';
 
 export const dynamic = 'force-dynamic';
 
@@ -78,8 +76,8 @@ export async function POST(request: NextRequest) {
       .eq('meeting_id', meeting_id)
       .maybeSingle();
     if (!assignment) return NextResponse.json({ error: '评审项目不存在' }, { status: 404 });
-    const isV2Assignment = isProjectPoolV2Enabled() && ['two_round_v2', 'two_round_v3', 'two_round_v4'].includes(assignment.scoring_version);
-    const scoringVersion = ['two_round_v2', 'two_round_v3', 'two_round_v4'].includes(assignment.scoring_version)
+    const isV2Assignment = isProjectPoolV2Enabled() && ['two_round_v2', 'two_round_v3', 'two_round_v4', 'two_round_v5'].includes(assignment.scoring_version);
+    const scoringVersion = ['two_round_v2', 'two_round_v3', 'two_round_v4', 'two_round_v5'].includes(assignment.scoring_version)
       ? assignment.scoring_version
       : 'two_round_v2';
 
@@ -104,9 +102,20 @@ export async function POST(request: NextRequest) {
       if (reviewer_code.toUpperCase() !== 'W') {
         return NextResponse.json({ error: '只有 Walker 可以使用加分项' }, { status: 403 });
       }
+    } else if (baseDimName === '__special_vote__') {
+      if (reviewerInfo?.is_admin) {
+        return NextResponse.json({ error: '管理员不能填写特别推荐票' }, { status: 403 });
+      }
     } else if (baseDimName === '__verdict__') {
       if (reviewerInfo?.is_admin) {
         return NextResponse.json({ error: '管理员不能填写个人评审结论' }, { status: 403 });
+      }
+    } else if (baseDimName === '__admin_verdict__') {
+      if (!reviewerInfo?.is_admin) {
+        return NextResponse.json({ error: '只有管理员可以修改最终结论' }, { status: 403 });
+      }
+      if (comment && !['approved', 'recheck', 'rejected'].includes(comment)) {
+        return NextResponse.json({ error: '无效结论' }, { status: 400 });
       }
     } else if (baseDimName === '__problems__' || baseDimName === '__actions__') {
       // Text-only review fields reuse the score table.
@@ -146,6 +155,18 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: hint }, { status: 400 });
     }
 
+    if (baseDimName === '__admin_verdict__' && !comment) {
+      const { error: deleteError } = await supabaseAdmin
+        .from('scores')
+        .delete()
+        .eq('meeting_id', meeting_id)
+        .eq('project_id', project_id)
+        .eq('reviewer_code', reviewer_code)
+        .eq('dim_name', dim_name);
+      if (deleteError) throw deleteError;
+      return NextResponse.json({ success: true, score: null, cleared: true });
+    }
+
     const { data, error } = await supabaseAdmin
       .from('scores')
       .upsert({
@@ -162,23 +183,7 @@ export async function POST(request: NextRequest) {
 
     if (error) throw error;
 
-    if (baseDimName === '__verdict__' && comment && isV2Assignment && shouldAdvanceProjectWorkflow(reviewer_code)) {
-      const transition = transitionForVerdict(Number(assignment.round_no), Number(assignment.attempt_no), comment);
-      if (!transition.ok) return NextResponse.json({ error: transition.error }, { status: 400 });
-      const nextAssignmentStatus = 'completed';
-      const { error: assignmentError } = await supabaseAdmin.from('projects').update({ assignment_status: nextAssignmentStatus }).eq('id', project_id);
-      if (assignmentError) throw assignmentError;
-      const { error: poolError } = await supabaseAdmin.from('project_pool').update({
-        status: transition.status, current_round: transition.currentRound, current_attempt: transition.currentAttempt,
-        latest_verdict: transition.verdict, updated_at: new Date().toISOString()
-      }).eq('id', assignment.pool_project_id);
-      if (poolError) throw poolError;
-      const { error: historyError } = await supabaseAdmin.from('project_status_history').insert({
-        project_id: assignment.pool_project_id, meeting_project_id: project_id, meeting_id,
-        event_type: 'walker_verdict', to_status: transition.status, operator_code: reviewer_code, note: comment
-      });
-      if (historyError) throw historyError;
-    } else if (baseDimName === '__verdict__' && comment && !isV2Assignment) {
+    if (baseDimName === '__verdict__' && comment && !isV2Assignment) {
       const verdictRound = getRoundFromDimName(dim_name);
       if (verdictRound) {
         const nextStatus = nextStatusForVerdict(verdictRound, comment);

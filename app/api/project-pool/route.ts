@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isProjectPoolV2Enabled, supabaseAdmin } from '@/lib/supabase';
-import { createMaterialRows, getMaterialProgress, getMaterialStatus, makeMatchKey, normalizeProjectPart } from '@/lib/projectPoolWorkflow';
+import { assignmentRoundForStatus, createMaterialRows, getMaterialProgress, getMaterialStatus, makeMatchKey, normalizeProjectPart } from '@/lib/projectPoolWorkflow';
 import { countCompletedReviews, hasCompletedReview, isPendingReviewProject } from '@/lib/adminLifecycle';
 import { requireAdminSession } from '@/lib/adminSession';
+import { recommendBlindVerdict } from '@/lib/reviewerBlindReview';
 
 export const dynamic = 'force-dynamic';
 
@@ -22,6 +23,23 @@ function unavailable() {
   return NextResponse.json({ error: '项目池功能尚未启用' }, { status: 404 });
 }
 
+function latestResolvedVerdict(assignments: any[] = []) {
+  const ordered = [...assignments].sort((left, right) => new Date(right.created_at || 0).getTime() - new Date(left.created_at || 0).getTime());
+  for (const assignment of ordered) {
+    const roundId = `r${Number(assignment.round_no || 1)}`;
+    const rows = assignment.scores || [];
+    const admin = rows
+      .filter((score: any) => score.dim_name === `${roundId}::__admin_verdict__` && ['approved', 'recheck', 'rejected'].includes(score.comment))
+      .sort((left: any, right: any) => new Date(right.updated_at || 0).getTime() - new Date(left.updated_at || 0).getTime())[0]?.comment;
+    if (admin) return admin;
+    const recommendation = recommendBlindVerdict(rows
+      .filter((score: any) => score.dim_name === `${roundId}::__verdict__`)
+      .map((score: any) => score.comment)).verdict;
+    if (recommendation) return recommendation;
+  }
+  return null;
+}
+
 export async function GET(request: NextRequest) {
   if (!isProjectPoolV2Enabled()) return unavailable();
   try {
@@ -34,7 +52,7 @@ export async function GET(request: NextRequest) {
     if (monthRange === undefined) return NextResponse.json({ error: 'month must use YYYY-MM' }, { status: 400 });
     let query = supabaseAdmin
       .from('project_pool')
-      .select('*, project_materials(*), project_deletion_requests(*), projects(id, meeting_id, seq_no, round_no, attempt_no, scoring_version, assignment_status, meetings(id, name, meeting_date, status), scores(reviewer_code, dim_name, comment))')
+      .select('*, project_materials(*), project_deletion_requests(*), projects(id, meeting_id, seq_no, round_no, attempt_no, scoring_version, assignment_status, created_at, meetings(id, name, meeting_date, status), scores(reviewer_code, dim_name, comment, updated_at))')
       .order('updated_at', { ascending: false });
     if (scope === 'active' || scope === 'pending' || scope === 'reviewed') query = query.is('archived_at', null);
     else query = query.not('archived_at', 'is', null);
@@ -54,7 +72,12 @@ export async function GET(request: NextRequest) {
       })
       .map((project: any) => ({
         ...project,
-        material_progress: getMaterialProgress(project.project_materials || []),
+        latest_verdict: latestResolvedVerdict(project.projects || []) || project.latest_verdict || null,
+        material_progress: getMaterialProgress(project.project_materials || [], assignmentRoundForStatus(project.status)),
+        material_progress_by_round: {
+          r1: getMaterialProgress(project.project_materials || [], 1),
+          r2: getMaterialProgress(project.project_materials || [], 2)
+        },
         completed_review_count: countCompletedReviews(project.projects || [])
       }));
     const scopedProjects = scope === 'pending' ? projects.filter(isPendingReviewProject) : scope === 'reviewed' ? projects.filter(hasCompletedReview) : projects;
@@ -79,10 +102,13 @@ export async function POST(request: NextRequest) {
     }).select().single();
     if (error) throw error;
     const checkedAt = new Date().toISOString();
-    const materials = createMaterialRows(project.id, materialStatuses, session.code, checkedAt);
+    const materials = [
+      ...createMaterialRows(project.id, materialStatuses, session.code, checkedAt, 1),
+      ...createMaterialRows(project.id, {}, null, null, 2)
+    ];
     const { error: materialsError } = await supabaseAdmin.from('project_materials').insert(materials);
     if (materialsError) throw materialsError;
-    const materialStatus = getMaterialStatus(materials).value;
+    const materialStatus = getMaterialStatus(materials, 1).value;
     const { data: savedProject, error: projectStatusError } = await supabaseAdmin.from('project_pool').update({ material_status: materialStatus, updated_at: checkedAt }).eq('id', project.id).select().single();
     if (projectStatusError) throw projectStatusError;
     const { error: historyError } = await supabaseAdmin.from('project_status_history').insert({ project_id: project.id, event_type: 'project_created', to_status: 'materials_pending', operator_code: session.code, note: Object.keys(materialStatuses || {}).length ? '创建项目并完成初始资料检查' : '创建待评审项目' });

@@ -65,7 +65,7 @@ export async function POST(request: NextRequest) {
         pool_project_id: id,
         round_no: projectRound,
         attempt_no,
-        scoring_version: projectRound === 2 ? 'two_round_v4' : 'two_round_v2',
+        scoring_version: projectRound === 2 ? 'two_round_v5' : 'two_round_v2',
         assignment_status: 'scheduled'
       }).select().single();
       if (error) { errors.push({ project_id: id, error: error.message }); continue; }

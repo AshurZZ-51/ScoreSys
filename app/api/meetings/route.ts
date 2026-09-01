@@ -83,7 +83,10 @@ export async function POST(request: NextRequest) {
         }).select().single();
         if (error) throw error;
         quickProjectIds.push(project.id);
-        const { error: materialsError } = await supabaseAdmin.from('project_materials').insert(createMaterialRows(project.id));
+        const { error: materialsError } = await supabaseAdmin.from('project_materials').insert([
+          ...createMaterialRows(project.id, {}, null, null, 1),
+          ...createMaterialRows(project.id, {}, null, null, 2)
+        ]);
         if (materialsError) throw materialsError;
         const { error: historyError } = await supabaseAdmin.from('project_status_history').insert({
           project_id: project.id, event_type: 'project_created', to_status: project.status, operator_code: session.code, note: '在创建评审会时快速创建'
@@ -98,7 +101,7 @@ export async function POST(request: NextRequest) {
         const { data: assignment, error: assignmentError } = await supabaseAdmin.from('projects').insert({
           meeting_id: meeting.id, seq_no: index + 1, name: project.name, submitter: project.submitter, description: project.description || '',
           problems: [], actions: [], is_template: false, pool_project_id: project.id, round_no: roundNo, attempt_no: attemptNo,
-          scoring_version: roundNo === 2 ? 'two_round_v4' : 'two_round_v2', assignment_status: 'scheduled'
+          scoring_version: roundNo === 2 ? 'two_round_v5' : 'two_round_v2', assignment_status: 'scheduled'
         }).select().single();
         if (assignmentError) throw assignmentError;
         const nextStatus = roundNo === 1 ? 'scheduled_r1' : 'scheduled_r2';

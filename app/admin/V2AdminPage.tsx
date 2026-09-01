@@ -29,7 +29,7 @@ const materialStatusOptions = [
 
 function adminCode() { try { return JSON.parse(localStorage.getItem('reviewer') || '{}').code || ''; } catch { return ''; } }
 function isLocalSuperAdmin() { return String(adminCode()).trim().toLowerCase() === 'admin51'; }
-function materialText(project: AnyRecord) { const progress = getMaterialProgress(project.project_materials || []); return progress.complete ? '资料齐全' : `待补充 ${progress.approved}/${progress.total}`; }
+function materialText(project: AnyRecord) { const roundNo = Number(project.current_round || project.round_no || 1) === 2 ? 2 : 1; const progress = getMaterialProgress(project.project_materials || [], roundNo); return progress.complete ? '资料齐全' : `待补充 ${progress.approved}/${progress.total}`; }
 function assignmentStatusLabel(status: string) { return ({ scheduled: '待评审', scoring: '评分中', completed: '已完成' } as AnyRecord)[status] || status || '-'; }
 
 export default function V2AdminPage() {
