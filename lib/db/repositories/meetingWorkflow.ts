@@ -12,6 +12,7 @@ export interface ListMeetingsInput {
 
 export interface MeetingMaterialInput {
   itemKey: string;
+  roundNo: 1 | 2;
   required: boolean;
   status: string;
   checkedBy?: string | null;
@@ -169,6 +170,7 @@ export async function createMeetingWorkflow(
 
         const materials = quick.materials.map((material) => ({
           item_key: material.itemKey,
+          round_no: material.roundNo,
           required: material.required,
           status: material.status,
           checked_by: material.checkedBy ?? null,
@@ -177,12 +179,13 @@ export async function createMeetingWorkflow(
         if (materials.length > 0) {
           await execute(
             `INSERT INTO project_materials (
-               project_id, item_key, required, status, checked_by, checked_at
+               project_id, item_key, round_no, required, status, checked_by, checked_at
              )
-             SELECT $1::uuid, material.item_key, material.required, material.status,
+             SELECT $1::uuid, material.item_key, material.round_no, material.required, material.status,
                     material.checked_by, material.checked_at
                FROM jsonb_to_recordset($2::jsonb) AS material(
                  item_key text,
+                 round_no smallint,
                  required boolean,
                  status text,
                  checked_by text,
@@ -231,7 +234,7 @@ export async function createMeetingWorkflow(
             project.id,
             roundNo,
             attemptNo,
-            roundNo === 2 ? 'two_round_v4' : 'two_round_v2',
+            roundNo === 2 ? 'two_round_v5' : 'two_round_v2',
             'scheduled',
           ],
           transaction,

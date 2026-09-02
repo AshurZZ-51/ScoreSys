@@ -44,16 +44,17 @@ function materialInsertSql(rows: Record<string, unknown>[]): { text: string; par
     params.push(
       row.project_id,
       row.item_key,
+      row.round_no ?? 1,
       row.required,
       row.status,
       row.note || '',
       row.checked_by ?? null,
       row.checked_at ?? null,
     );
-    return `($${start}, $${start + 1}, $${start + 2}, $${start + 3}, $${start + 4}, $${start + 5}, $${start + 6})`;
+    return `($${start}, $${start + 1}, $${start + 2}, $${start + 3}, $${start + 4}, $${start + 5}, $${start + 6}, $${start + 7})`;
   });
   return {
-    text: `INSERT INTO project_materials (project_id, item_key, required, status, note, checked_by, checked_at)
+    text: `INSERT INTO project_materials (project_id, item_key, round_no, required, status, note, checked_by, checked_at)
            VALUES ${values.join(', ')}`,
     params,
   };
@@ -74,10 +75,13 @@ export async function createProjectWithMaterials(
       executor,
     );
     const checkedAt = new Date().toISOString();
-    const rows = createMaterialRows(project.id, input.materialStatuses || {}, operatorCode, checkedAt);
+    const rows = [
+      ...createMaterialRows(project.id, input.materialStatuses || {}, operatorCode, checkedAt, 1),
+      ...createMaterialRows(project.id, {}, null, null, 2),
+    ];
     const materialInsert = materialInsertSql(rows);
     if (rows.length) await execute(materialInsert.text, materialInsert.params, executor);
-    const materialStatus = getMaterialStatus(rows).value;
+    const materialStatus = getMaterialStatus(rows, 1).value;
     const savedProject = await one<Record<string, unknown>>(
       'UPDATE project_pool SET material_status = $1, updated_at = $2 WHERE id = $3 RETURNING *',
       [materialStatus, checkedAt, project.id],
@@ -274,26 +278,27 @@ export async function upsertProjectMaterial(
   note: string,
   checkedBy: string,
   checkedAt: string,
+  roundNo = 1,
   connector: Connector = pool,
 ): Promise<{ project: Record<string, unknown>; materials: Record<string, unknown>[]; material_status: string; status: string; missing: string[] }> {
   return tx(async (executor) => {
     await execute(
       `INSERT INTO project_materials
-        (project_id, item_key, required, status, note, checked_by, checked_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
-       ON CONFLICT (project_id, item_key) DO UPDATE SET
+        (project_id, item_key, round_no, required, status, note, checked_by, checked_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       ON CONFLICT (project_id, item_key, round_no) DO UPDATE SET
          required = EXCLUDED.required,
          status = EXCLUDED.status,
          note = EXCLUDED.note,
          checked_by = EXCLUDED.checked_by,
          checked_at = EXCLUDED.checked_at,
          updated_at = now()`,
-      [projectId, itemKey, required, status, note, checkedBy, checkedAt],
+      [projectId, itemKey, roundNo, required, status, note, checkedBy, checkedAt],
       executor,
     );
     const materials = await query<Record<string, unknown>>(
-      `SELECT project_id, item_key, required, status, note, checked_by, checked_at, updated_at
-         FROM project_materials WHERE project_id = $1 ORDER BY item_key ASC`,
+      `SELECT project_id, item_key, round_no, required, status, note, checked_by, checked_at, updated_at
+         FROM project_materials WHERE project_id = $1 ORDER BY round_no ASC, item_key ASC`,
       [projectId],
       executor,
     );
@@ -303,7 +308,7 @@ export async function upsertProjectMaterial(
       executor,
     );
     if (!current) throw new NotFoundError('project not found');
-    const derived = getMaterialStatus(materials);
+    const derived = getMaterialStatus(materials, roundNo);
     const project = await one<Record<string, unknown>>(
       'UPDATE project_pool SET material_status = $1, updated_at = $2 WHERE id = $3 RETURNING *',
       [derived.value, checkedAt, projectId],

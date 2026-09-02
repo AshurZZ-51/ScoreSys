@@ -26,15 +26,13 @@ import {
   nextStatusForVerdict,
   stripRoundPrefix
 } from '@/lib/reviewWorkflow';
-import { buildBlindChoiceStats, buildDimensionAverages } from '@/lib/reviewerBlindReview';
+import { buildBlindChoiceStats, buildDimensionAverages, recommendBlindVerdict } from '@/lib/reviewerBlindReview';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
-const SPECIAL_DIMENSIONS = new Set(['__bonus__', '__problems__', '__actions__', '__verdict__']);
-
 function resolveAssignmentScoringVersion(value: unknown) {
-  return ['two_round_v2', 'two_round_v3', 'two_round_v4'].includes(String(value))
+  return ['two_round_v2', 'two_round_v3', 'two_round_v4', 'two_round_v5'].includes(String(value))
     ? String(value)
     : 'two_round_v2';
 }
@@ -104,7 +102,7 @@ export async function GET(request: NextRequest) {
 
     const nonAdminReviewers = reviewers.filter((reviewer: any) => !reviewer.is_admin);
     const nonAdminReviewerCodes = nonAdminReviewers.map((reviewer: any) => reviewer.code);
-    const blindReviewerCodes = nonAdminReviewerCodes.filter((code: string) => code.toUpperCase() !== 'W');
+    const blindReviewerCodes = nonAdminReviewerCodes;
     const expectedInputsPerReviewer = projects.reduce((total: number, project: any) => {
       if (!project.name || !project.submitter) return total;
       const scoringVersion = resolveAssignmentScoringVersion(project.scoring_version);
@@ -137,14 +135,6 @@ export async function GET(request: NextRequest) {
         return (adminItem || items[0])?.comment || '';
       };
 
-      const getRoundVerdict = (roundId: string) => {
-        const dimName = specialScoreKey(roundId, '__verdict__');
-        const verdictScores = projectScores
-          .filter((s: any) => s.dim_name === dimName && s.reviewer_code?.toUpperCase() === 'W')
-          .sort((a: any, b: any) => new Date(b.updated_at || 0).getTime() - new Date(a.updated_at || 0).getTime());
-        return verdictScores[0]?.comment || null;
-      };
-
       const roundSummaries: Record<string, any> = {};
       ['r1', 'r2'].forEach((roundId: string) => {
         const round = getRoundDefinition(roundId, scoringVersion);
@@ -154,7 +144,6 @@ export async function GET(request: NextRequest) {
           .filter((s: any) => s.dim_name === specialScoreKey(round.id, '__bonus__'))
           .map((s: any) => ({ reviewer: s.reviewer_code, value: Number(s.score), reason: s.comment || '' }));
         const roundBonusScore = roundBonusDetails.reduce((sum: number, item: any) => sum + item.value, 0);
-        const roundVerdict = getRoundVerdict(round.id);
         const roundDimensionAverages = buildDimensionAverages({
           rules: getRoundScoringDimensions(round.id, scoringVersion),
           scores: roundScores,
@@ -166,6 +155,25 @@ export async function GET(request: NextRequest) {
           score.dim_name === specialScoreKey(round.id, '__verdict__')
           && blindReviewerCodes.some((code: string) => code.toLowerCase() === String(score.reviewer_code || '').toLowerCase())
         ));
+        const blindRecommendation = recommendBlindVerdict(roundBlindVerdictScores.map((score: any) => score.comment));
+        const adminVerdict = projectScores
+          .filter((score: any) => (
+            score.dim_name === specialScoreKey(round.id, '__admin_verdict__')
+            && allReviewers.some((reviewer: any) => reviewer.code === score.reviewer_code && reviewer.is_admin)
+          ))
+          .sort((left: any, right: any) => new Date(right.updated_at || 0).getTime() - new Date(left.updated_at || 0).getTime())[0]?.comment || null;
+        const specialVotes = projectScores
+          .filter((score: any) => (
+            score.dim_name === specialScoreKey(round.id, '__special_vote__')
+            && Number(score.score) === 1
+            && blindReviewerCodes.some((code: string) => code.toLowerCase() === String(score.reviewer_code || '').toLowerCase())
+          ))
+          .map((score: any) => ({
+            reviewer_code: score.reviewer_code,
+            reviewer_name: allReviewers.find((reviewer: any) => reviewer.code === score.reviewer_code)?.name || score.reviewer_code,
+            updated_at: score.updated_at || null
+          }));
+        const roundVerdict = adminVerdict || blindRecommendation.verdict || null;
         const roundBlindRatings = reviewerRatings.filter((rating: any) => (
           rating.project_id === project.id
           && Number(rating.round_no) === roundNo
@@ -211,6 +219,9 @@ export async function GET(request: NextRequest) {
             roundBlindVerdictScores.map((score: any) => score.comment),
             blindReviewerCodes.length
           ),
+          recommendedVerdict: blindRecommendation.verdict,
+          adminVerdict,
+          specialVotes,
           bonusDetails: roundBonusDetails,
           verdict: roundVerdict,
           reviewerProblems: roundProblems,
@@ -225,10 +236,10 @@ export async function GET(request: NextRequest) {
         };
       });
 
-      const verdictScores = projectScores
-        .filter((s: any) => stripRoundPrefix(s.dim_name) === '__verdict__' && s.reviewer_code?.toUpperCase() === 'W')
-        .sort((a: any, b: any) => new Date(b.updated_at || 0).getTime() - new Date(a.updated_at || 0).getTime());
-      verdict = verdictScores[0]?.comment || null;
+      verdict = (project.round_no ? roundSummaries[`r${project.round_no}`]?.verdict : null)
+        || roundSummaries.r2?.verdict
+        || roundSummaries.r1?.verdict
+        || null;
 
       const materialStatus = latestSpecialComment('__material_status__') || 'unchecked';
       const materialNote = latestSpecialComment('__material_note__');
@@ -251,7 +262,7 @@ export async function GET(request: NextRequest) {
       const currentRoundSummary = hasCurrentRoundScores ? roundSummaries[currentRound] : null;
 
       projectScores.forEach((s: any) => {
-        if (stripRoundPrefix(s.dim_name) === '__verdict__') return;
+        if (stripRoundPrefix(s.dim_name) === '__verdict__' || stripRoundPrefix(s.dim_name) === '__admin_verdict__' || stripRoundPrefix(s.dim_name) === '__special_vote__') return;
         if (s.dim_name === '__bonus__') {
           bonusScore += Number(s.score);
           bonusDetails.push({ reviewer: s.reviewer_code, value: Number(s.score), reason: s.comment || '' });
@@ -303,7 +314,10 @@ export async function GET(request: NextRequest) {
         reviewerActions: currentRoundSummary?.reviewerActions || reviewerActions,
         problemSummary: currentRoundSummary?.problemSummary || legacyProblemSummary,
         actionSummary: currentRoundSummary?.actionSummary || legacyActionSummary,
-        walkerVerdict: currentRoundSummary?.verdict || verdict,
+        walkerVerdict: null,
+        recommendedVerdict: currentRoundSummary?.recommendedVerdict || roundSummaries[currentRound]?.recommendedVerdict || null,
+        adminVerdict: currentRoundSummary?.adminVerdict || roundSummaries[currentRound]?.adminVerdict || null,
+        specialVotes: currentRoundSummary?.specialVotes || roundSummaries[currentRound]?.specialVotes || [],
         verdict: currentRoundSummary?.verdict || verdict
       };
     });

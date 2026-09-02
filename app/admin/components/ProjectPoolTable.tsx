@@ -19,7 +19,8 @@ function roundFor(project: Project) {
 }
 
 function materialText(project: Project) {
-  const progress = project.material_progress || getMaterialProgress(project.project_materials || []);
+  const roundNo = Number(project.current_round || project.round_no || 1) === 2 ? 2 : 1;
+  const progress = project.material_progress || getMaterialProgress(project.project_materials || [], roundNo);
   return progress.complete ? '资料齐全' : `待补充 ${progress.approved}/${progress.total}`;
 }
 
@@ -96,7 +97,7 @@ export default function ProjectPoolTable({ projects, meetings, scope, month, onR
   };
 
   return <>
-    <div style={styles.toolbar}><label style={styles.monthLabel}>创建月份 <input type="month" value={month} onChange={(event) => onMonthChange?.(event.target.value)} style={styles.select} /></label><span style={styles.scope}>{scope === 'reviewed' ? '已有 Walker 结论的项目' : '项目池'}</span></div>
+    <div style={styles.toolbar}><label style={styles.monthLabel}>创建月份 <input type="month" value={month} onChange={(event) => onMonthChange?.(event.target.value)} style={styles.select} /></label><span style={styles.scope}>{scope === 'reviewed' ? '已有评审结论的项目' : '项目池'}</span></div>
     {feedback && <div role="status" style={styles.feedback}>{feedback}</div>}
     <div style={styles.bulkBar}>
       <span>已选 {selected.length} 项</span>
@@ -106,7 +107,7 @@ export default function ProjectPoolTable({ projects, meetings, scope, month, onR
       <button type="button" style={styles.secondary} disabled={busy || !meetingId || !canSchedule} onClick={() => assign()}>批量加入评审会</button>
       <button type="button" style={styles.danger} disabled={busy || !selected.length} onClick={archive}>批量归档</button>
     </div>
-    <div style={styles.tableWrap}><table style={styles.table}><thead><tr><th style={styles.cell}><input aria-label="全选项目" type="checkbox" checked={allSelected} onChange={() => setSelected(allSelected ? [] : projects.map((project) => project.id))} /></th>{['项目', '提报人', '资料检查', '项目状态', 'Walker 评审历史', '安排'].map((label) => <th key={label} style={styles.cell}>{label}</th>)}</tr></thead><tbody>
+    <div style={styles.tableWrap}><table style={styles.table}><thead><tr><th style={styles.cell}><input aria-label="全选项目" type="checkbox" checked={allSelected} onChange={() => setSelected(allSelected ? [] : projects.map((project) => project.id))} /></th>{['项目', '提报人', '资料检查', '项目状态', '评审历史', '安排'].map((label) => <th key={label} style={styles.cell}>{label}</th>)}</tr></thead><tbody>
       {projects.map((project) => <tr key={project.id}><td style={styles.cell}><input aria-label={`选择${project.name}`} type="checkbox" checked={selected.includes(project.id)} onChange={() => toggle(project.id)} /></td><td style={styles.cell}><button type="button" style={styles.link} onClick={() => onOpenProject(project)}>{project.name}</button></td><td style={styles.cell}>{project.submitter}</td><td style={styles.cell}>{materialText(project)}</td><td style={styles.cell}>{projectStatusLabel(project.status)}</td><td style={styles.cell}>{project.completed_review_count ?? 0} 次</td><td style={styles.cell}>{SCHEDULABLE_STATUSES.has(project.status) ? <select aria-label={`安排${project.name}入会`} defaultValue="" onChange={(event) => event.target.value && assign([project.id], event.target.value)} style={styles.select}><option value="">安排入会</option>{activeMeetings.map((meeting) => <option key={meeting.id} value={meeting.id}>{meeting.name}</option>)}</select> : '-'}</td></tr>)}
       {!projects.length && <tr><td colSpan={7} style={styles.empty}>暂无项目</td></tr>}
     </tbody></table></div>

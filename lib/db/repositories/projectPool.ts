@@ -61,7 +61,7 @@ export async function listProjectPool(
       ) AS project
     FROM project_pool AS p
     LEFT JOIN LATERAL (
-      SELECT COALESCE(jsonb_agg(to_jsonb(m) ORDER BY m.item_key ASC), '[]'::jsonb) AS items
+      SELECT COALESCE(jsonb_agg(to_jsonb(m) ORDER BY m.round_no ASC, m.item_key ASC), '[]'::jsonb) AS items
       FROM project_materials AS m
       WHERE m.project_id = p.id
     ) AS materials ON true
@@ -76,6 +76,7 @@ export async function listProjectPool(
           'id', a.id,
           'meeting_id', a.meeting_id,
           'seq_no', a.seq_no,
+          'created_at', a.created_at,
           'round_no', a.round_no,
           'attempt_no', a.attempt_no,
           'scoring_version', a.scoring_version,
@@ -95,7 +96,9 @@ export async function listProjectPool(
         SELECT COALESCE(jsonb_agg(jsonb_build_object(
           'reviewer_code', s.reviewer_code,
           'dim_name', s.dim_name,
-          'comment', s.comment
+          'score', s.score,
+          'comment', s.comment,
+          'updated_at', s.updated_at
         ) ORDER BY s.updated_at ASC, s.id ASC), '[]'::jsonb) AS items
         FROM scores AS s
         WHERE s.project_id = a.id

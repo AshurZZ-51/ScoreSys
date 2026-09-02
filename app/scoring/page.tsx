@@ -6,8 +6,7 @@ import { appFetch } from '@/lib/appPath';
 import { computeRoundBaseScoreFromScoreMap, getRoundDefinition, getRoundScoringDimensions, roundScoreKey, specialScoreKey } from '@/lib/scoringRules';
 import { ROUND_TITLES, VERDICT_OPTIONS } from '@/lib/reviewWorkflow';
 import { createSaveFeedback } from '@/lib/saveFeedback';
-import { getMaterialProgress, getReviewableMeetingProjects, MATERIAL_ITEMS } from '@/lib/projectPoolWorkflow';
-import { canEditFinalRating } from '@/lib/projectDetailWorkflow';
+import { getMaterialItemsForRound, getMaterialProgress, getReviewableMeetingProjects } from '@/lib/projectPoolWorkflow';
 
 interface Reviewer {
   code: string;
@@ -31,7 +30,7 @@ interface Project {
   materialStatus?: string;
   pool_project_id?: string;
   materialProgress?: { approved: number; total: number; complete: boolean };
-  materialItems?: { item_key: string; status: string }[];
+  materialItems?: { item_key: string; status: string; round_no?: number }[];
   preliminary_rating?: string;
   final_rating?: string;
   roundSummaries?: Record<string, any>;
@@ -82,6 +81,7 @@ export default function ScoringPage() {
   const [projectProblems, setProjectProblems] = useState<Record<string, string>>({});
   const [projectActions, setProjectActions] = useState<Record<string, string>>({});
   const [projectVerdicts, setProjectVerdicts] = useState<Record<string, string | null>>({});
+  const [specialVotes, setSpecialVotes] = useState<Record<string, boolean>>({});
   const [personalRatings, setPersonalRatings] = useState<Record<string, string>>({});
   const [bonusReason, setBonusReason] = useState<Record<string, string>>({});
   const [bonusValue, setBonusValue] = useState<Record<string, string>>({});
@@ -92,10 +92,10 @@ export default function ScoringPage() {
   const saveVersions = useRef<Record<string, number>>({});
   const feedbackTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const isWalker = canEditFinalRating(reviewer?.code);
+  const isWalker = String(reviewer?.code || '').toUpperCase() === 'W';
   const getActiveRound = (project = activeProject) => project?.round_no ? `r${project.round_no}` : project?.currentRound || 'r1';
-  const getScoringVersion = (project = activeProject) => ['two_round_v2', 'two_round_v3', 'two_round_v4'].includes(project?.scoring_version || '')
-    ? project?.scoring_version as 'two_round_v2' | 'two_round_v3' | 'two_round_v4'
+  const getScoringVersion = (project = activeProject) => ['two_round_v2', 'two_round_v3', 'two_round_v4', 'two_round_v5'].includes(project?.scoring_version || '')
+    ? project?.scoring_version as 'two_round_v2' | 'two_round_v3' | 'two_round_v4' | 'two_round_v5'
     : 'two_round_v2';
   const roundFieldKey = (projectId: string, roundId: string) => `${projectId}:${roundId}`;
   const reviewerRules = useMemo(() => {
@@ -145,7 +145,8 @@ export default function ScoringPage() {
           ]);
           const materialData = await materialResponse.json();
           const historyData = await historyResponse.json();
-          return materialResponse.ok ? { ...project, materialProgress: getMaterialProgress(materialData.materials || []), materialItems: materialData.materials || [], preliminary_rating: historyData.project?.preliminary_rating || '', final_rating: historyData.project?.final_rating || '' } : project;
+          const roundNo = Number(project.round_no || 1);
+          return materialResponse.ok ? { ...project, materialProgress: getMaterialProgress(materialData.materials || [], roundNo), materialItems: materialData.materials || [], preliminary_rating: historyData.project?.preliminary_rating || '', final_rating: historyData.project?.final_rating || '' } : project;
         } catch {
           return project;
         }
@@ -173,6 +174,7 @@ export default function ScoringPage() {
     const probMap: Record<string, string> = {};
     const actMap: Record<string, string> = {};
     const verdictMap: Record<string, string | null> = {};
+    const specialVoteMap: Record<string, boolean> = {};
     const bonusReasonMap: Record<string, string> = {};
     const bonusValueMap: Record<string, string> = {};
     const personalRatingMap: Record<string, string> = {};
@@ -191,6 +193,8 @@ export default function ScoringPage() {
         actMap[scopedKey] = s.comment || '';
       } else if (baseDimName === '__verdict__') {
         verdictMap[scopedKey] = s.comment || null;
+      } else if (baseDimName === '__special_vote__') {
+        specialVoteMap[scopedKey] = Number(s.score) === 1;
       } else {
         if (!scoreMap[s.project_id]) scoreMap[s.project_id] = {};
         if (!scoreDraftMap[s.project_id]) scoreDraftMap[s.project_id] = {};
@@ -204,6 +208,7 @@ export default function ScoringPage() {
     setProjectProblems(probMap);
     setProjectActions(actMap);
     setProjectVerdicts(verdictMap);
+    setSpecialVotes(specialVoteMap);
     setBonusReason(bonusReasonMap);
     setBonusValue(bonusValueMap);
     (ratingData.ratings || []).forEach((rating: any) => {
@@ -231,6 +236,7 @@ export default function ScoringPage() {
   const getSaveAction = (dimName: string) => {
     const baseDimName = String(dimName).replace(/^r[12]::/, '');
     if (baseDimName === '__bonus__') return '加分';
+    if (baseDimName === '__special_vote__') return '特别推荐票';
     if (baseDimName === '__problems__' || baseDimName === '__actions__') return '评审意见';
     if (baseDimName === '__verdict__') return '评审结论';
     return '评分';
@@ -430,18 +436,6 @@ export default function ScoringPage() {
     }
   };
 
-  const saveWalkerRating = async (ratingType: 'preliminary' | 'final', rating: string) => {
-    if (ratingType !== 'final' || !canEditFinalRating(reviewer?.code) || !activeProject?.pool_project_id || !['S', 'A', 'B', 'C'].includes(rating)) return;
-    try {
-      const response = await appFetch(`/api/project-pool/${activeProject.pool_project_id}/rating`, { method: 'POST', headers: scoreRequestHeaders(), body: JSON.stringify({ rating_type: ratingType, rating }) });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || '评级保存失败');
-      setProjects((current) => current.map((project) => project.id === activeProject.id ? { ...project, [`${ratingType}_rating`]: rating } : project));
-      setActiveProject((current) => current ? { ...current, [`${ratingType}_rating`]: rating } : current);
-      showSaveFeedback('success', ratingType === 'final' ? '最终评级' : '初步评级');
-    } catch (error: any) { showSaveFeedback('error', '项目评级', error.message || '请稍后重试'); }
-  };
-
   const savePersonalRating = async (rating: string) => {
     if (!activeMeeting || !activeProject || !reviewer || !['S', 'A', 'B', 'C'].includes(rating)) return;
     const roundId = getActiveRound();
@@ -476,6 +470,14 @@ export default function ScoringPage() {
     schedulePersistScore(activeProject.id, specialScoreKey(roundId, '__verdict__'), 0, next, 0);
   };
 
+  const handleSpecialVoteChange = (checked: boolean) => {
+    if (!activeProject) return;
+    const roundId = getActiveRound();
+    const scopedKey = roundFieldKey(activeProject.id, roundId);
+    setSpecialVotes((prev) => ({ ...prev, [scopedKey]: checked }));
+    schedulePersistScore(activeProject.id, specialScoreKey(roundId, '__special_vote__'), checked ? 1 : 0, null, 0);
+  };
+
   const getExpectedCount = () => reviewerRules.reduce((sum: number, rule: any) => {
     return sum + (rule.type === 'level' ? 1 : rule.items.length);
   }, 0);
@@ -496,7 +498,7 @@ export default function ScoringPage() {
 
   const getLocalWeightedBaseScore = (project: Project) => computeRoundBaseScoreFromScoreMap(getActiveRound(project), scores[project.id] || {}, getScoringVersion(project));
   const activeRoundDefinition = getRoundDefinition(getActiveRound(), getScoringVersion());
-  const isV4RoundTwo = getActiveRound() === 'r2' && getScoringVersion() === 'two_round_v4';
+  const isCurrentRoundTwo = getActiveRound() === 'r2' && getScoringVersion() === 'two_round_v5';
 
   if (!reviewer) return <div style={{ padding: 40 }}>加载中...</div>;
 
@@ -516,6 +518,7 @@ export default function ScoringPage() {
               setProjectProblems({});
               setProjectActions({});
               setProjectVerdicts({});
+              setSpecialVotes({});
               setBonusReason({});
               setBonusValue({});
               setPersonalRatings({});
@@ -565,19 +568,19 @@ export default function ScoringPage() {
                 <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
                   <span style={{ fontSize: 12, fontWeight: 800, color: (ROUND_BADGES[getActiveRound()] || ROUND_BADGES.r1).color, background: (ROUND_BADGES[getActiveRound()] || ROUND_BADGES.r1).bg, padding: '4px 10px', borderRadius: 999 }}>{(ROUND_BADGES[getActiveRound()] || ROUND_BADGES.r1).label} · {activeRoundDefinition?.title || ROUND_TITLES[getActiveRound() as keyof typeof ROUND_TITLES]}</span>
                   <span style={{ fontSize: 12, fontWeight: 800, color: (ATTEMPT_BADGES[Number(activeProject.attempt_no) === 2 ? 2 : 1]).color, background: (ATTEMPT_BADGES[Number(activeProject.attempt_no) === 2 ? 2 : 1]).bg, padding: '4px 10px', borderRadius: 999 }}>{(ATTEMPT_BADGES[Number(activeProject.attempt_no) === 2 ? 2 : 1]).label}</span>
-                  {activeProject.pool_project_id && <span style={{ fontSize: 12, fontWeight: 800, color: activeProject.materialProgress?.complete ? '#047857' : '#b45309', background: activeProject.materialProgress?.complete ? '#ecfdf5' : '#fffbeb', padding: '4px 10px', borderRadius: 999 }}>{activeProject.materialProgress?.complete ? '资料齐全' : `待补充 ${activeProject.materialProgress?.approved || 0}/${activeProject.materialProgress?.total || 7}`}</span>}
+                  {activeProject.pool_project_id && <span style={{ fontSize: 12, fontWeight: 800, color: activeProject.materialProgress?.complete ? '#047857' : '#b45309', background: activeProject.materialProgress?.complete ? '#ecfdf5' : '#fffbeb', padding: '4px 10px', borderRadius: 999 }}>{activeProject.materialProgress?.complete ? '资料齐全' : `待补充 ${activeProject.materialProgress?.approved || 0}/${activeProject.materialProgress?.total || 0}`}</span>}
                 </div>
               </div>
 
               <div style={{ background: '#eef2ff', border: '1px solid #c7d2fe', color: '#3730a3', padding: '12px 16px', borderRadius: 10, fontSize: 13, lineHeight: 1.7, marginBottom: 20 }}>
-                {isV4RoundTwo
-                  ? '评分方法：第二轮六个维度独立汇总为 100 分。游戏性 25 分、创新性 20 分、项目规划 15 分、技术&美术 15 分、风险预估 15 分、造价与预算 10 分；打分型子项均为 0-10 分，创新性按 8/10/12/14/20 档位取全体评委中位数。'
+                {isCurrentRoundTwo
+                  ? '评分方法：第二轮五个维度独立汇总为 100 分。游戏性 30 分、创新性 20 分、项目规划 20 分、技术&美术 15 分、风险预估 15 分；打分型子项均为 0-10 分，创新性按 8/10/12/14/20 档位取全体评委中位数。'
                   : '评分方法：当前轮次独立 100 分；打分型子项均为 0-10 分，所有评委取平均后计入大维度；创新性按当前轮次的档位取全体评委中位数。'}
               </div>
 
               {activeMeeting?.deadline && <div style={{ background: '#fef3c7', border: '1px solid #fde68a', color: '#92400e', padding: '10px 16px', borderRadius: 8, fontSize: 13, marginBottom: 20 }}>打分截止日期：{activeMeeting.deadline}</div>}
 
-                {activeProject.pool_project_id && <section style={{ background: '#fff', border: '1px solid #d9e1ec', borderRadius: 8, padding: 14, marginBottom: 20 }}><div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 10 }}><strong style={{ fontSize: 14 }}>项目资料检查</strong><span style={{ fontSize: 12, color: activeProject.materialProgress?.complete ? '#047857' : '#b45309' }}>{activeProject.materialProgress?.complete ? '资料齐全' : `待补充 ${activeProject.materialProgress?.approved || 0}/${activeProject.materialProgress?.total || 7}`}</span></div><div style={{ overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}><thead><tr><th style={{ textAlign: 'left', padding: '7px 6px', color: '#64748b' }}>资料项</th><th style={{ textAlign: 'left', padding: '7px 6px', color: '#64748b' }}>要求</th><th style={{ textAlign: 'left', padding: '7px 6px', color: '#64748b' }}>状态</th></tr></thead><tbody>{MATERIAL_ITEMS.map((item: any) => { const status = activeProject.materialItems?.find((material) => material.item_key === item.item_key)?.status || 'missing'; return <tr key={item.item_key}><td style={{ padding: '7px 6px', borderTop: '1px solid #edf2f7' }}>{item.label}</td><td style={{ padding: '7px 6px', borderTop: '1px solid #edf2f7', color: item.required ? '#b45309' : '#64748b' }}>{item.required ? '必填' : '选填'}</td><td style={{ padding: '7px 6px', borderTop: '1px solid #edf2f7', color: materialStatusColors[status] || '#475569', fontWeight: 700 }}>{materialStatusLabels[status] || status}</td></tr>; })}</tbody></table></div></section>}
+                {activeProject.pool_project_id && <section style={{ background: '#fff', border: '1px solid #d9e1ec', borderRadius: 8, padding: 14, marginBottom: 20 }}><div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 10 }}><strong style={{ fontSize: 14 }}>项目资料检查</strong><span style={{ fontSize: 12, color: activeProject.materialProgress?.complete ? '#047857' : '#b45309' }}>{activeProject.materialProgress?.complete ? '资料齐全' : `待补充 ${activeProject.materialProgress?.approved || 0}/${activeProject.materialProgress?.total || 0}`}</span></div><div style={{ overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}><thead><tr><th style={{ textAlign: 'left', padding: '7px 6px', color: '#64748b' }}>资料项</th><th style={{ textAlign: 'left', padding: '7px 6px', color: '#64748b' }}>要求</th><th style={{ textAlign: 'left', padding: '7px 6px', color: '#64748b' }}>状态</th></tr></thead><tbody>{getMaterialItemsForRound(Number(activeProject.round_no || 1)).map((item: any) => { const status = activeProject.materialItems?.find((material) => material.item_key === item.item_key && (material.round_no == null || Number(material.round_no) === Number(activeProject.round_no || 1)))?.status || 'missing'; return <tr key={item.item_key}><td style={{ padding: '7px 6px', borderTop: '1px solid #edf2f7' }}>{item.label}</td><td style={{ padding: '7px 6px', borderTop: '1px solid #edf2f7', color: item.required ? '#b45309' : '#64748b' }}>{item.required ? '必填' : '选填'}</td><td style={{ padding: '7px 6px', borderTop: '1px solid #edf2f7', color: materialStatusColors[status] || '#475569', fontWeight: 700 }}>{materialStatusLabels[status] || status}</td></tr>; })}</tbody></table></div></section>}
 
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: 16, marginBottom: 24 }}>
                 {reviewerRules.map((rule: any) => {
@@ -660,9 +663,9 @@ export default function ScoringPage() {
                 <button onClick={handleProblemsActionsSave} style={{ padding: '9px 18px', border: 'none', borderRadius: 8, background: '#0f172a', color: 'white', fontWeight: 700, cursor: 'pointer' }}>保存评审意见</button>
               </section>
 
-              <section style={{ background: 'white', borderRadius: 12, padding: 20, border: isWalker ? '1.5px solid #8b5cf6' : '1px solid #e2e8f0', marginTop: 24 }}>
-                  <div style={{ fontSize: 16, fontWeight: 800, color: isWalker ? '#5b21b6' : '#334155', marginBottom: 6 }}>{isWalker ? 'Walker 最终评审结论' : '本轮个人评审结论（盲评参考）'}</div>
-                  {!isWalker && <div style={{ fontSize: 12, color: '#64748b', marginBottom: 12 }}>所有评委均可填写，Walker 的结论才会推动项目状态流转。</div>}
+              <section style={{ background: 'white', borderRadius: 12, padding: 20, border: '1px solid #e2e8f0', marginTop: 24 }}>
+                  <div style={{ fontSize: 16, fontWeight: 800, color: '#334155', marginBottom: 6 }}>本轮个人评审结论（盲评参考）</div>
+                  <div style={{ fontSize: 12, color: '#64748b', marginBottom: 12 }}>所有评委均可填写，系统根据已提交的盲评结论生成推荐结论。</div>
                   <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
                     {VERDICT_OPTIONS.filter((option) => !(activeProject.attempt_no === 2 && option.value === 'recheck')).map((option) => {
                       const selected = projectVerdicts[roundFieldKey(activeProject.id, getActiveRound())] === option.value;
@@ -672,8 +675,8 @@ export default function ScoringPage() {
                         </button>
                       );
                     })}
-                    {isWalker && (<label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, marginLeft: 6, paddingLeft: 12, borderLeft: '1px solid #ddd6fe', fontSize: 13, fontWeight: 800, color: '#5b21b6' }}>最终评级<select aria-label="最终评级" value={activeProject.final_rating || ''} onChange={(event) => saveWalkerRating('final', event.target.value)} style={{ padding: 9, border: '1px solid #c4b5fd', borderRadius: 8, background: '#fff' }}><option value="">待评级</option>{['S', 'A', 'B', 'C'].map((rating) => <option key={rating} value={rating}>{rating}</option>)}</select></label>)}
                   </div>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 18, padding: '14px 16px', border: '2px solid #dc2626', borderRadius: 10, background: '#fff1f2', color: '#991b1b', fontWeight: 900, cursor: 'pointer' }}><input type="checkbox" aria-label="特别推荐票" checked={Boolean(specialVotes[roundFieldKey(activeProject.id, getActiveRound())])} onChange={(event) => handleSpecialVoteChange(event.target.checked)} style={{ width: 20, height: 20, accentColor: '#dc2626' }} /><span>特别推荐票：我强烈推荐该项目</span><span style={{ fontSize: 12, fontWeight: 700 }}>半年只有一票</span><span style={{ fontSize: 12, fontWeight: 700 }}>可与本轮个人评审结论同时选择，互不影响</span></label>
                 </section>
             </>
           )}
