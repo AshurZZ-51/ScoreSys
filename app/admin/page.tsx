@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { appFetch, appPath } from '@/lib/appPath';
+import { isPublicProjectPoolV2Enabled } from '@/lib/featureFlags';
 import V2AdminPage from './V2AdminPage';
 import { projectDisplayName, projectDisplaySubmitter, shouldShowProjectSlot } from '@/lib/projectDisplay';
 import { PROJECT_SLOT_COUNT } from '@/lib/projectSlots';
@@ -84,7 +85,7 @@ interface DimConfig {
 }
 
 export default function AdminPage() {
-  if (process.env.NEXT_PUBLIC_PROJECT_POOL_V2_ENABLED === 'true') return <V2AdminPage />;
+  if (isPublicProjectPoolV2Enabled()) return <V2AdminPage />;
   return <LegacyAdminPage />;
 }
 
