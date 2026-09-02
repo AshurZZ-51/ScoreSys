@@ -8,6 +8,7 @@
 
 - 远端仓库：`https://github.com/AshurZZ-51/ScoreSys.git`
 - 当前版本包含项目池 V2、两轮评分（当前新建第二轮 V5 五维规则，兼容历史版本）、盲评推荐统计、报告快照、账号权限、分轮资料检查和评委评分指南。
+- 从旧版 PostgreSQL 切换到项目池后台时，必须额外执行 `MIGRATION_PROJECT_POOL_BACKFILL_V1.sql`；该脚本会把旧 `projects` 记录回填并关联到 `project_pool`，不会删除或重算历史分数。
 - 正式地址：`https://scoresys.vercel.app`
 - 正式访问要求：不经过 Vercel 外层网络验证，系统自身仍需要评委账号密码。
 
@@ -36,7 +37,7 @@
 1. 解压源码归档到 D 盘工作目录。
 2. 安装 Node.js 和 pnpm，执行 `pnpm install`。
 3. 根据 `.env.example` 恢复本地环境变量；真实生产密钥从密码管理工具或 Vercel 项目环境变量中取得，不从源码归档恢复。
-4. 在 PostgreSQL 目标数据库中按版本顺序检查并执行需要的 `MIGRATION*.sql`，不要盲目重复执行未经确认的迁移；当前版本需包含 `MIGRATION_BLIND_RECOMMENDATION_V2.sql`。
+4. 在 PostgreSQL 目标数据库中按版本顺序检查并执行需要的 `MIGRATION*.sql`，不要盲目重复执行未经确认的迁移；当前版本需包含 `MIGRATION_BLIND_RECOMMENDATION_V2.sql` 和 `MIGRATION_PROJECT_POOL_BACKFILL_V1.sql`。回填脚本可重复执行，但每次执行前仍应保留数据库备份。
 5. 执行 `pnpm test` 和 `NEXT_STANDALONE=false pnpm build`。
 6. 登录系统后检查项目池、评审会、评委评分、汇总和报告。
 7. 部署后必须检查正式地址的 `/`、`/admin`、`/scoring`、`/report`，确认未登录访问不会跳转到 Vercel 验证页。
