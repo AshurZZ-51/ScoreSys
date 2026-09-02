@@ -93,6 +93,7 @@ export interface ProjectPoolRow {
 export interface ProjectMaterialRow {
   project_id: string;
   item_key: string;
+  round_no: number;
   required: boolean;
   status: string;
   note: string;

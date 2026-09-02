@@ -8,7 +8,7 @@ type Item = Record<string, any>;
 const sections = [
   { key: 'approved', label: '通过/已通过', matches: (project: Item) => hasCompletedReview(project) && project.latest_verdict === 'approved', open: true },
   { key: 'recheck', label: '待复评', matches: (project: Item) => hasCompletedReview(project) && project.latest_verdict === 'recheck', open: false },
-  { key: 'rejected', label: '已驳回', matches: (project: Item) => hasCompletedReview(project) && project.latest_verdict === 'rejected', open: false },
+  { key: 'rejected', label: '已不通过', matches: (project: Item) => hasCompletedReview(project) && project.latest_verdict === 'rejected', open: false },
   { key: 'pending', label: '待整理', matches: (project: Item) => isPendingReviewProject(project) && !hasCompletedReview(project), open: false }
 ];
 

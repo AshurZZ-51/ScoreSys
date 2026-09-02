@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isProjectPoolV2Enabled } from '@/lib/featureFlags';
-import { getMaterialProgress, makeMatchKey, normalizeProjectPart } from '@/lib/projectPoolWorkflow';
+import { assignmentRoundForStatus, getMaterialProgress, makeMatchKey, normalizeProjectPart } from '@/lib/projectPoolWorkflow';
 import { countCompletedReviews, hasCompletedReview, isPendingReviewProject } from '@/lib/adminLifecycle';
 import { requireAdminSession, requireReviewerSession } from '@/lib/adminSession';
 import { listProjectPool } from '@/lib/db/repositories/projectPool';
 import { createProjectWithMaterials, updateProjectDetails } from '@/lib/db/repositories/projectPoolWorkflow';
 import { applyProjectPoolMutations } from '@/lib/db/repositories/rpc';
+import { recommendBlindVerdict } from '@/lib/reviewerBlindReview';
 
 export const dynamic = 'force-dynamic';
 
@@ -23,6 +24,23 @@ function getMonthRange(month: string | null) {
 
 function unavailable() {
   return NextResponse.json({ error: '项目池功能尚未启用' }, { status: 404 });
+}
+
+function latestResolvedVerdict(assignments: any[] = []) {
+  const ordered = [...assignments].sort((left, right) => new Date(right.created_at || 0).getTime() - new Date(left.created_at || 0).getTime());
+  for (const assignment of ordered) {
+    const roundId = `r${Number(assignment.round_no || 1)}`;
+    const rows = assignment.scores || [];
+    const admin = rows
+      .filter((score: any) => score.dim_name === `${roundId}::__admin_verdict__` && ['approved', 'recheck', 'rejected'].includes(score.comment))
+      .sort((left: any, right: any) => new Date(right.updated_at || 0).getTime() - new Date(left.updated_at || 0).getTime())[0]?.comment;
+    if (admin) return admin;
+    const recommendation = recommendBlindVerdict(rows
+      .filter((score: any) => score.dim_name === `${roundId}::__verdict__`)
+      .map((score: any) => score.comment)).verdict;
+    if (recommendation) return recommendation;
+  }
+  return null;
 }
 
 export async function GET(request: NextRequest) {
@@ -54,7 +72,12 @@ export async function GET(request: NextRequest) {
       })
       .map((project: any) => ({
         ...project,
-        material_progress: getMaterialProgress(project.project_materials || []),
+        latest_verdict: latestResolvedVerdict(project.projects || []) || project.latest_verdict || null,
+        material_progress: getMaterialProgress(project.project_materials || [], assignmentRoundForStatus(project.status)),
+        material_progress_by_round: {
+          r1: getMaterialProgress(project.project_materials || [], 1),
+          r2: getMaterialProgress(project.project_materials || [], 2)
+        },
         completed_review_count: countCompletedReviews(project.projects || [])
       }));
     const scopedProjects = scope === 'pending' ? projects.filter(isPendingReviewProject) : scope === 'reviewed' ? projects.filter(hasCompletedReview) : projects;

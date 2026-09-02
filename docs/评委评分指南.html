@@ -163,7 +163,7 @@
     <header class="hero">
       <div class="eyebrow">SCORESYS · REVIEWER GUIDE</div>
       <h1>立项评审评分指南</h1>
-      <p>给评委的操作说明：了解两轮评审流程、分数换算、盲评参考和 Walker 专属结论。每个项目的轮次和次数以评分页面显示为准。</p>
+      <p>给评委的操作说明：了解两轮评审流程、分数换算、盲评推荐和 Walker 专属加分。每个项目的阶段和次数以评分页面显示为准。</p>
       <div class="tag-row">
         <span class="tag blue">两轮评审</span>
         <span class="tag green">基础总分 100</span>
@@ -206,22 +206,22 @@
           <div class="grid">
             <div class="mini-card">
               <span class="tag blue">第一轮 · 创意阶段</span>
-              <p>评价游戏性和创新性。Walker 在本轮末选择通过、重评或驳回。</p>
+              <p>所有评委评价游戏性和创新性，并提交个人盲评结论，系统据已填写结果形成推荐。</p>
             </div>
             <div class="mini-card">
               <span class="tag green">第二轮 · 立项阶段</span>
-              <p>对项目进行综合评估。Walker 再次选择通过、重评或驳回。</p>
+              <p>所有评委再次评价五个维度，并提交个人盲评结论，系统据已填写结果形成推荐。</p>
             </div>
           </div>
           <table>
-            <thead><tr><th>Walker 结论</th><th>第一轮后续</th><th>第二轮后续</th></tr></thead>
+            <thead><tr><th>推荐结论</th><th>第一轮后续</th><th>第二轮后续</th></tr></thead>
             <tbody>
               <tr><td>通过</td><td>进入第二轮，管理员安排下一场评审会</td><td>进入立项流程</td></tr>
               <tr><td>重评</td><td>留在本轮，获得 1 次重评机会</td><td>留在本轮，获得 1 次重评机会</td></tr>
-              <tr><td>驳回</td><td>项目立项取消</td><td>项目立项取消</td></tr>
+              <tr><td>不通过</td><td>项目立项取消</td><td>项目立项取消</td></tr>
             </tbody>
           </table>
-          <div class="notice amber">每一轮最多重评 1 次。第二次评审只能选择“通过”或“驳回”，不能再次选择“重评”。</div>
+          <div class="notice amber">每一轮最多重评 1 次。第二次评审只能选择“通过”或“不通过”，不能再次选择“重评”。</div>
         </section>
 
         <section id="round-one">
@@ -253,25 +253,23 @@
 
         <section id="round-two">
           <h2>4. 第二轮：立项综合评估</h2>
-          <p class="lead">当前新建第二轮采用 V4 六维规则，基础总分为 100 分。</p>
+          <p class="lead">当前新建第二轮采用 V5 五维规则，基础总分为 100 分。</p>
           <table>
             <thead><tr><th>维度</th><th>满分</th><th>评分方式</th></tr></thead>
             <tbody>
-              <tr><td>游戏性</td><td>25</td><td>4 个子项平均分 × 2.5</td></tr>
+              <tr><td>游戏性</td><td>30</td><td>4 个子项平均分 × 3</td></tr>
               <tr><td>创新性</td><td>20</td><td>直接选择档位，系统取中位数</td></tr>
-              <tr><td>项目规划</td><td>15</td><td>4 个子项平均分 × 1.5</td></tr>
+              <tr><td>项目规划</td><td>20</td><td>5 个子项平均分 × 2</td></tr>
               <tr><td>技术&美术</td><td>15</td><td>2 个子项平均分 × 1.5</td></tr>
               <tr><td>风险预估</td><td>15</td><td>4 个子项平均分 × 1.5</td></tr>
-              <tr><td>造价与预算</td><td>10</td><td>3 个子项平均分 × 1</td></tr>
             </tbody>
           </table>
           <h3>第二轮子项</h3>
           <div class="grid">
             <div class="mini-card"><strong>游戏性</strong><span class="muted">核心玩法、体感适配性、可复玩性、年龄适配度</span></div>
-            <div class="mini-card"><strong>项目规划</strong><span class="muted">项目里程碑、文档完善程度、风险难点分析、外包方案合理度</span></div>
+            <div class="mini-card"><strong>项目规划</strong><span class="muted">项目里程碑、文档完善程度、风险难点分析、项目预算合理性、外包方案合理度</span></div>
             <div class="mini-card"><strong>技术&美术</strong><span class="muted">技术方案评审、美术方案评审</span></div>
             <div class="mini-card"><strong>风险预估</strong><span class="muted">延期风险、方向风险、资源风险、政策版权风险</span></div>
-            <div class="mini-card"><strong>造价与预算</strong><span class="muted">预算合理性、成本控制、投入产出预期</span></div>
           </div>
           <h3>第二轮创新性档位</h3>
           <table>
@@ -284,7 +282,7 @@
               <tr><td>L5</td><td>20</td><td>完全原创，全自研独创</td></tr>
             </tbody>
           </table>
-          <div class="formula">第二轮基础总分 = 六个维度换算分之和</div>
+          <div class="formula">第二轮基础总分 = 五个维度换算分之和</div>
         </section>
 
         <section id="permissions">
@@ -295,20 +293,19 @@
               <ul>
                 <li>当前轮次的全部评分和子项。</li>
                 <li>个人项目评级：S / A / B / C。</li>
-                <li>个人结论：通过 / 重评 / 驳回。</li>
+                <li>个人结论：通过 / 重评 / 不通过。</li>
                 <li>存在问题和改进行动。</li>
               </ul>
             </div>
             <div class="mini-card">
-              <strong>只有 Walker</strong>
+              <strong>Walker 额外权限</strong>
               <ul>
                 <li>本轮加分：额外 0-5 分及原因。</li>
-                <li>Walker 最终评审结论。</li>
-                <li>项目最终评级：S / A / B / C。</li>
+                <li>与其他评委一样填写个人评级和个人结论。</li>
               </ul>
             </div>
           </div>
-          <div class="notice">普通评委的个人评级和个人结论属于盲评参考，会在后台和报告中统计，但不会替代 Walker 最终结论，也不会推动项目状态流转。</div>
+          <div class="notice">所有评委的个人评级和个人结论属于盲评参考，会在后台和报告中统计。系统根据已填写结论生成推荐，管理员可以确认后手动覆盖。</div>
           <p>Walker 加分单独记录，不改变本轮基础分 100 分的满分口径，报告中会区分基础分和加分。</p>
         </section>
 
@@ -318,10 +315,10 @@
             <li>数字评分可以输入 <code>0</code>，也可以先清空再输入新分数。</li>
             <li>数字评分通常在失焦后保存；滑块和创新性档位选择会触发保存。</li>
             <li>问题和改进行动填写后点击保存评审意见；输入过程中系统也会尝试保存。</li>
-            <li>个人评级、个人结论和 Walker 加分保存后，会显示保存中、成功或失败提示。</li>
+            <li>个人评级、个人结论、特别推荐票和 Walker 加分保存后，会显示保存中、成功或失败提示。</li>
             <li>看到“保存成功”后再切换项目，避免网络较慢时产生误判。</li>
             <li>截止日期前可以反复修改自己的分数和意见。</li>
-            <li>Walker 提交结论后，其他评委仍可继续完成或修改本场项目的评分。</li>
+            <li>任何评委提交个人结论后，其他评委仍可继续完成或修改本场项目的评分。</li>
           </ol>
         </section>
 
@@ -329,10 +326,10 @@
           <h2>7. 盲评与汇总逻辑</h2>
           <ul>
             <li>个人评级统计为 S/A/B/C 数量和比例。</li>
-            <li>个人结论统计为通过/重评/驳回数量和比例。</li>
+            <li>个人结论统计为通过/重评/不通过数量和比例。</li>
             <li>普通维度先汇总所有评委的平均分，再按维度系数换算。</li>
             <li>创新性按所有有效档位取中位数，不是简单平均。</li>
-            <li>Walker 最终结论是项目状态流转和项目评审历史的依据。</li>
+            <li>推荐结论由已填写的盲评结论生成；管理员确认覆盖后以覆盖结果为准。</li>
             <li>Walker 加分不计入基础分完成度和基础满分，只作为额外分展示。</li>
           </ul>
         </section>
@@ -359,7 +356,7 @@
               <tr><td>保存提示失败</td><td>不要连续快速点击，等待后重试；仍失败时截图反馈项目名和操作项。</td></tr>
               <tr><td>项目列表为空</td><td>确认管理员已将项目加入当前评审会，并确认登录账号正确。</td></tr>
               <tr><td>评分框出现旧值</td><td>刷新页面后重新读取，不要直接提交未确认的旧值。</td></tr>
-              <tr><td>看不到最终评级</td><td>普通评委不显示最终评级属于正常权限设计；Walker 请联系管理员处理。</td></tr>
+              <tr><td>看不到最终评级</td><td>评委页面不显示最终评级属于正常权限设计，项目最终评级由管理员项目管理维护。</td></tr>
             </tbody>
           </table>
           <div class="notice amber"><strong>联系管理员时请提供：</strong>评委账号、项目名称、评审会名称、轮次和次数、具体操作、页面提示或截图。</div>

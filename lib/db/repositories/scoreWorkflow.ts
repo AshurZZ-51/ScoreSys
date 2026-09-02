@@ -59,6 +59,7 @@ export interface DeleteScoresInput {
   meetingId: string;
   reviewerCode?: string | null;
   projectId?: string | null;
+  dimName?: string | null;
 }
 
 export function getScoringMeeting(
@@ -253,6 +254,10 @@ export function deleteScores(input: DeleteScoresInput, executor?: Executor): Pro
   if (input.projectId) {
     params.push(input.projectId);
     filters.push(`project_id = $${params.length}`);
+  }
+  if (input.dimName) {
+    params.push(input.dimName);
+    filters.push(`dim_name = $${params.length}`);
   }
   return execute(`DELETE FROM scores WHERE ${filters.join(' AND ')}`, params, executor);
 }

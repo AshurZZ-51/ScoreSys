@@ -39,7 +39,10 @@ export async function POST(request: NextRequest) {
     }
 
     const v2 = isProjectPoolV2Enabled();
-    const materialTemplates = createMaterialRows('');
+    const materialTemplates = [
+      ...createMaterialRows('', {}, null, null, 1),
+      ...createMaterialRows('', {}, null, null, 2),
+    ];
     const result = await createMeetingWorkflow({
       name: String(name).trim(),
       meetingDate: meeting_date,
@@ -57,6 +60,7 @@ export async function POST(request: NextRequest) {
         roundNo: Number(quick.round_no) === 2 ? 2 : 1,
         materials: materialTemplates.map((material: any) => ({
           itemKey: material.item_key,
+          roundNo: Number(material.round_no) === 2 ? 2 : 1,
           required: material.required,
           status: material.status,
           checkedBy: material.checked_by,

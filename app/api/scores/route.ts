@@ -23,6 +23,8 @@ import {
 
 export const dynamic = 'force-dynamic';
 
+const PROJECT_POOL_SCORING_VERSIONS = ['two_round_v2', 'two_round_v3', 'two_round_v4', 'two_round_v5'];
+
 export async function GET(request: NextRequest) {
   try {
     if (!requireReviewerSession(request)) return NextResponse.json({ error: '请先登录' }, { status: 401 });
@@ -71,8 +73,8 @@ export async function POST(request: NextRequest) {
 
     const assignment = await getScoringAssignment(meeting_id, project_id);
     if (!assignment) return NextResponse.json({ error: '评审项目不存在' }, { status: 404 });
-    const isV2Assignment = isProjectPoolV2Enabled() && ['two_round_v2', 'two_round_v3', 'two_round_v4'].includes(assignment.scoring_version);
-    const scoringVersion = ['two_round_v2', 'two_round_v3', 'two_round_v4'].includes(assignment.scoring_version)
+    const isV2Assignment = isProjectPoolV2Enabled() && PROJECT_POOL_SCORING_VERSIONS.includes(assignment.scoring_version);
+    const scoringVersion = PROJECT_POOL_SCORING_VERSIONS.includes(assignment.scoring_version)
       ? assignment.scoring_version
       : 'two_round_v2';
 
@@ -94,9 +96,20 @@ export async function POST(request: NextRequest) {
       if (reviewer_code.toUpperCase() !== 'W') {
         return NextResponse.json({ error: '只有 Walker 可以使用加分项' }, { status: 403 });
       }
+    } else if (baseDimName === '__special_vote__') {
+      if (reviewerInfo?.is_admin) {
+        return NextResponse.json({ error: '管理员不能填写特别推荐票' }, { status: 403 });
+      }
     } else if (baseDimName === '__verdict__') {
       if (reviewerInfo?.is_admin) {
         return NextResponse.json({ error: '管理员不能填写个人评审结论' }, { status: 403 });
+      }
+    } else if (baseDimName === '__admin_verdict__') {
+      if (!reviewerInfo?.is_admin) {
+        return NextResponse.json({ error: '只有管理员可以修改推荐结论' }, { status: 403 });
+      }
+      if (comment && !['approved', 'recheck', 'rejected'].includes(comment)) {
+        return NextResponse.json({ error: '无效结论' }, { status: 400 });
       }
     } else if (baseDimName === '__problems__' || baseDimName === '__actions__') {
       // Text-only review fields reuse the score table.
@@ -128,6 +141,11 @@ export async function POST(request: NextRequest) {
         ? `必须选择 ${parsed.rule.levels.join('/')} 档位`
         : `分数必须在 0-${maxScore} 之间`;
       return NextResponse.json({ error: hint }, { status: 400 });
+    }
+
+    if (baseDimName === '__admin_verdict__' && !comment) {
+      await deleteScores({ meetingId: meeting_id, projectId: project_id, reviewerCode: reviewer_code, dimName: dim_name });
+      return NextResponse.json({ success: true, score: null, cleared: true });
     }
 
     let followUp: Parameters<typeof submitScoreWorkflow>[0]['followUp'] = { type: 'none' };
