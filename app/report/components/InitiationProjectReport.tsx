@@ -1,6 +1,6 @@
 type Report = Record<string, any>;
 
-const verdictLabel = (value: string) => ({ approved: '通过', recheck: '待重评', rejected: '驳回' } as Record<string, string>)[value] || '未形成结论';
+const verdictLabel = (value: string) => ({ approved: '通过', recheck: '待重评', rejected: '不通过' } as Record<string, string>)[value] || '未形成结论';
 const score = (value: unknown) => Number(value || 0).toFixed(1);
 const dateTime = (value: unknown) => value ? String(value).replace('T', ' ').slice(0, 16) : '-';
 

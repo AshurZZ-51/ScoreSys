@@ -8,7 +8,7 @@ type Snapshot = { id: string; version: number; generated_at?: string };
 const verdictLabels: Record<string, string> = {
   approved: '通过',
   recheck: '待复评',
-  rejected: '驳回'
+  rejected: '不通过'
 };
 
 function adminHeaders() {
@@ -119,7 +119,7 @@ export default function LiveReportPanel({ meeting }: { meeting: Item }) {
       <div style={styles.stats}>
         <Stat label="通过" value={stats.approved} tone="#0f766e" />
         <Stat label="待复评" value={stats.recheck} tone="#b45309" />
-        <Stat label="驳回" value={stats.rejected} tone="#b42318" />
+        <Stat label="不通过" value={stats.rejected} tone="#b42318" />
         <Stat label="待形成推荐" value={stats.pending} tone="#475569" />
       </div>
       <div style={styles.tableWrap}><table style={styles.table}><thead><tr>{['排名', '项目', '本轮总分', '各维度平均分', '完成度', '推荐/当前结论', '盲评参考', '特别推荐票', '问题与行动'].map((label) => <th key={label} style={styles.cell}>{label}</th>)}</tr></thead><tbody>
@@ -151,7 +151,7 @@ function renderBlindStats(round: Item) {
   const rating = round?.blindRatingStats;
   const verdict = round?.blindVerdictStats;
   if (!rating?.submittedCount && !verdict?.submittedCount) return <span style={styles.subtle}>暂无</span>;
-  return <div style={styles.dimensionList}><span>{rating?.submittedCount ? `评级 S ${rating.counts?.S || 0} (${rating.percentages?.S || 0}%) · A ${rating.counts?.A || 0} (${rating.percentages?.A || 0}%) · B ${rating.counts?.B || 0} (${rating.percentages?.B || 0}%) · C ${rating.counts?.C || 0} (${rating.percentages?.C || 0}%)` : '暂无评级'}</span><span>{verdict?.submittedCount ? `结论 通过 ${verdict.counts?.approved || 0} (${verdict.percentages?.approved || 0}%) · 重评 ${verdict.counts?.recheck || 0} (${verdict.percentages?.recheck || 0}%) · 驳回 ${verdict.counts?.rejected || 0} (${verdict.percentages?.rejected || 0}%)` : '暂无结论'}</span></div>;
+  return <div style={styles.dimensionList}><span>{rating?.submittedCount ? `评级 S ${rating.counts?.S || 0} (${rating.percentages?.S || 0}%) · A ${rating.counts?.A || 0} (${rating.percentages?.A || 0}%) · B ${rating.counts?.B || 0} (${rating.percentages?.B || 0}%) · C ${rating.counts?.C || 0} (${rating.percentages?.C || 0}%)` : '暂无评级'}</span><span>{verdict?.submittedCount ? `结论 通过 ${verdict.counts?.approved || 0} (${verdict.percentages?.approved || 0}%) · 重评 ${verdict.counts?.recheck || 0} (${verdict.percentages?.recheck || 0}%) · 不通过 ${verdict.counts?.rejected || 0} (${verdict.percentages?.rejected || 0}%)` : '暂无结论'}</span></div>;
 }
 
 const styles: Record<string, React.CSSProperties> = {

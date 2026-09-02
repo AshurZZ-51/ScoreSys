@@ -675,7 +675,7 @@ export default function ScoringPage() {
                       );
                     })}
                   </div>
-                  <label style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 18, padding: '14px 16px', border: '2px solid #dc2626', borderRadius: 10, background: '#fff1f2', color: '#991b1b', fontWeight: 900, cursor: 'pointer' }}><input type="checkbox" aria-label="特别推荐票" checked={Boolean(specialVotes[roundFieldKey(activeProject.id, getActiveRound())])} onChange={(event) => handleSpecialVoteChange(event.target.checked)} disabled={saving} style={{ width: 20, height: 20, accentColor: '#dc2626' }} /><span>特别推荐票：我强烈推荐该项目</span><span style={{ fontSize: 12, fontWeight: 700 }}>半年只有一票</span></label>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 18, padding: '14px 16px', border: '2px solid #dc2626', borderRadius: 10, background: '#fff1f2', color: '#991b1b', fontWeight: 900, cursor: 'pointer' }}><input type="checkbox" aria-label="特别推荐票" checked={Boolean(specialVotes[roundFieldKey(activeProject.id, getActiveRound())])} onChange={(event) => handleSpecialVoteChange(event.target.checked)} style={{ width: 20, height: 20, accentColor: '#dc2626' }} /><span>特别推荐票：我强烈推荐该项目</span><span style={{ fontSize: 12, fontWeight: 700 }}>半年只有一票</span><span style={{ fontSize: 12, fontWeight: 700 }}>可与本轮个人评审结论同时选择，互不影响</span></label>
                 </section>
             </>
           )}
