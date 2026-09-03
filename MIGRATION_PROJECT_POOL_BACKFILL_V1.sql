@@ -7,7 +7,10 @@ DO $project_pool_backfill$
 DECLARE
   backfill_batch_id UUID;
   candidate_count BIGINT;
+  existing_link_count BIGINT;
+  pool_table_count BIGINT;
   pool_count BIGINT;
+  material_rows_created BIGINT;
 BEGIN
   IF to_regclass('public.project_pool') IS NULL
      OR to_regclass('public.project_materials') IS NULL
@@ -46,8 +49,28 @@ BEGIN
     AND coalesce(btrim(legacy.submitter), '') <> ''
     AND legacy.pool_project_id IS NULL;
 
+  -- Older deployments may already have pool_project_id values but no migration
+  -- map rows. Record those links as well so the migration audit is complete.
+  CREATE TEMP TABLE existing_legacy_links ON COMMIT DROP AS
+  SELECT
+    legacy.id AS legacy_project_id,
+    legacy.pool_project_id,
+    lower(regexp_replace(btrim(legacy.name), '\s+', ' ', 'g'))
+      || '::' ||
+    lower(regexp_replace(btrim(legacy.submitter), '\s+', ' ', 'g')) AS match_key
+  FROM projects AS legacy
+  INNER JOIN project_pool AS pool ON pool.id = legacy.pool_project_id
+  WHERE legacy.pool_project_id IS NOT NULL
+    AND NOT EXISTS (
+      SELECT 1
+      FROM project_migration_map AS map
+      WHERE map.legacy_project_id = legacy.id
+    );
+
   SELECT count(*) INTO candidate_count FROM legacy_pool_candidates;
-  IF candidate_count = 0 THEN
+  SELECT count(*) INTO existing_link_count FROM existing_legacy_links;
+  SELECT count(*) INTO pool_table_count FROM project_pool;
+  IF candidate_count = 0 AND existing_link_count = 0 AND pool_table_count = 0 THEN
     RAISE NOTICE 'project pool backfill: no unlinked legacy projects found';
     RETURN;
   END IF;
@@ -128,6 +151,17 @@ BEGIN
   INNER JOIN legacy_pool_targets AS target USING (match_key)
   ON CONFLICT (legacy_project_id) DO NOTHING;
 
+  INSERT INTO project_migration_map (
+    legacy_project_id, pool_project_id, batch_id, match_key
+  )
+  SELECT
+    existing.legacy_project_id,
+    existing.pool_project_id,
+    backfill_batch_id,
+    existing.match_key
+  FROM existing_legacy_links AS existing
+  ON CONFLICT (legacy_project_id) DO NOTHING;
+
   -- Link old meeting assignments in place. Scores continue to reference their
   -- original project ids, so no historical score or reviewer data is changed.
   UPDATE projects AS legacy
@@ -154,7 +188,7 @@ BEGIN
     'missing',
     '',
     now()
-  FROM (SELECT DISTINCT pool_project_id FROM legacy_pool_targets) AS target
+  FROM project_pool AS target
   CROSS JOIN (VALUES
     (1::smallint, 'basic_info', true),
     (1::smallint, 'positioning', true),
@@ -172,6 +206,28 @@ BEGIN
     (2::smallint, 'competitors', false)
   ) AS material(round_no, item_key, required)
   ON CONFLICT (project_id, round_no, item_key) DO NOTHING;
+
+  GET DIAGNOSTICS material_rows_created = ROW_COUNT;
+
+  -- Keep the denormalized pool material status aligned with the canonical
+  -- checklist for the project's current round.
+  UPDATE project_pool AS pool
+  SET material_status = CASE WHEN EXISTS (
+    SELECT 1
+    FROM project_materials AS material
+    WHERE material.project_id = pool.id
+      AND material.round_no = CASE WHEN pool.current_round = 2 THEN 2 ELSE 1 END
+      AND (
+        (coalesce(pool.current_round, 1) = 1
+          AND material.item_key IN ('basic_info', 'positioning', 'gameplay_plan', 'mvp_plan'))
+        OR
+        (pool.current_round = 2
+          AND material.item_key IN ('basic_info', 'risk_statement', 'mvp_version', 'initial_plan', 'mvp_description'))
+      )
+      AND material.status NOT IN ('submitted', 'exempt')
+  ) THEN 'incomplete' ELSE 'complete' END,
+      updated_at = now()
+  WHERE pool.archived_at IS NULL;
 
   INSERT INTO project_status_history (
     project_id, event_type, from_status, to_status, operator_code, note
@@ -192,8 +248,9 @@ BEGIN
   UPDATE project_migration_batches
   SET status = 'completed',
       result = jsonb_build_object(
-        'legacy_projects_linked', candidate_count,
+        'legacy_projects_processed', candidate_count + existing_link_count,
         'pool_projects_created', pool_count,
+        'material_rows_created', material_rows_created,
         'materials_preserved', true,
         'scores_preserved', true
       ),
