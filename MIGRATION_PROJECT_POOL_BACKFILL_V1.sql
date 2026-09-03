@@ -257,6 +257,9 @@ BEGIN
       completed_at = now()
   WHERE id = backfill_batch_id;
 
-  RAISE NOTICE 'project pool backfill: linked % legacy projects into % pool projects', candidate_count, pool_count;
+  RAISE NOTICE 'project pool repair: processed % legacy projects, created % pool projects, added % material rows',
+    candidate_count + existing_link_count,
+    pool_count,
+    material_rows_created;
 END
 $project_pool_backfill$;
